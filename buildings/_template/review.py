@@ -87,6 +87,24 @@ PLAN = (
         reading="From the other long side, raised. The back of the building and "
                 "anything standing behind it.",
     ),
+    # The one camera that is not about the building. Every other shot here is
+    # framed to hold the whole of it, which is a view nobody ever has: a person
+    # arrives on foot, from the street, and the first thing they see is the
+    # ground floor and the way the building meets the pavement. That is also
+    # the part a capture flown from the air knows least about, and the part a
+    # build most often leaves as bare podium.
+    #
+    # Eye height and a wide lens, standing back at the far edge of the site.
+    # Move it to whichever side the approach is really on -- and if that is not
+    # obvious, that is worth knowing before anything else here is judged.
+    Shot(
+        "05-approach", eye=(0.15, -0.25, 1.7), target=(0.45, 0.35, 8.0),
+        fov=70.0,
+        reading="At eye level on the approach, as somebody walking up to it "
+                "would see. What the building does where it meets the ground: "
+                "the entrance, the podium, the kerb, and whether the ground "
+                "floor reads as a place to walk into or as a plinth.",
+    ),
 )
 
 

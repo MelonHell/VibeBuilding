@@ -709,6 +709,16 @@ class Review:
         for line in findings.lines(self.out / FINDINGS, rounds=self.round):
             print(f"[review] {line}")
 
+        # What this stage renders is the schematic. What a person looks at is a
+        # world somebody pasted it into, and the pipeline does not own that
+        # boundary: a fault fixed here and not re-pasted there reads exactly
+        # like a fault that was never fixed. It has happened.
+        tally = self.paths.OUT / "massing.stamp.md"
+        if tally.exists():
+            print(f"[review] the renders are of {self.paths.SCHEM.name}. If a "
+                  f"world is being judged instead, check it against "
+                  f"{tally.name} first (//count) or re-paste.")
+
     def run(self, read, argv=None) -> int:
         """Render, collect, and say what to do with the folder.
 

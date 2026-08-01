@@ -39,7 +39,7 @@ class Finished:
 
     __slots__ = ("blocks", "counts", "joined", "placement", "schematic",
                  "items", "undeclared", "views", "sheets", "overlap",
-                 "plans", "notes")
+                 "plans", "notes", "stamp")
 
     def __init__(self):
         self.blocks = 0
@@ -54,6 +54,7 @@ class Finished:
         self.overlap: dict[str, float] = {}
         self.plans: dict[str, Path] = {}
         self.notes: list[str] = []
+        self.stamp: Path | None = None
 
     def lines(self) -> list[str]:
         out = [f"finalize: {self.joined} connectable blocks given their "
@@ -67,7 +68,9 @@ class Finished:
                        f"{self.items} parts built")
             for name, what in self.undeclared:
                 out.append(f"  not built  {name}: {what}")
-        out.append(f"{self.blocks} blocks")
+        out.append(f"{self.blocks} blocks"
+                   + (f" -- tallied in {self.stamp.name} for checking against "
+                      "a world" if self.stamp else ""))
         out.extend(f"  {n:7d}  {block}" for block, n in self.counts.items())
         for name, value in self.overlap.items():
             out.append(f"  {name} silhouette IoU {value:.3f}")
@@ -133,6 +136,52 @@ LAYOUT_BLOCKS = ("minecraft:light_gray_concrete",
                  "minecraft:light_gray_concrete_powder")
 
 
+def stamp(out: Path, name: str, done: "Finished") -> Path:
+    """What is in this build, in a form that can be checked against a world.
+
+    The pipeline ends at a `.schem`. The building ends in a world somebody
+    pasted it into, and between those two there is nothing: no record of which
+    build is standing, and no way to tell a screenshot of last week's paste from
+    a screenshot of this morning's. That gap cost a whole exchange -- a
+    screenshot showing faults that had already been fixed, with nobody able to
+    say whether the world was current.
+
+    A hash is no use for this, because a world cannot be hashed. What a world
+    *can* do is count blocks:
+
+        //pos1, //pos2 round the pasted build, then
+        //count minecraft:white_concrete
+
+    So the stamp is the block tally, which WorldEdit will read back out of the
+    world one block type at a time. Two tallies that agree are the same build;
+    two that differ say by how much and in what. It is the only handshake
+    available across a boundary the pipeline does not own.
+    """
+    lines = [
+        f"# {name}",
+        "",
+        "What is standing, if the world holds this build. Check it with "
+        "WorldEdit:",
+        "",
+        "    //pos1 and //pos2 round the pasted build",
+        "    //count <block>",
+        "",
+        f"blocks   {done.blocks}",
+        f"palette  {len(done.counts)}",
+        "",
+    ]
+    lines += [f"{n:>9}  {block}" for block, n in done.counts.items()]
+    lines += [
+        "",
+        "A world that counts differently is not this build. Re-paste before "
+        "judging a screenshot: a fault fixed in the schematic and not in the "
+        "world reads exactly like a fault that was never fixed.",
+    ]
+    path = out / f"{name}.stamp.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def quickly() -> bool:
     """Whether this run should skip everything only a person reads.
 
@@ -192,6 +241,7 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
 
     done.blocks = canvas.block_count()
     done.counts = canvas.counts()
+    done.stamp = stamp(out, name, done)
 
     if quick:
         # Everything above this line is what the gate reads. Everything below it
