@@ -1,0 +1,984 @@
+"""Measuring a building from whatever was supplied, as apparatus.
+
+`buildings/<name>/probes/derive.py` used to be a thousand lines, of which about
+seven hundred were the same in every building: work out what is in `input/`,
+pick the branch that reads the plan, load the reference, autocorrelate the
+storey rhythm, read the skyline, ask the held-out sources what they say, and
+write `derived.json`. Copied per building, that is seven hundred lines to keep
+in step by hand across every copy -- the failure `gate.py` names in its own
+docstring, applied to the one file every number in a build comes out of.
+
+So the apparatus is here and the *tables* are there. A building's `derive.py` is
+now its declarations, its measuring windows, its part names, and whatever probes
+only it needs; the reading of them is `Survey`.
+
+    survey = Survey(paths, sys.modules[__name__])
+    survey.main()                    # measure everything, write derived.json
+    read = survey.plan_of()          # what build.py and gate.py call
+
+`tables` is the building's own module, passed in whole rather than as thirty
+arguments. Anything it does not define falls back to the default beside it in
+`DEFAULTS` -- a building that never opens a void does not have to name
+`SECTION_CELL` to be allowed to run.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from . import declared, flatmap, gate, measure, sources, witnesses
+from . import model as model3d
+from .flatmap import guides
+from .mask import iou
+from .mesh import Mesh
+from .plan import decompose
+from . import vectorplan
+
+# What a building gets if it does not say. Every one of these is a window --
+# where to look -- or a search bound, and none of them is a result.
+DEFAULTS = {
+    "PLAN_ANGLE": 0.0,
+    "DECLARED_PLAN": (),
+    "DECLARED_HEIGHTS": {},
+    "DECLARED_STOREY": {},
+    "DECLARED": {},
+    "BODY": (0.05, 0.60),
+    "FACADE_INSET": 1.0,
+    "STOREY_RANGE": (2.0, 6.0),
+    "STOREY_STEP": 0.25,
+    "STOREY_CEILING": 26.0,
+    "STOREY_SCORE": 0.15,
+    "NOTCH_RANGE_HI": 25.0,
+    "PROFILE_BIN": 0.5,
+    "PROFILE_TRIM": 8.0,
+    "MESH_FLOOR": 6.0,
+    "REGISTER_FLOOR": 6.0,
+    "SECTION_CELL": 1.0,
+    "STRIPS": (),
+    "DISCS": (),
+    "MODEL_PARTS": (),
+    "MODEL_UP": "y",
+    "MODEL_SCALE": 1.0,
+    "MAP_PALETTE": None,
+    # Metres per unit of an SVG plan. A GeoJSON in lon/lat needs none -- it is
+    # projected -- and one already in metres needs none either; an SVG has no
+    # units at all and cannot be read without this.
+    "VECTOR_SCALE": 0.0,
+}
+
+
+class Tables:
+    """A building's constants, with the defaults behind them.
+
+    Reads attributes off the building's module and falls back to `DEFAULTS`, so
+    that the apparatus can ask for anything and a building need only state what
+    it actually decided.
+    """
+
+    def __init__(self, source):
+        self.source = source
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        value = getattr(self.source, name, None)
+        if value is None and name in DEFAULTS:
+            return DEFAULTS[name]
+        if value is None and name not in DEFAULTS:
+            raise AttributeError(
+                f"{name} is not defined in {getattr(self.source, '__name__', self.source)} "
+                "and has no default")
+        return value
+
+
+class Read:
+    """What a plan branch produced, whichever branch it was.
+
+    Every branch ends up with the same three things -- a frame, named parts, and
+    the order to report them in -- so that nothing after this point has to ask
+    where the plan came from. `massing` is set only on the model branch, where
+    the same file also holds the heights.
+    """
+
+    __slots__ = ("source", "frame", "named", "order", "massing", "mass")
+
+    def __init__(self, source, frame, named, order, mass=None, massing=None):
+        self.source = source
+        self.frame = frame
+        self.named = named
+        self.order = order
+        self.mass = mass
+        self.massing = massing
+
+    @property
+    def parts(self) -> list:
+        return [self.named[name] for name in self.order]
+
+    def bounds(self) -> tuple[float, float, float, float]:
+        parts = self.parts
+        return (min(p.u0 for p in parts), max(p.u1 for p in parts),
+                min(p.v0 for p in parts), max(p.v1 for p in parts))
+
+
+class Link:
+    """How to speak about an OBJ in the plan's coordinates.
+
+    A map and a capture are two independent fits of the same building, so their
+    frames differ by a metre or two and everything that crosses between them has
+    to be registered. A model that supplied the plan as well needs no such thing:
+    there is one fit and a translation, and `registration` is None to say so.
+    """
+
+    __slots__ = ("mesh", "frame", "datum", "kind", "registration")
+
+    def __init__(self, mesh, frame, datum, kind, registration=None):
+        self.mesh = mesh
+        self.frame = frame
+        self.datum = datum
+        self.kind = kind            # "model" or "capture"
+        self.registration = registration
+
+    def mu(self, u: float) -> float:
+        return self.registration.to_mesh_u(u) if self.registration else u
+
+    def mv(self, v: float) -> float:
+        return self.registration.to_mesh_v(v) if self.registration else v
+
+    def to_build_u(self, u: float) -> float:
+        return self.registration.to_build_u(u) if self.registration else u
+
+    def to_build_v(self, v: float) -> float:
+        return self.registration.to_build_v(v) if self.registration else v
+
+
+def levels_from(spacing: float, top: float) -> list[float]:
+    """Floor lines at a declared spacing, from the ground to the highest part."""
+    if spacing <= 0:
+        return [0.0]
+    count = max(1, int(top // spacing))
+    return [round(i * spacing, 2) for i in range(count + 1)]
+
+
+class Survey:
+    """One building's measurements: the branch, the reference, and the numbers.
+
+    Holds no state between runs -- `main` writes `derived.json` and that file is
+    the state. What it holds is where the building's files are and what it has
+    decided, which is exactly the pair that differs between buildings.
+    """
+
+    def __init__(self, paths, tables, probes=None):
+        self.paths = paths
+        self.t = tables if isinstance(tables, Tables) else Tables(tables)
+        # A building's own windows into the reference, run after everything
+        # generic has been measured and given the same `(out, read, link)` the
+        # rest of this class works with.
+        self.probes = probes
+
+    def require(self, *wanted: Path) -> None:
+        """Stop with the missing inputs named, rather than a traceback from deep
+        inside a reader. Every one of these is something a person has to supply;
+        none of them can be derived, defaulted, or usefully stubbed."""
+        missing = [p for p in wanted if not p.exists()]
+        if missing:
+            raise SystemExit(
+                "missing input:\n"
+                + "".join(f"    {p}\n" for p in missing)
+                + "see docs/data-contract.md for what each one is")
+
+    def unconverted(self) -> None:
+        """A capture that is still a folder of tiles is not yet a reference.
+
+        Worth its own message: the survey reports "no capture" for a building whose
+        whole `ge-export/` is sitting right there, and the difference between "you
+        did not supply one" and "you did not convert it" is two commands.
+        """
+        if self.paths.MESH.exists() or not self.paths.GE_EXPORT.is_dir():
+            return
+        if not any(self.paths.GE_EXPORT.iterdir()):
+            return
+        raise SystemExit(
+            f"{self.paths.GE_EXPORT} is here but {self.paths.MESH} is not: the capture has "
+            "not been converted yet, so nothing can be measured off it.\n"
+            f"    python tools/ge_convert.py {self.paths.GE_EXPORT} "
+            f"-o {self.paths.MESH_FULL.parent}\n"
+            f"    python tools/ge_convert.py {self.paths.GE_EXPORT} "
+            f"-o {self.paths.MESH.parent} --clip-east <a> <b> --clip-north <c> <d>\n"
+            "The first pass is the whole capture, which is what the clip box is "
+            "measured off; the second cuts this building out of it. See the capture "
+            "skill for how to read the box off the orthographic views.")
+
+    def from_vector(self, out: dict, source) -> Read:
+        """An outline that arrived as an outline.
+
+        The one branch that needs no naming table: a FeatureCollection has one
+        feature per part, and a feature that carries a name gives its part that
+        name. Where it does not, they come back as part-1 and so on, the same as
+        everywhere else.
+        """
+        layout = vectorplan.read(source.path, scale=self.t.VECTOR_SCALE)
+        out["guides"] = []
+        out["vector"] = {"shapes": len(layout.shapes),
+                         "origin": [round(v, 1) for v in layout.origin]}
+        for name in layout.order:
+            part = layout.parts[name]
+            if part.kind == "disc":
+                out.setdefault("discs", {})[name] = {
+                    "centre": [round(part.centre[0], 1), round(part.centre[1], 1)],
+                    "radius": round(part.radius, 1),
+                    "residual": round(part.residual, 2),
+                }
+        return Read(source, layout.frame, layout.parts, layout.order,
+                    mass=layout.mass)
+
+    def from_map(self, out: dict, source) -> Read:
+        """A flat map, decomposed along the lines somebody drew inside it."""
+        template, frame, parts = decompose(self.paths.LAYOUT, palette=self.t.MAP_PALETTE)
+        strips = sorted((p for p in parts if p.kind == "strip"),
+                        key=lambda p: p.v0 + p.v1)
+        discs = sorted((p for p in parts if p.kind == "disc"),
+                       key=lambda p: p.centre[0])
+
+        # Names are optional and checked, in that order. An empty table means "call
+        # them strip-1, disc-1 and get on with it", which is what makes the first
+        # run on a new map work: nobody knows how many parts a map has until it has
+        # been decomposed once, and a run that dies before printing them leaves the
+        # reader with nothing to name them from.
+        if not self.t.STRIPS and not self.t.DISCS:
+            names = ([f"strip-{i + 1}" for i in range(len(strips))]
+                     + [f"disc-{i + 1}" for i in range(len(discs))])
+        elif len(strips) != len(self.t.STRIPS) or len(discs) != len(self.t.DISCS):
+            raise SystemExit(
+                f"{self.paths.LAYOUT.name} decomposed into {len(strips)} strip(s) and "
+                f"{len(discs)} disc(s); self.t.STRIPS names {len(self.t.STRIPS)} and self.t.DISCS names "
+                f"{len(self.t.DISCS)}.\n"
+                + "".join(f"    {p!r}\n" for p in strips + discs)
+                + "Name them all in v order (strips) and u order (discs), or empty "
+                  "both tables to have them called strip-1, disc-1 and so on.")
+        else:
+            names = list(self.t.STRIPS) + list(self.t.DISCS)
+
+        named = dict(zip(names, strips + discs))
+        order = names
+
+        for name in [n for n in order if named[n].kind == "disc"]:
+            disc = named[name]
+            out.setdefault("discs", {})[name] = {
+                "centre": [round(disc.centre[0], 1), round(disc.centre[1], 1)],
+                "radius": round(disc.radius, 1),
+                "residual": round(disc.residual, 2),
+            }
+
+        # The drawn interior lines. `decompose` has already used them -- the parts
+        # are what is left when they are subtracted -- so these are recorded as
+        # corroboration and not as news, and to catch the case where the mapper drew
+        # a division the decomposition then failed to close into a part.
+        out["guides"] = [
+            {"along": g.along,
+             "u": [round(g.u0, 1), round(g.u1, 1)],
+             "v": [round(g.v0, 1), round(g.v1, 1)],
+             "mid_v": round((g.v0 + g.v1) / 2, 1),
+             "cells": g.mask.count()}
+            for g in guides(self.paths.LAYOUT, frame, palette=self.t.MAP_PALETTE)
+        ]
+        return Read(source, frame, named, order, mass=template)
+
+    def from_model(self, out: dict, source) -> Read:
+        """A 3D model or a capture, split at its roof steps.
+
+        The same reader for both, and `sources.py` is what remembers which one it
+        was. A model is authoritative for shape and a capture is not, and nothing in
+        the geometry says which arrived: that is a fact about where the file came
+        from, not about what is in it.
+        """
+        massing = model3d.read(source.path, up=self.t.MODEL_UP, scale=self.t.MODEL_SCALE)
+        names = list(self.t.MODEL_PARTS) or [f"part-{i + 1}"
+                                      for i in range(len(massing.parts))]
+        if len(names) != len(massing.parts):
+            raise SystemExit(
+                f"{source.path.name} split into {len(massing.parts)} parts and "
+                f"self.t.MODEL_PARTS names {len(names)}. Either name them all or leave the "
+                "table empty; a partial list would attach the wrong name to the "
+                "wrong part, which is worse than no name at all.\n  "
+                + "\n  ".join(massing.lines()))
+        out["guides"] = []
+        return Read(source, massing.frame, dict(zip(names, massing.parts)), names,
+                    mass=massing.mass, massing=massing)
+
+    def from_declared(self, out: dict, source) -> Read:
+        """A table somebody typed after reading the brief or an unscaled drawing."""
+        if not self.t.DECLARED_PLAN:
+            raise SystemExit(
+                f"the plan has to come from {source.kind.label}, and self.t.DECLARED_PLAN "
+                "in this file is empty.\n"
+                "Read the brief and the drawings, and write the parts down as "
+                "declared.Rect and declared.Round entries with the sentence or the "
+                "sheet each one came from. That is not a formality: a declared plan "
+                "is the only kind whose numbers cannot be re-derived later, so the "
+                "source is the only thing that makes them checkable at all.")
+        layout = declared.layout(self.t.DECLARED_PLAN, angle=self.t.PLAN_ANGLE)
+        out["guides"] = []
+        out["declared_plan"] = [
+            {"name": s.name, "source": s.source} for s in layout.shapes]
+        return Read(source, layout.frame, layout.parts, layout.order,
+                    mass=layout.mass)
+
+    def plan_of(self, out: dict | None = None) -> Read:
+        """The plan, whichever kind of input turned out to state it.
+
+        `build.py` calls this rather than reading a plan of its own, because the two
+        have to agree cell for cell. They used to each open the map, which worked
+        until the day one of them was given a model instead and the other went on
+        reading a map that was no longer the authority.
+        """
+        out = {} if out is None else out
+        by = sources.survey(self.paths).answers("plan")
+        if by is None:
+            raise SystemExit(sources.refuse(sources.survey(self.paths)) or
+                             "nothing states the plan")
+        if by.name == "vector":
+            return self.from_vector(out, by)
+        if by.name == "map":
+            return self.from_map(out, by)
+        if by.name in ("model", "capture"):
+            return self.from_model(out, by)
+        return self.from_declared(out, by)
+
+    def link_to(self, read: Read, reference, out: dict, record: bool = True) -> Link:
+        """Load the reference OBJ and work out how to address it.
+
+        Two cases, and the difference is whether the plan came out of this same
+        file. If it did, the plan's frame shifted into model coordinates addresses
+        the mesh exactly. If it did not, the two are independent fits and have to be
+        registered -- and a registration whose axes disagree is a fit that has
+        latched onto something that is not this building, which stops the run.
+
+        `record` off is for the second reference, when a project supplied both a
+        model and a capture: it is loaded to be asked the same questions, not to
+        take over the file's account of what the section was cut against.
+        """
+        note = out if record else {}
+        if read.massing is not None and reference.name == read.source.name:
+            mesh = model3d.load(reference.path, up=self.t.MODEL_UP, scale=self.t.MODEL_SCALE)
+            datum = read.massing.datum
+            note["mesh"] = {
+                "read": True,
+                "kind": reference.name,
+                "vertices": len(mesh),
+                "datum": round(datum, 2),
+                "top": round(max(mesh.y) - datum, 1),
+                "frame": {"origin": [round(v, 2)
+                                     for v in read.massing.model_frame.origin],
+                          "angle": round(read.massing.model_frame.angle, 2),
+                          "extent": [round(read.frame.extent_u, 1),
+                                     round(read.frame.extent_v, 1)]},
+            }
+            note["registration"] = {"needed": False,
+                                   "why": "the plan and the section come from the "
+                                          "same file, so they share one fit"}
+            return Link(mesh, read.massing.model_frame, datum, reference.name)
+
+        mesh = Mesh.read(reference.path)
+        datum = mesh.ground()
+        mesh_frame = mesh.frame(datum=datum, floor=self.t.MESH_FLOOR)
+        cloud = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
+
+        # Both sides of this registration have to describe the same thing, and the
+        # plan describes the *whole* building -- every part, however low. So the
+        # mesh is taken from a fixed height above the ground rather than from a
+        # fraction of its own top: a fraction throws away every part shorter than
+        # half the tallest one, and then a podium-and-tower registers its podium
+        # against nothing and reports scales that disagree by tens of per cent. The
+        # run then stops with a message about re-clipping, and re-clipping does not
+        # help, because the clip was never the problem.
+        #
+        # The floor still has to be above the ground: at grade the capture holds
+        # road, planting, parked cars and the neighbours. `self.t.REGISTER_FLOOR` is that
+        # height in metres, and it is a height and not a fraction on purpose.
+        u0, u1, v0, v1 = read.bounds()
+        high = cloud.above(self.t.REGISTER_FLOOR)
+        if not high:
+            raise SystemExit(
+                f"the reference has nothing above {self.t.REGISTER_FLOOR:.1f} m. Either "
+                "the datum is wrong or this clip is not of a building.")
+        reg = gate.Registration(
+            gate.extent([p[0] for p in high]), gate.extent([p[1] for p in high]),
+            (u0, u1), (v0, v1), self.t.REGISTER_FLOOR)
+
+        note["mesh"] = {
+            "read": True,
+            "kind": reference.name,
+            "vertices": len(mesh),
+            "datum": round(datum, 2),
+            "top": round(cloud.top(), 1),
+            "frame": {"origin": [round(v, 2) for v in mesh_frame.origin],
+                      "angle": round(mesh_frame.angle, 2),
+                      "extent": [round(mesh_frame.extent_u, 1),
+                                 round(mesh_frame.extent_v, 1)]},
+        }
+        note["registration"] = {
+            "needed": True,
+            "floor": self.t.REGISTER_FLOOR,
+            "u": {"mesh": [round(v, 1) for v in reg.mesh_u],
+                  "plan": [round(v, 1) for v in reg.build_u],
+                  "scale": round(reg.u_scale, 3)},
+            "v": {"mesh": [round(v, 1) for v in reg.mesh_v],
+                  "plan": [round(v, 1) for v in reg.build_v],
+                  "scale": round(reg.v_scale, 3)},
+            "disagreement": round(reg.disagreement, 3),
+            "agrees": reg.agrees(),
+        }
+        if not reg.agrees():
+            raise SystemExit(
+                "the reference and the plan do not register: " + reg.detail + ".\n"
+                "One axis fitting several per cent differently from the other means "
+                "the fit has latched onto something that is not this building -- a "
+                "neighbour inside the clip, a belt of trees, a datum from the wrong "
+                "capture. Every number below it would be measured in the wrong "
+                f"place, so nothing was written to {self.paths.DERIVED.name}.\n"
+                "Re-clip the capture tighter, or raise self.t.REGISTER_FLOOR until the "
+                "fit is made on building and not on landscaping -- knowing that "
+                "anything below the new floor stops being registered with it.")
+        return Link(mesh, mesh_frame, datum, reference.name, reg)
+
+    def storeys_of(self, out: dict, read: Read, link: Link | None) -> None:
+        """The storey rhythm: measured off the reference, or declared.
+
+        Measured first wherever there is anything to measure. A declaration that
+        overrides a real measurement is how a building ends up with the floor heights
+        somebody expected rather than the ones it has -- so the declaration is the
+        fallback, the measurement is reported either way, and the file says which one
+        the build will use.
+        """
+        parts = read.parts
+        u0, u1, v0, v1 = read.bounds()
+        body = (u0 + self.t.BODY[0] * (u1 - u0), u0 + self.t.BODY[1] * (u1 - u0))
+
+        measured = None
+        if link is not None:
+            strips = sorted(parts, key=lambda p: p.v0 + p.v1)
+            if len(strips) >= 2:
+                edges = ((strips[0].v1 - self.t.FACADE_INSET, strips[0].v1 + self.t.FACADE_INSET),
+                         (strips[-1].v0 - self.t.FACADE_INSET, strips[-1].v0 + self.t.FACADE_INSET))
+            else:
+                one = strips[0]
+                edges = ((one.v0 - self.t.FACADE_INSET, one.v0 + self.t.FACADE_INSET),
+                         (one.v1 - self.t.FACADE_INSET, one.v1 + self.t.FACADE_INSET))
+            found = measure.storey_height(
+                link.mesh, link.frame,
+                tuple((link.mv(a), link.mv(b)) for a, b in edges),
+                link.mu(body[0]), link.mu(body[1]), datum=link.datum,
+                step=self.t.STOREY_STEP, ceiling=self.t.STOREY_CEILING,
+                lo=self.t.STOREY_RANGE[0], hi=self.t.STOREY_RANGE[1])
+            measured = {
+                "by": link.kind,
+                "spacing": round(found.spacing, 2),
+                "score": round(found.score, 3),
+                "found": found.score >= self.t.STOREY_SCORE,
+                "levels": [round(v, 2) for v in found.levels],
+                "bands": [[round(a, 1), round(b, 1)] for a, b in edges],
+                "window": [round(body[0], 1), round(body[1], 1)],
+            }
+
+        if measured and measured["found"]:
+            out["storeys"] = measured
+        elif self.t.DECLARED_STOREY.get("spacing"):
+            if not self.t.DECLARED_STOREY.get("source"):
+                raise SystemExit("self.t.DECLARED_STOREY names no source")
+            spacing = float(self.t.DECLARED_STOREY["spacing"])
+            top = max((h["top"] for h in self.t.DECLARED_HEIGHTS.values()), default=0.0)
+            if link is not None:
+                top = max(top, out.get("mesh", {}).get("top", 0.0))
+            out["storeys"] = {
+                "by": "declared",
+                "spacing": spacing,
+                "score": 0.0,
+                "found": True,
+                "declared": True,
+                "source": self.t.DECLARED_STOREY["source"],
+                "levels": levels_from(spacing, top),
+                "measured": measured,
+            }
+        elif measured:
+            out["storeys"] = measured
+        else:
+            out["storeys"] = {
+                "by": "nothing", "spacing": 0.0, "score": 0.0, "found": False,
+                "levels": [], "why": "no reference to measure a rhythm off and no "
+                                     "self.t.DECLARED_STOREY to fall back on",
+            }
+        out["storeys"]["window"] = [round(body[0], 1), round(body[1], 1)]
+
+    def skyline_of(self, out: dict, read: Read, link: Link | None) -> None:
+        """How tall each part is: read over its own footprint, or declared.
+
+        Over its own footprint and not over one window for the whole building: where
+        a wing steps down, a single median splits the difference and is wrong at both
+        ends.
+        """
+        out["skyline"] = {}
+        if link is None:
+            for name in read.order:
+                entry = self.t.DECLARED_HEIGHTS.get(name)
+                if not entry:
+                    raise SystemExit(
+                        f"nothing states how tall {name!r} is. There is no model "
+                        "and no capture, so no height can be measured, and "
+                        f"self.t.DECLARED_HEIGHTS has no entry for {name!r}.\n"
+                        "Add one, with the sentence or the sheet it came from.")
+                if not entry.get("source"):
+                    raise SystemExit(f"the declared height of {name!r} names no "
+                                     "source")
+                out["skyline"][name] = {"stations": 0, "declared": True,
+                                        "median": float(entry["top"]),
+                                        "source": entry["source"]}
+            return
+
+        # Each part is read over its own *mask*, not over its bounding box. A box is
+        # right for two parallel strips and wrong for everything else: an L-shaped
+        # wing's box covers the court it wraps around, and a part whose box overlaps
+        # its neighbour's reads the neighbour's roof. The height of a part is the
+        # number the whole build stands on, and nothing downstream can catch it
+        # being wrong -- the section compares the same thing.
+        #
+        # One pass over the reference and not one per part. Mapping a vertex to the
+        # part it stands over is the expensive step, and on a capture with a million
+        # vertices doing it five times is five times the wait.
+        owner: dict[tuple[int, int], str] = {}
+        for name in read.order:
+            for cell in read.named[name].mask.cells():
+                owner[cell] = name
+
+        tops: dict[str, dict[int, float]] = {name: {} for name in read.order}
+        between: dict[int, float] = {}
+        mesh = link.mesh
+        for i in range(len(mesh)):
+            u, v = link.frame.to_local(mesh.x[i], mesh.z[i])
+            bv = link.to_build_v(v)
+            x, z = read.frame.to_world(link.to_build_u(u), bv)
+            height = mesh.y[i] - link.datum
+            name = owner.get((int(x), int(z)))
+            station = int(bv)
+            if name is None:
+                if height > between.get(station, -1e9):
+                    between[station] = height
+                continue
+            if height > tops[name].get(station, -1e9):
+                tops[name][station] = height
+
+        def plateau(reading: dict[int, float]) -> dict:
+            got = sorted(reading.values())
+            if not got:
+                return {"stations": 0}
+            return {"stations": len(got),
+                    "low": round(got[0], 1),
+                    "median": round(got[len(got) // 2], 1),
+                    "high": round(got[-1], 1)}
+
+        for name in read.order:
+            out["skyline"][name] = plateau(tops[name])
+            # A part the reference has nothing over is a fact worth stopping on when
+            # it is the whole building and worth recording when it is one wing: a
+            # capture that never modelled a wing cannot grade it either.
+            declared_top = self.t.DECLARED_HEIGHTS.get(name)
+            if not out["skyline"][name]["stations"] and declared_top:
+                out["skyline"][name] = {"stations": 0, "declared": True,
+                                        "median": float(declared_top["top"]),
+                                        "source": declared_top["source"]}
+
+        # The gaps between parts, which are courts, streets or light wells, and
+        # which a skyline reports as whatever stands over them. A court that reads
+        # as tall as its wings is a capture that fused a tree to a facade, or a wing
+        # that is not where the plan says it is.
+        across = sorted(read.order, key=lambda n: read.named[n].v0)
+        for near, far in zip(across, across[1:]):
+            a, b = read.named[near].v1, read.named[far].v0
+            if b - a < 1.0:
+                continue
+            out["skyline"][f"{near}..{far}"] = plateau(
+                {k: h for k, h in between.items() if a <= k + 0.5 < b})
+
+    def tops_from(self, read: Read, link: Link) -> dict[str, float]:
+        """The median height over each part, read off one reference.
+
+        The same measurement `skyline_of` makes, factored out so that a second
+        reference can be asked the same question and the two answers compared.
+        """
+        owner: dict[tuple[int, int], str] = {}
+        for name in read.order:
+            for cell in read.named[name].mask.cells():
+                owner[cell] = name
+
+        tops: dict[str, dict[int, float]] = {name: {} for name in read.order}
+        mesh = link.mesh
+        for i in range(len(mesh)):
+            u, v = link.frame.to_local(mesh.x[i], mesh.z[i])
+            bv = link.to_build_v(v)
+            x, z = read.frame.to_world(link.to_build_u(u), bv)
+            name = owner.get((int(x), int(z)))
+            if name is None:
+                continue
+            height = mesh.y[i] - link.datum
+            station = int(bv)
+            if height > tops[name].get(station, -1e9):
+                tops[name][station] = height
+
+        out = {}
+        for name, reading in tops.items():
+            got = sorted(reading.values())
+            if got:
+                out[name] = got[len(got) // 2]
+        return out
+
+    def witnesses_of(self, out: dict, evidence, read: Read, link: Link | None) -> None:
+        """Ask every held-out source the questions it could have answered.
+
+        This is the rule of the whole pipeline turned into rows that can fail. Where
+        two supplied inputs can both answer the same question, both answer it, and
+        the difference is written down with a tolerance beside it.
+
+        What it catches is a class of fault no section can reach, because a section
+        compares the build to *one* reference and these faults are in the reference:
+        a map crop rescaled before it was cropped, a capture of the building next
+        door, a model of a later revision than the photographs, a drawing read at
+        the wrong scale.
+        """
+        found: list[witnesses.Agreement] = []
+        by = read.source.name
+
+        # The plan against the reference: how big, and which way round. Both come
+        # free with the registration that has already been fitted, and both were
+        # being thrown away.
+        reg = out.get("registration", {})
+        if reg.get("needed") and link is not None:
+            u0, u1, v0, v1 = read.bounds()
+            found.append(witnesses.size(
+                u1 - u0, v1 - v0,
+                reg["u"]["mesh"][1] - reg["u"]["mesh"][0],
+                reg["v"]["mesh"][1] - reg["v"]["mesh"][0],
+                by, link.kind))
+            found.append(witnesses.bearing(
+                read.frame.angle, link.frame.angle, by, link.kind))
+
+        # A second OBJ, if one was supplied: the same parts, read off both.
+        others = [s for s in evidence.sources
+                  if s.name in ("model", "capture")
+                  and (link is None or s.name != link.kind)]
+        if link is not None and others:
+            second = self.link_to(read, others[0], out, record=False)
+            found.append(witnesses.heights(
+                self.tops_from(read, link), self.tops_from(read, second),
+                link.kind, second.kind))
+
+        # A storey height that was both measured and declared. `storeys_of` keeps
+        # the measurement beside the declaration precisely so this can be asked.
+        section = out.get("storeys", {})
+        if section.get("by") == "declared" and section.get("measured"):
+            measured = section["measured"]
+            if measured.get("found"):
+                found.append(witnesses.storey(
+                    measured["spacing"], section["spacing"],
+                    measured["by"], "declared"))
+
+        # Two plans of the same building: the one that was used, and one held back.
+        # Compared after both are put in their own frames' (u, v), so this measures
+        # shape and proportion and not where either of them thinks the building is.
+        held = evidence.witnesses_for("plan")
+        if held and any(s.name == "map" for s in held) and read.source.name != "map":
+            try:
+                other_mass, other_frame, _ = decompose(self.paths.LAYOUT,
+                                                       palette=self.t.MAP_PALETTE)
+            except SystemExit:
+                other_mass = None
+            if other_mass is not None:
+                same = read.mass.empty_like()
+                for x, z in other_mass.cells():
+                    u, v = other_frame.to_local(x + 0.5, z + 0.5)
+                    wx, wz = read.frame.to_world(u, v)
+                    same.set(int(wx), int(wz))
+                found.append(witnesses.overlap(
+                    iou(read.mass, same), by, "map"))
+
+        out["witnesses"] = [one.report() for one in found]
+        out["witness_lines"] = witnesses.lines(found)
+
+    def notches_of(self, out: dict, read: Read) -> None:
+        """The notch pitch on the long edge, where there is a measured edge at all.
+
+        Skipped on a declared plan, and not because it would crash: it would return
+        a confident number measured off a rectangle this file drew itself. The map
+        and the model have edges somebody else made; a declared plan has only the
+        edges it was given.
+        """
+        if read.source.name not in ("map", "model", "capture"):
+            out["notch"] = {"measured": False,
+                            "why": f"the plan is declared from "
+                                   f"{read.source.kind.name}, so its edges are as "
+                                   "straight as they were typed"}
+            return
+
+        step = out["frame"]["staircase"]
+        edge = max(read.parts, key=lambda p: p.u1 - p.u0)
+        profile = measure.edge_profile(edge.mask, read.frame, self.t.PROFILE_BIN)
+        series = measure.detrend(
+            measure.median_filter(profile.trim(self.t.PROFILE_TRIM).series("high"),
+                                  half=int(step / self.t.PROFILE_BIN) + 1),
+            half=int(20.0 / self.t.PROFILE_BIN))
+        notch = measure.period(series, self.t.PROFILE_BIN,
+                               lo=step * measure.STAIRCASE_MARGIN,
+                               hi=self.t.NOTCH_RANGE_HI)
+        out["notch"] = {
+            "measured": True,
+            "pitch": round(notch.value, 1),
+            "score": round(notch.score, 3),
+            "next": [[round(p, 1), round(r, 3)] for p, r in notch.peaks[1:4]],
+            "searched": [round(step * measure.STAIRCASE_MARGIN, 2), self.t.NOTCH_RANGE_HI],
+            "read_off": read.order[read.parts.index(edge)],
+        }
+
+    def declarations_of(self, out: dict, read: Read) -> None:
+        """The photograph-read facts, and what follows from them.
+
+        The count is declared; the pitch it implies is measured, and the plan's own
+        notches are asked whether they land on the same pitch. A declaration that
+        nothing corroborates is still used -- photographs are the reference for which
+        parts exist -- but the report says so, which is the point.
+        """
+        out["declared"] = {}
+        notch = out.get("notch", {})
+        for key, entry in self.t.DECLARED.items():
+            record = dict(entry)
+            if "source" not in record:
+                raise SystemExit(
+                    f"declaration {key!r} names no photograph. A declared number is "
+                    "only as good as the reference it was read off, and one with no "
+                    "source cannot be checked, argued with, or re-read later.")
+            pitches = {}
+            for name in read.order:
+                count = record.get(name)
+                if isinstance(count, int) and count > 0:
+                    part = read.named[name]
+                    pitches[name] = round((part.u1 - part.u0) / count, 1)
+            if pitches:
+                record["pitch"] = pitches
+                spread = max(pitches.values()) - min(pitches.values())
+                record["agree"] = spread < 1.0
+                record["corroborated"] = [
+                    name for name, pitch in pitches.items()
+                    if notch.get("pitch")
+                    and abs(pitch - notch["pitch"]) <= 2 * self.t.PROFILE_BIN
+                ]
+            out["declared"][key] = record
+
+    def main(self) -> dict:
+        out: dict = {}
+
+        self.unconverted()
+        evidence = sources.survey(self.paths)
+        stop = sources.refuse(evidence)
+        if stop:
+            raise SystemExit("nothing to measure: " + stop)
+        out["evidence"] = evidence.to_json()
+
+        # -- the plan -----------------------------------------------------------
+
+        by = evidence.answers("plan")
+        read = self.plan_of(out)
+
+        # Two facts about the plan, and they are not the same fact, so both are
+        # written down and neither is inferred from the other:
+        #
+        #   `how`     how the numbers got here. `read` is machine-read off a file;
+        #             `typed` is a person reading a sheet or a sentence and writing
+        #             it down, which no re-run will re-derive.
+        #   `weight`  what the evidence model thinks that source is worth on the
+        #             question of the plan -- 2 measured, 1 declared.
+        #
+        # A capture is `read` and weight 1: photogrammetry draws a fuzzy outline,
+        # machine-read or not. A scaled drawing is `typed` and weight 2: real metres,
+        # arrived by hand. Collapsing the two into one word is what made an earlier
+        # version of this file call a typed plan "measured" in one field and
+        # "declared" in another, in the same JSON.
+        step = measure.staircase(read.frame)
+        out["plan"] = {
+            "by": by.name,
+            "how": "read" if by.name in ("vector", "map", "model", "capture")
+               else "typed",
+            "weight": by.weight("plan"),
+            "measured": by.metric("plan"),
+        }
+        out["frame"] = {
+            "origin": [round(v, 2) for v in read.frame.origin],
+            "angle": round(read.frame.angle, 2),
+            "extent": [round(read.frame.extent_u, 1), round(read.frame.extent_v, 1)],
+            "staircase": round(step, 3),
+        }
+        out["parts"] = [
+            {"name": name, "kind": read.named[name].kind,
+             "u": [round(read.named[name].u0, 1), round(read.named[name].u1, 1)],
+             "v": [round(read.named[name].v0, 1), round(read.named[name].v1, 1)],
+             "cells": read.named[name].mask.count()}
+            for name in read.order
+        ]
+
+        self.notches_of(out, read)
+        self.declarations_of(out, read)
+
+        # -- the section --------------------------------------------------------
+
+        reference = evidence.reference
+        if reference is None:
+            out["mesh"] = {"read": False,
+                           "why": "no model and no capture; the section is declared"}
+        link = self.link_to(read, reference, out) if reference is not None else None
+
+        self.storeys_of(out, read, link)
+        self.skyline_of(out, read, link)
+        self.witnesses_of(out, evidence, read, link)
+
+        # The building's own windows into the reference, if it opened any.
+        # Everything above is true of any building; what a probe adds is the
+        # part only this one needs. It is handed the same three things the
+        # apparatus works with, and whatever it writes into `out` lands in
+        # derived.json beside the rest.
+        if self.probes is not None:
+            self.probes(out, read, link)
+
+        self.paths.DERIVED.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.DERIVED.write_text(json.dumps(out, indent=1), encoding="utf-8")
+        return out
+
+    def report(self, out: dict) -> list[str]:
+        e = out["evidence"]
+        lines = [f"evidence: {e['tier']}"]
+        for question, answer in e["answers"].items():
+            if answer["by"] is None:
+                lines.append(f"  {question:9s} nothing answers it")
+                continue
+            lines.append(
+                f"  {question:9s} {answer['how']:8s} from {answer['by']}"
+                + (", checked against " + ", ".join(answer["witnesses"])
+                   if answer["witnesses"] else ", nothing to check it against"))
+        lines.append("")
+
+        f = out["frame"]
+        lines += [
+            f"plan {out['plan']['how']} from {out['plan']['by']}"
+            + ("" if out["plan"]["measured"] else " -- a declaration, not a survey")
+            + ("  -- photogrammetry draws a fuzzy outline; treat every plan "
+               "dimension as good to a metre or two"
+               if out["plan"]["by"] == "capture" else ""),
+            f"frame  origin ({f['origin'][0]}, {f['origin'][1]})  "
+            f"{f['angle']} deg  {f['extent'][0]} x {f['extent'][1]} m  "
+            f"staircase {f['staircase']}",
+            "",
+            "the parts",
+        ]
+        for p in out["parts"]:
+            lines.append(f"  {p['name']:12s} {p['kind']:5s} "
+                         f"u {p['u'][0]:6.1f}..{p['u'][1]:6.1f}  "
+                         f"v {p['v'][0]:5.1f}..{p['v'][1]:5.1f}  "
+                         f"{p['cells']:5d} cells")
+        for name, d in out.get("discs", {}).items():
+            lines.append(f"  {name} fitted at ({d['centre'][0]}, {d['centre'][1]}), "
+                         f"r {d['radius']} m, residual {d['residual']} m")
+
+        if out.get("guides"):
+            lines += ["", "the interior drawn lines, which the parts were cut on"]
+            for g in out["guides"]:
+                lines.append(f"  along {g['along']}  v {g['mid_v']:5.1f}  "
+                             f"u {g['u'][0]:6.1f}..{g['u'][1]:6.1f}  "
+                             f"{g['cells']:4d} cells")
+
+        n = out["notch"]
+        if n.get("measured"):
+            lines += ["", f"notches on the long edge: {n['pitch']} m "
+                          f"(r={n['score']:+.2f}), searched "
+                          f"{n['searched'][0]}..{n['searched'][1]} m"]
+            if n["next"]:
+                lines.append("  then " + ", ".join(f"{p} m r={r:+.2f}"
+                                                   for p, r in n["next"]))
+        for key, d in out.get("declared", {}).items():
+            lines.append(f"{key}: declared from {d['source']}")
+            if "pitch" in d:
+                lines.append("  centres " + ", ".join(
+                    f"{name} {pitch} m" for name, pitch in d["pitch"].items())
+                    + " -- " + ("they agree" if d["agree"] else "THEY DISAGREE"))
+                if n.get("measured"):
+                    lines.append(
+                        f"  the notch pitch of {n['pitch']} m "
+                        + (f"corroborates {', '.join(d['corroborated'])}"
+                           if d["corroborated"]
+                           else "matches nothing here, so it reads as a facade "
+                                "sub-bay"))
+
+        m = out.get("mesh", {})
+        if m.get("read"):
+            lines += [
+                "",
+                f"{m['kind']}: {m['vertices']} vertices, ground at {m['datum']} m, "
+                f"top {m['top']} m above it",
+                f"  its own frame {m['frame']['angle']} deg, "
+                f"{m['frame']['extent'][0]} x {m['frame']['extent'][1]} m",
+            ]
+        r = out.get("registration", {})
+        if r.get("needed"):
+            lines += [
+                f"  registered on material above {r['floor']} m: "
+                f"u scale {r['u']['scale']}, v scale {r['v']['scale']}, "
+                f"differ by {r['disagreement']}"
+                + ("" if r["agrees"] else "  <-- DOES NOT REGISTER"),
+                f"    u  mesh {r['u']['mesh'][0]}..{r['u']['mesh'][1]} "
+                f"-> plan {r['u']['plan'][0]}..{r['u']['plan'][1]}",
+                f"    v  mesh {r['v']['mesh'][0]}..{r['v']['mesh'][1]} "
+                f"-> plan {r['v']['plan'][0]}..{r['v']['plan'][1]}",
+            ]
+        elif r:
+            lines.append("  " + r["why"])
+
+        s = out["storeys"]
+        if s["by"] == "declared":
+            lines += ["", f"storey height {s['spacing']} m, declared from "
+                          f"{s['source']}",
+                      "  floors at " + ", ".join(f"{v:.2f}" for v in s["levels"])]
+            if s.get("measured"):
+                lines.append(f"  the reference was searched first and returned "
+                             f"{s['measured']['spacing']} m at "
+                             f"r={s['measured']['score']:+.2f}, which is noise")
+        elif s["by"] == "nothing":
+            lines += ["", "storey height: " + s["why"]]
+        else:
+            lines += [
+                "",
+                f"storey height {s['spacing']} m (r={s['score']:+.2f}) over the "
+                f"modelled facades, u {s['window'][0]}..{s['window'][1]}",
+                "  floors at " + ", ".join(f"{v:.2f}" for v in s["levels"]),
+            ]
+            if not s["found"]:
+                lines.append(
+                    "  NOT FOUND -- that correlation is noise, and the spacing "
+                    "above is the peak of it. Move the bands onto a facade the "
+                    "reference actually modelled, or set self.t.DECLARED_STOREY.")
+
+        if out.get("witness_lines"):
+            lines += [""] + out["witness_lines"]
+
+        lines += ["", "skyline"]
+        for name, p in out["skyline"].items():
+            if p.get("declared"):
+                lines.append(f"  {name:15s} {p['median']:5.1f} m declared from "
+                             f"{p['source']}")
+            elif p["stations"]:
+                lines.append(f"  {name:15s} {p['low']:5.1f} .. {p['median']:5.1f} "
+                             f".. {p['high']:5.1f} m over {p['stations']} stations")
+            else:
+                lines.append(f"  {name:15s} nothing over it in the reference")
+        for name, d in out.get("discs", {}).items():
+            if d.get("mesh_top") is not None:
+                lines.append(f"  {name:15s} the reference closes it at "
+                             f"{d['mesh_top']} m")
+        return lines
+
+
+__all__ = ["DEFAULTS", "Link", "Read", "Survey", "Tables"]

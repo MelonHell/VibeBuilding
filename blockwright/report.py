@@ -1,0 +1,179 @@
+"""The run, written down where something other than a person can read it.
+
+The July 2026 review found six defects by eye and the harness found none of
+them. Three reasons were given, and the third was that a fault **cannot be
+named**: the pipeline's whole account of itself was console output, which exists
+until the terminal scrolls. A defect with no name cannot be tracked between runs,
+cannot be counted, cannot be shown to have been fixed, and cannot be handed to
+anything that did not watch it happen.
+
+So every run writes one JSON file holding every number it produced: each check
+with its verdict, every station a section disagreed on, the schedule audit, the
+block counts, the strays, the free ends, the silhouette overlaps. Nothing
+summarised away, because the summary is what the console was already good at.
+
+This is deliberately not a grader. It records what the gate decided; it does not
+decide anything itself. The one thing it adds is a flat list of defects pulled
+out of the various structures, so that "what is wrong with this build" is a
+question with one answer in one place rather than a walk through four objects.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+class Defect:
+    """One thing wrong, named so it can be followed between runs."""
+
+    __slots__ = ("kind", "where", "detail", "severity")
+
+    def __init__(self, kind: str, where: str, detail: str,
+                 severity: str = "fail"):
+        self.kind = kind            # check | section | schedule | structure
+        self.where = where          # the name it goes by
+        self.detail = detail
+        self.severity = severity    # fail | watch | ungraded
+
+    def as_dict(self) -> dict:
+        return {"kind": self.kind, "where": self.where,
+                "detail": self.detail, "severity": self.severity}
+
+    def __repr__(self) -> str:
+        return f"<{self.severity} {self.kind} {self.where}: {self.detail}>"
+
+
+def defects(gate, sections=(), finished=None, findings=None,
+            frame=None) -> list[Defect]:
+    """Every fault the run turned up, flattened out of wherever it was found.
+
+    A failing check and a station the section could not grade are the same fact
+    at two resolutions, and both are kept: the check is what fails the build, the
+    stations are what would have to be looked at to fix it.
+    """
+    out: list[Defect] = []
+
+    for check in gate.failures:
+        out.append(Defect("check", check.name, check.detail))
+
+    # Questions nothing could answer are recorded as defects of the evidence,
+    # not of the build. They are the difference between "this stood up to what
+    # we had" and "this stood up", and a report that dropped them would let the
+    # second be read off a run that only earned the first.
+    for check in gate.unanswered:
+        out.append(Defect("ungraded", check.name, check.detail, "ungraded"))
+
+    for section in sections:
+        for station in section.stations:
+            if station.state == "ok" or station.state == "exempt":
+                continue
+            if station.build is None:
+                detail = (f"the mesh has {station.mesh:.1f} m here and nothing "
+                          "is built")
+            else:
+                detail = (f"built {station.build:.1f} m against the mesh's "
+                          f"{station.mesh:.1f} m, {station.diff:+.1f} m")
+            out.append(Defect(
+                "section", f"{section.name} at v {station.v:.0f}", detail,
+                "fail" if section.ok is False else "watch"))
+        for exemption in section.exemptions:
+            if not section.hits[exemption.name]:
+                out.append(Defect(
+                    "section", f"{section.name} exemption {exemption.name}",
+                    "covers nothing this run -- the geometry it was written "
+                    f"about has moved ({exemption.why})", "watch"))
+
+    if finished is not None:
+        for name, what in finished.undeclared:
+            out.append(Defect("schedule", name,
+                              f"nothing in the build claims to place it: {what}"))
+        for note in finished.notes:
+            out.append(Defect("check", "finish", note, "watch"))
+
+    if findings is not None:
+        for group in findings.strays:
+            x, y, z = group.where()
+            span = ""
+            if frame is not None:
+                u0, u1 = group.span(frame)
+                span = f", u {u0:.0f}..{u1:.0f}"
+            out.append(Defect(
+                "structure", f"stray at ({x}, {y}, {z})",
+                f"{group.count} blocks, y {group.y0}..{group.y1}{span}",
+                "fail" if group.y0 > 0 else "watch"))
+        for block in findings.unknown:
+            out.append(Defect("structure", block,
+                              "nothing knows what colour to draw it"))
+
+    return out
+
+
+def write(path, building: str, gate, sections=(), finished=None,
+          findings=None, frame=None, registration=None, schedule=(),
+          **extra) -> dict:
+    """Write `out/report.json` and return what was written.
+
+    `schedule` is the audit rows -- (name, ok, detail) -- which the gate has
+    usually already taken; they are repeated here whole rather than only where
+    they failed, because "this part is built and is 214 cells" is the number that
+    makes the next run's change visible.
+    """
+    found = defects(gate, sections, finished, findings, frame)
+    doc = {
+        "building": building,
+        "when": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ok": gate.ok,
+        "verdict": gate.verdict,
+        "checks": gate.report(),
+        "defects": [d.as_dict() for d in found],
+        "sections": [s.report() for s in sections],
+        "schedule": [{"name": n, "ok": ok, "detail": d} for n, ok, d in schedule],
+    }
+    if registration is not None:
+        doc["registration"] = {
+            "ceiling": round(registration.ceiling, 2),
+            "u_scale": round(registration.u_scale, 4),
+            "v_scale": round(registration.v_scale, 4),
+            "mesh_u": [round(v, 1) for v in registration.mesh_u],
+            "mesh_v": [round(v, 1) for v in registration.mesh_v],
+            "build_u": [round(v, 1) for v in registration.build_u],
+            "build_v": [round(v, 1) for v in registration.build_v],
+        }
+    if finished is not None:
+        doc["build"] = finished.report()
+    if findings is not None:
+        doc["structure"] = {
+            "pieces": len(findings.pieces),
+            "largest": findings.pieces[0].count if findings.pieces else 0,
+            "strays": len(findings.strays),
+            "stray_blocks": sum(g.count for g in findings.strays),
+            "floating": len(findings.adrift),
+            "free_ends": len(findings.ends),
+            "unknown": list(findings.unknown),
+            "layers": {str(y): len(parts)
+                       for y, parts in sorted(findings.layers.items())},
+        }
+    doc.update(extra)
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    return doc
+
+
+def lines(doc: dict, limit: int = 12) -> list[str]:
+    """The report as a handful of lines, for the end of a console run."""
+    verdict = doc.get("verdict", "pass" if doc["ok"] else "fail")
+    out = [f"{doc['building']}: {verdict.upper() if verdict != 'pass' else 'pass'}"
+           f", {len(doc['defects'])} defect(s) recorded"]
+    for entry in doc["defects"][:limit]:
+        out.append(f"  {entry['severity']:5s} {entry['kind']:9s} "
+                   f"{entry['where']}: {entry['detail']}")
+    if len(doc["defects"]) > limit:
+        out.append(f"  ... and {len(doc['defects']) - limit} more")
+    return out
+
+
+__all__ = ["Defect", "defects", "lines", "write"]
