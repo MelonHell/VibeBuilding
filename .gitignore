@@ -1,4 +1,4 @@
-*/__pycache__/
+**/__pycache__/
 
 # Buildings are not part of the project: each is its own inputs, its own recipe
 # and its own results, and they come and go. The skeleton they start from is,
