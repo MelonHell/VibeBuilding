@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from blockwright import fast                       # noqa: E402
+from blockwright.frame import Frame                # noqa: E402
 from blockwright.mask import Mask                  # noqa: E402
 
 SIZES = ((1, 1), (3, 7), (16, 16), (37, 23), (64, 65))
@@ -89,6 +90,39 @@ def main() -> int:
                 print(f"[mask] FAIL: invert on {width}x{length} differs")
                 return 1
             checked += 2
+
+    # The rasterisers, which is a stiffer test than the boolean ops: they do
+    # floating-point arithmetic per cell, at an arbitrary angle, and a fast path
+    # that reassociated one multiply-add would put a cell on the wrong side of a
+    # wall roughly once in a very large number of cells -- which is exactly the
+    # kind of difference nobody would ever trace back to here.
+    for _ in range(ROUNDS * 4):
+        width = rng.randint(1, 64)
+        length = rng.randint(1, 64)
+        frame = Frame((rng.uniform(-40, 40), rng.uniform(-40, 40)),
+                      rng.uniform(0.0, 360.0))
+        u0 = rng.uniform(-30, 30)
+        v0 = rng.uniform(-30, 30)
+        u1, v1 = u0 + rng.uniform(0, 50), v0 + rng.uniform(0, 50)
+        want = frame.region(width, length,
+                            lambda u, v: u0 <= u < u1 and v0 <= v < v1)
+        if frame.rect(width, length, u0, u1, v0, v1).bits != want.bits:
+            print(f"[mask] FAIL: rect on {width}x{length} at "
+                  f"{frame.angle:.2f} deg differs from the predicate")
+            return 1
+
+        cu, cv = rng.uniform(-20, 20), rng.uniform(-20, 20)
+        radius = rng.uniform(0, 30)
+        inner = rng.uniform(0, radius)
+        outer2, inner2 = radius * radius, inner * inner
+        want = frame.region(
+            width, length,
+            lambda u, v: inner2 <= (u - cu) ** 2 + (v - cv) ** 2 < outer2)
+        if frame.disc(width, length, cu, cv, radius, inner).bits != want.bits:
+            print(f"[mask] FAIL: disc on {width}x{length} at "
+                  f"{frame.angle:.2f} deg differs from the predicate")
+            return 1
+        checked += 2
 
     print(f"[mask] {checked} comparisons over {len(SIZES)} shapes: the fast "
           "path and the plain path are identical")

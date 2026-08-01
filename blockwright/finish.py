@@ -20,6 +20,8 @@ wrote, so the deciding stays in the recipe and the grading stays in the gate.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from .mask import Mask
@@ -131,6 +133,23 @@ LAYOUT_BLOCKS = ("minecraft:light_gray_concrete",
                  "minecraft:light_gray_concrete_powder")
 
 
+def quickly() -> bool:
+    """Whether this run should skip everything only a person reads.
+
+    Read off `--quick` in the command line or `BLOCKWRIGHT_QUICK` in the
+    environment rather than taken as an argument, and deliberately: a building's
+    `build.py` is written once and buildings are not part of this project, so a
+    flag that had to be threaded through every recipe would reach the ones
+    written after it and none of the ones written before.
+
+    What it turns off is the renders, the plan cuts and the comparison sheets --
+    on a real building most of the run, and none of it read by the gate. What it
+    never turns off is the schematic and the schedule, because those are what
+    the next stage grades.
+    """
+    return "--quick" in sys.argv or os.environ.get("BLOCKWRIGHT_QUICK") == "1"
+
+
 def finish(canvas, out, frame, *, template: Mask | None = None,
            layout=None, layout_blocks=LAYOUT_BLOCKS, schedule=None,
            name: str = "massing", scale: float = 6.0, orthos=None,
@@ -149,6 +168,7 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     done = Finished()
+    quick = quickly()
 
     done.joined = canvas.finalize()
 
@@ -172,6 +192,19 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
 
     done.blocks = canvas.block_count()
     done.counts = canvas.counts()
+
+    if quick:
+        # Everything above this line is what the gate reads. Everything below it
+        # is for a person to look at, costs most of the run, and is worth
+        # nothing during a round of "move the number and see which stations go
+        # green". Skipped by name rather than silently, because a stale render
+        # that nobody knows is stale is worse than no render.
+        done.notes.append(
+            "quick run: no renders, no plans, no comparison sheets. The "
+            "schematic and the schedule are current; everything in views/ and "
+            "compare/ is from an earlier run. Re-run without --quick before "
+            "looking at anything.")
+        return done
 
     done.plans[f"{name}_plan"] = out / f"{name}_plan.png"
     canvas.silhouette().to_png(done.plans[f"{name}_plan"], scale=2)

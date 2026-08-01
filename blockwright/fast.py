@@ -84,6 +84,43 @@ def layer(blocks, palette_ids: set[int], base: int, area: int):
     return bytearray(keep[slab].astype(_np.uint8).tobytes())
 
 
+def _local(width: int, length: int, origin, cos: float, sin: float):
+    """(u, v) at the centre of every cell, as two `length` x `width` grids.
+
+    The same arithmetic `Frame.to_local` does, in the same order, so the two
+    agree to the bit: `dx * cos + dz * sin` is one multiply-add either way, and
+    numpy does not reassociate it.
+    """
+    dx = _np.arange(width, dtype=_np.float64) + 0.5 - origin[0]
+    dz = _np.arange(length, dtype=_np.float64) + 0.5 - origin[1]
+    u = dx[None, :] * cos + dz[:, None] * sin
+    v = -dx[None, :] * sin + dz[:, None] * cos
+    return u, v
+
+
+def rect(width: int, length: int, origin, cos: float, sin: float,
+         u0: float, u1: float, v0: float, v1: float):
+    """A rectangle in the building's frame, rasterised by the centre rule.
+
+    `Frame.region` asks a predicate about 14 million cell centres on a building
+    of any size, and a rectangle is what it is asked about nine times in ten:
+    every footprint, every wall band, every floor plate. Answering all of them
+    at once is the single largest saving numpy buys here.
+    """
+    u, v = _local(width, length, origin, cos, sin)
+    hit = (u >= u0) & (u < u1) & (v >= v0) & (v < v1)
+    return bytearray(hit.astype(_np.uint8).tobytes())
+
+
+def disc(width: int, length: int, origin, cos: float, sin: float,
+         cu: float, cv: float, outer2: float, inner2: float):
+    """A circle or an annulus, by the same rule and the same squared radii."""
+    u, v = _local(width, length, origin, cos, sin)
+    d = (u - cu) ** 2 + (v - cv) ** 2
+    hit = (d >= inner2) & (d < outer2)
+    return bytearray(hit.astype(_np.uint8).tobytes())
+
+
 def occupancy(blocks, keep: set[int], width: int, length: int, height: int):
     """Per-cell bitmaps of which layers hold wanted material.
 
@@ -109,4 +146,5 @@ def occupancy(blocks, keep: set[int], width: int, length: int, height: int):
     return out
 
 
-__all__ = ["HAVE", "array", "combine", "count", "invert", "layer", "occupancy"]
+__all__ = ["HAVE", "array", "combine", "count", "disc", "invert", "layer",
+           "occupancy", "rect"]

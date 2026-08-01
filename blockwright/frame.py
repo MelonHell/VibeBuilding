@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import math
 
+from . import fast
+
 
 def convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Andrew's monotone chain, counter-clockwise, without collinear points."""
@@ -202,7 +204,19 @@ class Frame:
 
     def rect(self, width: int, length: int,
              u0: float, u1: float, v0: float, v1: float):
-        """The common case of `region`: a rectangle in the building's frame."""
+        """The common case of `region`: a rectangle in the building's frame.
+
+        Nine calls in ten to `region` are this one -- every footprint, every
+        wall band, every floor plate -- so it has a fast path rather than going
+        through a Python predicate per cell. The two agree bit for bit and
+        `tools/mask_selftest.py` will not pass unless they do.
+        """
+        from .mask import Mask
+
+        if fast.HAVE:
+            return Mask(width, length,
+                        fast.rect(width, length, self.origin, self._cos,
+                                  self._sin, u0, u1, v0, v1))
         return self.region(
             width, length,
             lambda u, v: u0 <= u < u1 and v0 <= v < v1,
@@ -216,7 +230,13 @@ class Frame:
         any angle and at any radius -- a circle drawn on the map is a circle in
         the build, not a polygon inherited from the map's own pixels.
         """
+        from .mask import Mask
+
         outer2, inner2 = radius * radius, inner * inner
+        if fast.HAVE:
+            return Mask(width, length,
+                        fast.disc(width, length, self.origin, self._cos,
+                                  self._sin, cu, cv, outer2, inner2))
         return self.region(
             width, length,
             lambda u, v: inner2 <= (u - cu) ** 2 + (v - cv) ** 2 < outer2,
