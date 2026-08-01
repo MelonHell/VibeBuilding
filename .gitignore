@@ -1,5 +1,14 @@
 */__pycache__/
 
-buildings/
+# Buildings are not part of the project: each is its own inputs, its own recipe
+# and its own results, and they come and go. The skeleton they start from is,
+# so it is the one thing under here that is versioned.
+#
+# `buildings/*` rather than `buildings/`, because git does not look inside an
+# ignored directory and the exception below would never be reached.
+buildings/*
+!buildings/__init__.py
+!buildings/_template/
+
 tmp/
 .claude/settings.json
