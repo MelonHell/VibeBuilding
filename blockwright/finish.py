@@ -39,7 +39,7 @@ class Finished:
 
     __slots__ = ("blocks", "counts", "joined", "placement", "schematic",
                  "items", "undeclared", "views", "sheets", "overlap",
-                 "plans", "notes", "stamp")
+                 "plans", "notes", "said", "stamp")
 
     def __init__(self):
         self.blocks = 0
@@ -54,12 +54,18 @@ class Finished:
         self.overlap: dict[str, float] = {}
         self.plans: dict[str, Path] = {}
         self.notes: list[str] = []
+        # Plain reporting, as against `notes`, which are things to attend to.
+        # A build with no world anchor is not a build with a problem, and a
+        # line starting with `!` said otherwise for as long as the two shared
+        # a list.
+        self.said: list[str] = []
         self.stamp: Path | None = None
 
     def lines(self) -> list[str]:
         out = [f"finalize: {self.joined} connectable blocks given their "
                "neighbours' state"]
         out.extend("! " + n for n in self.notes)
+        out.extend("  " + n for n in self.said)
         if self.schematic:
             where = "placed" if self.placement else "local coordinates"
             out.append(f"wrote {self.schematic.name} ({where})")
@@ -87,26 +93,44 @@ class Finished:
                          "undeclared": [n for n, _ in self.undeclared]},
             "iou": {k: round(v, 4) for k, v in self.overlap.items()},
             "notes": list(self.notes),
+            "said": list(self.said),
         }
 
 
-def placement_of(layout: Path, template: Mask, blocks) -> tuple[dict, list[str]]:
-    """Where in the world this build goes, from an older crop of the same map.
+def placement_of(layout: Path, template: Mask, blocks
+                 ) -> tuple[dict, list[str], list[str]]:
+    """Where in the world this build goes, if anywhere was ever asked for.
 
-    The template PNG and the layout schematic are two crops of the same map, so
-    the world position carries over as a shift between their grids.
+    Returns `(placement, notes, said)`: notes are things wrong with a placement
+    that was attempted, `said` is plain reporting about one that was not. The
+    two are separated because they read completely differently and used to be
+    the same list -- a build with no world anchor printed a line beginning `!`,
+    which is the mark this pipeline uses for something that needs attention, and
+    every reader took it as a job to do.
+
+    **Placing a build in a world is optional.** A `.schem` in local coordinates
+    is a finished deliverable: it opens in a schematic editor, it pastes
+    wherever somebody puts it, and every other stage grades it exactly the same.
+    The anchor exists for the case where a map crop already fixes a spot in a
+    particular world -- which is one workflow among several, and not the one
+    most buildings here are built for.
+
+    The world position, when there is one, comes from `origin`/`offset` of a
+    schematic crop of the same map, carried across as the shift between its grid
+    and the template's.
 
     It fails soft on purpose. This used to be a bare read that raised, which
     meant a missing schematic killed the run *after* every block was placed and
     *before* anything was written -- so `out/` kept a build from two layouts ago
-    while the gate went on grading it and reporting a pass. A build that cannot
-    be placed in the world is still a build worth looking at; one that silently
-    does not exist is not.
+    while the gate went on grading it and reporting a pass.
     """
     layout = Path(layout)
     if not layout.exists():
-        return {}, [f"no {layout.name}: writing in local coordinates, so the "
-                    "result cannot be pasted at the right place in the world"]
+        return {}, [], [
+            f"no {layout.name}, so the schematic is written in local "
+            "coordinates. That is a complete result: paste it wherever it "
+            "belongs. Supply the anchor only if this build has to land on one "
+            "exact spot in an existing world."]
 
     schematic = Schematic.read(layout)
     marked = Mask.from_schematic(schematic, list(blocks)).components()
@@ -115,7 +139,7 @@ def placement_of(layout: Path, template: Mask, blocks) -> tuple[dict, list[str]]
                     "bottom layer, so there is nothing in it to line the build "
                     "up with: writing in local coordinates. Either the crop was "
                     "marked with different blocks -- pass them as "
-                    "`layout_blocks` -- or the building is not on layer 0."]
+                    "`layout_blocks` -- or the building is not on layer 0."], []
     old = marked[0]
     a, b = old.bounds(), template.bounds()
     shift = (a[0] - b[0], a[1] - b[1])
@@ -127,7 +151,7 @@ def placement_of(layout: Path, template: Mask, blocks) -> tuple[dict, list[str]]
         origin=schematic.origin,
         offset=(schematic.offset[0] + shift[0], schematic.offset[1],
                 schematic.offset[2] + shift[1]),
-    ), notes
+    ), notes, []
 
 
 # The two greys a layout schematic marks a building with: fill, and the guide
@@ -222,8 +246,10 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
     done.joined = canvas.finalize()
 
     if layout is not None and template is not None:
-        done.placement, notes = placement_of(layout, template, layout_blocks)
+        done.placement, notes, said = placement_of(layout, template,
+                                                   layout_blocks)
         done.notes.extend(notes)
+        done.said.extend(said)
 
     done.schematic = out / f"{name}.schem"
     canvas.write(done.schematic, **done.placement)

@@ -137,7 +137,7 @@ input/
     brief.md            словесное описание
     plan.geojson        контур: OSM, GIS, CAD — или plan.svg
     layout.png          плоская карта, 1 px = 1 м
-    layout.schem        та же карта блоками — посадка в мир
+    layout.schem        та же карта блоками — посадка в мир, необязательно
     drawings/           чертежи с масштабом
     sketches/           эскизы и чертежи без масштаба
     model.obj           полноценная 3D-модель, метры, Y вверх
