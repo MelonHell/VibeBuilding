@@ -204,6 +204,8 @@ def tag_of(value) -> int:
         return TAG_DOUBLE
     if isinstance(value, str):
         return TAG_STRING
+    if isinstance(value, (bytes, bytearray)):
+        return TAG_BYTE_ARRAY
     if isinstance(value, Array):
         return value.tag
     if isinstance(value, (List, list, tuple)):
@@ -220,7 +222,14 @@ def write_payload(out: bytearray, tag: int, value) -> None:
         encoded = value.encode("utf-8")
         out += _USHORT.pack(len(encoded)) + encoded
     elif tag == TAG_BYTE_ARRAY:
-        out += _LEN.pack(len(value)) + struct.pack(f">{len(value)}b", *value)
+        # Raw bytes go straight out. A signed byte and an unsigned one have the
+        # same eight bits, so this is the same file -- and it is the difference
+        # between writing a city-sized schematic and not: the general path below
+        # explodes a twenty-million entry array into that many arguments.
+        if isinstance(value, (bytes, bytearray)):
+            out += _LEN.pack(len(value)) + bytes(value)
+        else:
+            out += _LEN.pack(len(value)) + struct.pack(f">{len(value)}b", *value)
     elif tag == TAG_INT_ARRAY:
         out += _LEN.pack(len(value)) + struct.pack(f">{len(value)}i", *value)
     elif tag == TAG_LONG_ARRAY:

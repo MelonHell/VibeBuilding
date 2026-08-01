@@ -222,17 +222,29 @@ def geo_offset(lat0: float, lon0: float, lat: float, lon: float) -> tuple[float,
     return east, north
 
 
-def placement_matrix(p: Placement, origin: Placement) -> tuple:
+def placement_matrix(p: Placement, origin: Placement,
+                     heading: float = 0.0) -> tuple:
     """World matrix for a tile, in an X=East / Y=Up / Z=South frame.
 
+    `heading` turns the whole export about the vertical axis, in degrees
+    clockwise from above. It is the answer to the note the axes carry: the
+    frame above is what a heading=0 export is *assumed* to be in, and an export
+    whose model space does not sit that way comes out with its compass wrong --
+    which shows up as the street elevation appearing in `east_tex.png` for a
+    building whose street is to the west. Stating it here fixes it once, at the
+    conversion, rather than leaving every renderer and comparison sheet
+    downstream to carry the same correction.
+
     NOTE: pitch and bank are ignored; every Google Earth export observed so far
-    has them at zero. The heading path is implemented but untested for the same
-    reason -- if a future export carries a non-zero heading, verify it against
-    the footprint mask before trusting the result.
+    has them at zero. The per-placement heading path is implemented but untested
+    for the same reason -- if a future export carries a non-zero heading, verify
+    it against the footprint mask before trusting the result.
     """
     east, north = geo_offset(origin.lat, origin.lon, p.lat, p.lon)
     up = p.alt - origin.alt
     m = mat_translate(east, up, -north)
+    if heading:
+        m = mat_mul(mat_rotate_y(-math.radians(heading)), m)
     if p.heading:
         m = mat_mul(m, mat_rotate_y(-math.radians(p.heading)))
     if p.scale != 1.0:
@@ -398,6 +410,7 @@ def convert(
     out_dir: Path,
     write_normals: bool,
     clip: Clip | None = None,
+    heading: float = 0.0,
 ) -> dict:
     scene_xml = export_dir / "scene" / "objects.xml"
     model_lib = export_dir / "modelLib"
@@ -443,7 +456,7 @@ def convert(
                 missing_models.append(placement.guid)
                 continue
             gltf = Gltf(gltf_path)
-            world = placement_matrix(placement, origin)
+            world = placement_matrix(placement, origin, heading)
             tile_id = gltf_path.stem
             tile_wrote = False
 
@@ -614,9 +627,12 @@ def convert(
             "y": "up",
             "z": "south",
             "units": "metres",
+            "heading_deg": heading,
             "note": (
-                "Assumed frame for a heading=0 export. Confirm the horizontal "
-                "orientation against the footprint mask before relying on it."
+                "Assumed frame for a heading=0 export, turned by heading_deg "
+                "about the vertical. Confirm the horizontal orientation against "
+                "the footprint mask before relying on it: the street elevation "
+                "landing in the wrong ortho is what a wrong frame looks like."
             ),
         },
         "bounds_m": {
@@ -687,6 +703,17 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="omit vertex normals (smaller file, flat-shaded renders)",
     )
+    parser.add_argument(
+        "--heading",
+        type=float,
+        default=0.0,
+        help=(
+            "turn the whole export this many degrees clockwise about the "
+            "vertical, so that +x really is east. Check it on the first "
+            "conversion: the street elevation must appear in the ortho named "
+            "for the side the street is on"
+        ),
+    )
     for axis, meaning in (
         ("east", "+east / -west"),
         ("north", "+north / -south"),
@@ -718,6 +745,7 @@ def main(argv: list[str]) -> int:
         out_dir,
         write_normals=not args.no_normals,
         clip=None if clip.is_open() else clip,
+        heading=args.heading,
     )
 
     dims = meta["dimensions_m"]

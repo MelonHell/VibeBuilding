@@ -72,6 +72,7 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "minecraft:gravel": (131, 127, 126),
     "minecraft:deepslate": (77, 77, 80),
     "minecraft:polished_deepslate": (72, 72, 75),
+    "minecraft:cobbled_deepslate": (78, 76, 82),
     "minecraft:oxidized_copper": (82, 162, 132),
     "minecraft:weathered_copper": (109, 154, 118),
     "minecraft:moss_block": (89, 109, 45),

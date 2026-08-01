@@ -48,6 +48,15 @@ def decode_varints(data, count: int) -> list[int]:
 
 
 def encode_varints(values) -> bytearray:
+    """LEB128 for a whole block array.
+
+    A palette of 128 entries or fewer makes every id a one-byte varint, and then
+    the encoding is the identity -- `bytes()` in C rather than a Python loop over
+    every cell in the box. On a building that is a rounding error; on a schematic
+    the size of an island it is the difference between a second and a minute.
+    """
+    if values and 0 <= min(values) and max(values) < 0x80:
+        return bytearray(values)
     out = bytearray()
     for value in values:
         while True:
@@ -197,10 +206,7 @@ class Schematic:
                 "Palette": {
                     block: nbt.Int(i) for i, block in enumerate(self.palette)
                 },
-                "Data": nbt.Array(
-                    [b - 256 if b > 127 else b for b in encode_varints(self.blocks)],
-                    nbt.TAG_BYTE_ARRAY,
-                ),
+                "Data": encode_varints(self.blocks),
                 "BlockEntities": self.block_entities,
             },
         }
