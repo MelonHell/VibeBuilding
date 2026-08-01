@@ -61,6 +61,9 @@ DEFAULTS = {
     "MODEL_UP": "y",
     "MODEL_SCALE": 1.0,
     "MAP_PALETTE": None,
+    # Witness disagreements that are facts about the inputs rather than faults,
+    # keyed by question, each with the reason. See `witnesses.declare`.
+    "EXPECTED": {},
     # Metres per unit of an SVG plan. A GeoJSON in lon/lat needs none -- it is
     # projected -- and one already in metres needs none either; an SVG has no
     # units at all and cannot be read without this.
@@ -147,6 +150,21 @@ class Link:
 
     def to_build_u(self, u: float) -> float:
         return self.registration.to_build_u(u) if self.registration else u
+
+    def window(self, u0: float, u1: float) -> tuple[float, float]:
+        """A stretch of the plan, in the reference's coordinates, in order.
+
+        `mu(a), mu(b)` is the obvious way to write this and is wrong the moment
+        the registration carries a flip: the pair comes back reversed, the
+        window is empty, and whatever was being measured reads nothing at all.
+        """
+        a, b = self.mu(u0), self.mu(u1)
+        return (a, b) if a <= b else (b, a)
+
+    def across(self, v0: float, v1: float) -> tuple[float, float]:
+        """The same, across the building."""
+        a, b = self.mv(v0), self.mv(v1)
+        return (a, b) if a <= b else (b, a)
 
     def to_build_v(self, v: float) -> float:
         return self.registration.to_build_v(v) if self.registration else v
@@ -406,6 +424,16 @@ class Survey:
             gate.extent([p[0] for p in high]), gate.extent([p[1] for p in high]),
             (u0, u1), (v0, v1), self.t.REGISTER_FLOOR)
 
+        # Which way round the two frames stand. An extent is the same end for
+        # end, so the fit above cannot tell -- and when the plan comes off a map
+        # that stands its building on an invented street grid, the two
+        # canonical fits can land half a turn apart. Everything then registers
+        # perfectly and every window is measured at the opposite end of the
+        # building. Read off the plan's own asymmetry, on every run.
+        drawn = gate.Plan.from_parts(read.parts, read.frame)
+        flip_u, flip_v, scores = reg.orient(high, drawn)
+        reg.flip_u, reg.flip_v = flip_u, flip_v
+
         note["mesh"] = {
             "read": True,
             "kind": reference.name,
@@ -428,6 +456,8 @@ class Survey:
                   "scale": round(reg.v_scale, 3)},
             "disagreement": round(reg.disagreement, 3),
             "agrees": reg.agrees(),
+            "turned": reg.turned,
+            "orientation": scores,
         }
         if not reg.agrees():
             raise SystemExit(
@@ -467,8 +497,8 @@ class Survey:
                          (one.v1 - self.t.FACADE_INSET, one.v1 + self.t.FACADE_INSET))
             found = measure.storey_height(
                 link.mesh, link.frame,
-                tuple((link.mv(a), link.mv(b)) for a, b in edges),
-                link.mu(body[0]), link.mu(body[1]), datum=link.datum,
+                tuple(link.across(a, b) for a, b in edges),
+                *link.window(body[0], body[1]), datum=link.datum,
                 step=self.t.STOREY_STEP, ceiling=self.t.STOREY_CEILING,
                 lo=self.t.STOREY_RANGE[0], hi=self.t.STOREY_RANGE[1])
             measured = {
@@ -700,6 +730,11 @@ class Survey:
                 found.append(witnesses.overlap(
                     iou(read.mass, same), by, "map"))
 
+        # Disagreements the building has said to expect. Not a widened
+        # tolerance: the row goes ungraded with the reason printed beside it,
+        # so it stays legible and every other disagreement on that axis is
+        # still graded.
+        witnesses.declare(found, dict(self.t.EXPECTED))
         out["witnesses"] = [one.report() for one in found]
         out["witness_lines"] = witnesses.lines(found)
 
@@ -936,6 +971,18 @@ class Survey:
             ]
         elif r:
             lines.append("  " + r["why"])
+
+        if r.get("turned") and r["turned"] != "the same way round":
+            scores = dict(r.get("orientation") or {})
+            margin = scores.pop("margin", None)
+            lines.append(f"    the reference stands {r['turned']} to the plan; "
+                         f"fit {scores}")
+            if margin is not None and margin < 0.15:
+                lines.append(
+                    f"    chosen by {margin:.3f}, which is close. On a "
+                    "symmetric building either way round is the same building "
+                    "and it does not matter; on one with a short wing or a "
+                    "round end, check it.")
 
         s = out["storeys"]
         if s["by"] == "declared":

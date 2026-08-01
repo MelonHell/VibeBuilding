@@ -267,6 +267,13 @@ def skyline(mesh, frame, u0: float, u1: float, datum: float | None = None,
     facts, and a gate that cannot tell them apart grades a missing wing as a
     small height error.
     """
+    # A window is a stretch, not a direction. Callers build one by putting two
+    # plan coordinates through a registration, and a registration that has a
+    # flip in it returns them in the opposite order -- at which point the window
+    # is empty and the measurement silently reads nothing. Ordering it here
+    # costs one comparison and removes a whole class of empty result.
+    if u1 < u0:
+        u0, u1 = u1, u0
     if datum is None:
         datum = mesh.ground()
     tops: dict[int, float] = {}
@@ -323,6 +330,10 @@ def silhouette(mesh, frame, u0: float, u1: float, datum: float | None = None,
     (v, height) keeps the middle of the building, which is where the review's
     missing pool and missing bridge were.
     """
+    # Ordered, for the same reason `skyline` orders its own: a window built
+    # through a registration that has a flip in it arrives backwards.
+    if u1 < u0:
+        u0, u1 = u1, u0
     if datum is None:
         datum = mesh.ground()
     cells: dict[tuple[int, int], int] = {}
@@ -346,6 +357,10 @@ def presence(mesh, frame, u0: float, u1: float, v0: float, v1: float,
     because photogrammetry gives a surface and not a solid -- counting occupied
     volume would report every real object as mostly empty.
     """
+    # Ordered, for the same reason `skyline` orders its own: a window built
+    # through a registration that has a flip in it arrives backwards.
+    if u1 < u0:
+        u0, u1 = u1, u0
     if datum is None:
         datum = mesh.ground()
     hit: set[tuple[int, int]] = set()

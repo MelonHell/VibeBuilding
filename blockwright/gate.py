@@ -67,6 +67,11 @@ SEAM = float(EDGE_CELLS)
 # Below this, mesh material is ground clutter rather than building.
 CLUTTER = 2.0
 
+# How many stations the length of the building is cut into when two plans are
+# compared end for end. Enough that a short wing and a rotunda are separate
+# features; few enough that photogrammetry noise averages out inside one.
+PROFILE_BINS = 24
+
 
 # -- verdicts --------------------------------------------------------------
 
@@ -288,6 +293,49 @@ class Cloud:
         return [(u, v) for u, v, h in zip(self.u, self.v, self.h) if h > height]
 
 
+def _profile(points, span: tuple[float, float], bins: int) -> list[float]:
+    """How far the thing spreads across, at each station along it.
+
+    The signature of a building's own asymmetry: wide where the wings are, one
+    end shorter than the other, a bulge where anything round is. Taken as the
+    span in v rather than the count, so a dense patch of photogrammetry does not
+    read as a wide one.
+    """
+    lo, hi = span
+    reach = (hi - lo) or 1.0
+    low = [None] * bins
+    high = [None] * bins
+    for u, v in points:
+        k = int((u - lo) / reach * bins)
+        k = 0 if k < 0 else (bins - 1 if k >= bins else k)
+        if low[k] is None or v < low[k]:
+            low[k] = v
+        if high[k] is None or v > high[k]:
+            high[k] = v
+    return [0.0 if low[k] is None else high[k] - low[k] for k in range(bins)]
+
+
+def _agreement(a: list[float], b: list[float]) -> float:
+    """Pearson correlation of two profiles, on the same stations.
+
+    A correlation and not a difference, because the two are in different units
+    of the same thing: one is a drawing's width in metres and the other is a
+    capture's, and they differ by a few per cent everywhere without differing in
+    shape anywhere.
+    """
+    n = min(len(a), len(b))
+    if n < 2:
+        return 0.0
+    mean_a = sum(a[:n]) / n
+    mean_b = sum(b[:n]) / n
+    top = sum((a[i] - mean_a) * (b[i] - mean_b) for i in range(n))
+    left = sum((a[i] - mean_a) ** 2 for i in range(n))
+    right = sum((b[i] - mean_b) ** 2 for i in range(n))
+    if left <= 0 or right <= 0:
+        return 0.0
+    return top / (left * right) ** 0.5
+
+
 def extent(values, trim: float = TRIM) -> tuple[float, float]:
     """The span of a set of numbers, with the outermost `trim` dropped."""
     values = sorted(values)
@@ -309,23 +357,49 @@ class Registration:
     and the section carried on reporting a pass while comparing the front row of
     villas against a stretch of car park thirty-five metres away. So it is
     measured from the data on every run.
+
+    `flip_u` and `flip_v` turn the correspondence end for end on that axis.
+    They exist because two independent fits of one building can disagree about
+    which way round it is, and nothing in the extents says so.
+
+    `Frame.fit` points +u into the eastern half-plane, which settles the
+    ambiguity whenever the two bearings are close. It does not settle it when
+    they are not: a game map that stands its building on an invented street grid
+    can be forty degrees off the real one, both fits are canonical, and they
+    land half a turn apart in (u, v). The extents then match perfectly, both
+    scales agree, every row passes -- and the section grades each part against
+    the part at the opposite corner: the long wing against the short one, the
+    rotunda against a stretch of the spine.
+
+    That was found by hand once, from the asymmetry of a plan (short wing at low
+    u on one side and at high u on the other), and fixed by rewriting the mesh.
+    Rewriting the measuring stick is the wrong place: `orient` below reads the
+    flips off the same asymmetry, from the data, on every run.
     """
 
     __slots__ = ("mesh_u", "mesh_v", "build_u", "build_v",
-                 "u_scale", "v_scale", "ceiling")
+                 "u_scale", "v_scale", "ceiling", "flip_u", "flip_v")
 
-    def __init__(self, mesh_u, mesh_v, build_u, build_v, ceiling: float):
+    def __init__(self, mesh_u, mesh_v, build_u, build_v, ceiling: float,
+                 flip_u: bool = False, flip_v: bool = False):
         self.mesh_u = mesh_u
         self.mesh_v = mesh_v
         self.build_u = build_u
         self.build_v = build_v
         self.ceiling = ceiling
+        self.flip_u = flip_u
+        self.flip_v = flip_v
         self.u_scale = (mesh_u[1] - mesh_u[0]) / (build_u[1] - build_u[0])
         self.v_scale = (mesh_v[1] - mesh_v[0]) / (build_v[1] - build_v[0])
 
     @classmethod
     def fit(cls, mesh: Cloud, build: Cloud, at: float = REGISTER_AT,
-            trim: float = TRIM) -> "Registration":
+            trim: float = TRIM, plan: "Plan | None" = None) -> "Registration":
+        """Fit the two extents, and work out which way round they go.
+
+        `plan` is what makes the second half possible. Without it the fit has
+        only the extents to go on, and an extent is the same end for end.
+        """
         if not len(build):
             raise ValueError("nothing built")
         ceiling = at * build.top()
@@ -335,25 +409,97 @@ class Registration:
             raise ValueError(
                 f"the mesh has nothing above {ceiling:.1f} m; either the datum "
                 "is wrong or the clip is of the wrong building")
-        return cls(
+        found = cls(
             extent([p[0] for p in high_mesh], trim),
             extent([p[1] for p in high_mesh], trim),
             extent([p[0] for p in high_build], trim),
             extent([p[1] for p in high_build], trim),
             ceiling,
         )
+        if plan is not None:
+            found.flip_u, found.flip_v = found.orient(high_mesh, plan)[:2]
+        return found
+
+    def orient(self, points, plan: "Plan") -> tuple[bool, bool, dict]:
+        """Which way round the mesh goes, read off the asymmetry of the plan.
+
+        Every one of the four ways to lay one rectangle on another is tried, and
+        the winner is the one that puts the most of the reference's material
+        where the plan claims a building. A symmetric building scores the same
+        four times and the answer does not matter; an asymmetric one -- which is
+        every building with a wing shorter than the other, or anything round at
+        one end -- separates them clearly.
+
+        Returns the flips and the whole score table, so that a close call is
+        visible rather than decided in silence.
+        """
+        # Scored on the *shape* of the building along its length, not on how
+        # many points land inside it. A long building is mostly the same all the
+        # way down, so counting hits separates the four barely -- on one real
+        # case it came out 0.670 against 0.647, which is a decision taken on
+        # noise. What actually distinguishes one end from the other is where the
+        # building is wide and where it is narrow: a short wing, a rotunda, a
+        # court that stops. That profile is what is compared here.
+        # Both ways round, because one profile can only see one axis. How wide
+        # the building is at each station along it says nothing about which side
+        # is which -- a mirror across the axis leaves every width untouched --
+        # so the same measurement is taken along the other axis as well, and the
+        # two are added. Each flip is then decided by the profile that can see
+        # it, and neither is decided by a coin.
+        along = _profile(plan.points, self.build_u, PROFILE_BINS)
+        across = _profile([(v, u) for u, v in plan.points], self.build_v,
+                          PROFILE_BINS)
+        scores: dict[tuple[bool, bool], float] = {}
+        for fu in (False, True):
+            for fv in (False, True):
+                trial = Registration(self.mesh_u, self.mesh_v, self.build_u,
+                                     self.build_v, self.ceiling, fu, fv)
+                put = [(trial.to_build_u(u), trial.to_build_v(v))
+                       for u, v in points]
+                scores[(fu, fv)] = (
+                    _agreement(along, _profile(put, self.build_u, PROFILE_BINS))
+                    + _agreement(across, _profile([(v, u) for u, v in put],
+                                                  self.build_v, PROFILE_BINS)))
+        best = max(scores, key=scores.get)
+        ranked = sorted(scores.values(), reverse=True)
+        table = {f"{'u' if k[0] else '-'}{'v' if k[1] else '-'}": round(s, 3)
+                 for k, s in scores.items()}
+        # How far ahead the winner is. A symmetric building scores its four the
+        # same and the answer genuinely does not matter -- both ways round are
+        # the same building. An asymmetric one separates them clearly. A narrow
+        # margin on a building that is *not* symmetric is the case worth seeing,
+        # so the number is reported rather than swallowed.
+        table["margin"] = round(ranked[0] - ranked[1], 3)
+        return best[0], best[1], table
 
     def to_mesh_u(self, u: float) -> float:
-        return self.mesh_u[0] + (u - self.build_u[0]) * self.u_scale
+        out = self.mesh_u[0] + (u - self.build_u[0]) * self.u_scale
+        return self.mesh_u[0] + self.mesh_u[1] - out if self.flip_u else out
 
     def to_build_u(self, u: float) -> float:
+        if self.flip_u:
+            u = self.mesh_u[0] + self.mesh_u[1] - u
         return self.build_u[0] + (u - self.mesh_u[0]) / self.u_scale
 
     def to_build_v(self, v: float) -> float:
+        if self.flip_v:
+            v = self.mesh_v[0] + self.mesh_v[1] - v
         return self.build_v[0] + (v - self.mesh_v[0]) / self.v_scale
 
     def to_mesh_v(self, v: float) -> float:
-        return self.mesh_v[0] + (v - self.build_v[0]) * self.v_scale
+        out = self.mesh_v[0] + (v - self.build_v[0]) * self.v_scale
+        return self.mesh_v[0] + self.mesh_v[1] - out if self.flip_v else out
+
+    @property
+    def turned(self) -> str:
+        """How the two frames stand to each other, in words."""
+        if self.flip_u and self.flip_v:
+            return "half a turn"
+        if self.flip_u:
+            return "mirrored along u"
+        if self.flip_v:
+            return "mirrored across v"
+        return "the same way round"
 
     @property
     def disagreement(self) -> float:
@@ -394,6 +540,8 @@ class Registration:
     def lines(self) -> list[str]:
         return [
             f"on material above {self.ceiling:.0f} m"
+            + ("" if not (self.flip_u or self.flip_v)
+               else f"; the reference stands {self.turned} to the plan")
             + (f"; the build is {1 / self.u_scale:.2f}x by {1 / self.v_scale:.2f}x "
                "of the reference" if self.stretch > 0.02 else ""),
             f"  u: mesh {self.mesh_u[0]:6.1f}..{self.mesh_u[1]:6.1f} -> "
@@ -695,7 +843,11 @@ def section(name: str, u0: float, u1: float, *, mesh: Cloud, build: Cloud,
     building's heights.
     """
     reg = registration
-    m0, m1 = reg.to_mesh_u(u0), reg.to_mesh_u(u1)
+    # Ordered: a window put through a registration that carries a flip comes
+    # back with its ends swapped, and every test below is `m0 <= u < m1`. The
+    # section then grades nothing at all and says so, which is better than
+    # grading the wrong thing and much worse than just working.
+    m0, m1 = sorted((reg.to_mesh_u(u0), reg.to_mesh_u(u1)))
     expected = plan.claims(u0, u1, edge_cells)
 
     mesh_top: dict[int, float] = {}

@@ -73,9 +73,30 @@ class Agreement:
     unit: str
     tolerance: float
     rows: dict[str, tuple[Reading, Reading]] = field(default_factory=dict)
+    expected: str = ""
 
     def see(self, where: str, a: Reading, b: Reading) -> None:
         self.rows[where] = (a, b)
+
+    def declare(self, why: str) -> "Agreement":
+        """Say that this disagreement is a fact about the inputs.
+
+        Two sources can differ for a reason that is not a fault, and the
+        commonest one is that they are of different things: a crop from a game
+        map stands its building on an invented street grid, and the capture is
+        of the real prototype forty degrees away. The bearings then disagree
+        forever, correctly, and no amount of re-clipping will change it.
+
+        The row becomes ungraded rather than passing, and carries the reason.
+        That is the same shape as an exemption in `gate.py` and for the same
+        argument: widening the tolerance would excuse every other disagreement
+        on that axis too, including the ones that are faults, and it would do it
+        silently. Naming the reason excuses exactly one thing and leaves it
+        legible -- and if the inputs are ever swapped for two of the same
+        building, the row goes back to being graded by deleting one line.
+        """
+        self.expected = why
+        return self
 
     @property
     def pair(self) -> str:
@@ -98,8 +119,13 @@ class Agreement:
 
     @property
     def ok(self) -> bool | None:
-        """None when nothing could be compared -- the third state, as ever."""
-        if not self.rows:
+        """None when nothing could be compared, or when the gap is declared.
+
+        A declared disagreement is ungraded and not passing: the two sources
+        really do differ, nobody is claiming otherwise, and a green row would
+        say this was checked and agreed.
+        """
+        if not self.rows or self.expected:
             return None
         return self.worst <= self.tolerance
 
@@ -112,9 +138,11 @@ class Agreement:
         if not self.rows:
             return "only one source can answer this, so nothing was compared"
         a, b = self.rows[self.where]
-        return (f"{self.pair}: worst {self.worst:.2f} {self.unit} "
-                f"at {self.where} ({a} against {b}), tolerance "
-                f"{self.tolerance:.2f} {self.unit}")
+        measured = (f"{self.pair}: {self.worst:.2f} {self.unit} apart at "
+                    f"{self.where} ({a} against {b})")
+        if self.expected:
+            return f"{measured}. Declared expected: {self.expected}"
+        return f"{measured}, tolerance {self.tolerance:.2f} {self.unit}"
 
     def report(self) -> dict:
         return {
@@ -124,6 +152,7 @@ class Agreement:
             "tolerance": self.tolerance,
             "worst": round(self.worst, 3),
             "ok": self.ok,
+            "expected": self.expected,
             "rows": {where: [round(a.value, 3), round(b.value, 3)]
                      for where, (a, b) in self.rows.items()},
         }
@@ -215,6 +244,22 @@ def lines(found: list[Agreement]) -> list[str]:
         mark = "  " if one.ok else ("--" if one.ok is None else "!!")
         out.append(f"{mark} {one.name}: {one.detail}")
     return out
+
+
+def declare(found: list[Agreement], expected: dict[str, str]) -> list[Agreement]:
+    """Mark the disagreements a building has said to expect, by question.
+
+    Keyed on the question -- "bearing", "extent", "part heights" -- because that
+    is what a person writing the table knows. A key that matches nothing is left
+    alone rather than raising: it usually means the disagreement it was written
+    about has gone away, which is worth seeing in the report as a row that is
+    graded again.
+    """
+    for one in found:
+        why = expected.get(one.question)
+        if why:
+            one.declare(why)
+    return found
 
 
 __all__ = ["ANGLE", "Agreement", "HEIGHT", "OVERLAP", "Reading", "SIZE",
