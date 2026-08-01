@@ -150,6 +150,62 @@ class Mask:
                 z1 = z
         return None if x1 < 0 else (x0, z0, x1, z1)
 
+    # -- carrying one between scripts ---------------------------------------
+
+    def dumps(self) -> str:
+        """The mask as one line of text, for `derived.json`.
+
+        A measured shape that is not a rectangle or a disc cannot otherwise
+        cross from the probe that measured it to the script that builds it, and
+        the two alternatives are both bad: re-measure the reference inside the
+        build (which is the split this pipeline exists to keep) or approximate
+        the shape by its bounding box (which is how a stepped roof becomes one
+        slab again).
+
+        Run lengths, alternating clear and set, one row per `;`. A footprint is
+        a handful of runs per row, so a whole roof terrace costs a few hundred
+        bytes -- small enough to sit in `derived.json` beside the numbers it
+        belongs to.
+        """
+        rows = []
+        w = self.width
+        for z in range(self.length):
+            row = self.bits[z * w:(z + 1) * w]
+            runs: list[int] = []
+            want = 0
+            run = 0
+            for bit in row:
+                if (1 if bit else 0) == want:
+                    run += 1
+                else:
+                    runs.append(run)
+                    want = 1 - want
+                    run = 1
+            if want == 1 or runs:
+                runs.append(run)
+            rows.append(",".join(str(n) for n in runs))
+        return f"{w}x{self.length}:" + ";".join(rows)
+
+    @classmethod
+    def loads(cls, text: str) -> "Mask":
+        """A mask back out of `dumps`."""
+        head, _, body = text.partition(":")
+        w, _, length = head.partition("x")
+        mask = cls(int(w), int(length))
+        for z, row in enumerate(body.split(";")):
+            if not row:
+                continue
+            x = 0
+            value = 0
+            for chunk in row.split(","):
+                n = int(chunk)
+                if value:
+                    for i in range(x, x + n):
+                        mask.bits[z * mask.width + i] = 1
+                x += n
+                value = 1 - value
+        return mask
+
     # -- set algebra ------------------------------------------------------
 
     def _combine(self, other: "Mask", op, name: str) -> "Mask":
@@ -335,6 +391,39 @@ class Mask:
                 out.append(part)
         out.sort(key=lambda m: -m.count())
         return out
+
+    def largest_rect(self) -> tuple[int, int, int, int] | None:
+        """The biggest axis-aligned rectangle that fits inside, as (x0,z0,x1,z1).
+
+        For putting something rectangular -- a pool, a court, a pad -- on ground
+        that roads and water have cut into an awkward shape. Written by hand in
+        one building's `build.py` at thirty-five lines; the need is not that
+        building's.
+
+        Largest by area, by the standard histogram sweep: for each row, how far
+        up each column runs unbroken, then the largest rectangle under that
+        histogram. Axis-aligned in *world* coordinates, so on a rotated building
+        it is the biggest upright rectangle and not the biggest rectangle in the
+        frame -- draw the latter with `Frame.rect`, which is what it is for.
+        """
+        best = None
+        heights = [0] * self.width
+        for z in range(self.length):
+            base = z * self.width
+            for x in range(self.width):
+                heights[x] = heights[x] + 1 if self.bits[base + x] else 0
+            stack: list[int] = []
+            for x in range(self.width + 1):
+                here = heights[x] if x < self.width else 0
+                start = x
+                while stack and heights[stack[-1]] >= here:
+                    top = stack.pop()
+                    area = heights[top] * (x - top)
+                    if best is None or area > best[0]:
+                        best = (area, top, z - heights[top] + 1, x - 1, z)
+                    start = top
+                stack.append(start)
+        return None if best is None else best[1:]
 
     def contour(self) -> list[tuple[int, int]]:
         """The outer boundary of this mask, in order, walking clockwise.

@@ -172,15 +172,34 @@ def silhouette(panel: Panel, scale: float, tolerance: int = 12) -> set:
     return {(x, y) for y in range(size[1]) for x in range(size[0]) if pixels[x, y] > 127}
 
 
-def iou(a: Panel, b: Panel, scale: float = 1.0, align: str = "bottom") -> float:
-    """Overlap of two silhouettes, each pushed into the same corner first.
+# Below this, the two panels are not pictures of the same thing at the same
+# size, and their overlap is not a score of anything. Three buildings printed a
+# number here that never moved -- 0.001, 0.10, 0.47 -- because one panel held a
+# whole site and the other held one clipped building; on one of them half a
+# facade was a blank wall for several rounds and the number did not notice.
+COMPARABLE = 0.35
+
+
+def iou(a: Panel, b: Panel, scale: float = 1.0, align: str = "bottom",
+        comparable: float = COMPARABLE) -> float | None:
+    """Overlap of two silhouettes, or None when they are not comparable.
 
     Aligning by bounding box means this measures shape and proportion, not
     placement -- placement is the gate's job, and it does it in metres.
+
+    None rather than a small number when the two silhouettes differ in area by
+    more than `comparable`. A build rendered with its whole site against an
+    ortho clipped to the building alone overlaps by a hundredth, and that
+    hundredth is stable: it reads as "bad, but consistently bad" when it means
+    "these two are not the same picture". A number nobody can act on is worse
+    than an honest absence.
     """
     sa, sb = silhouette(a, scale), silhouette(b, scale)
     if not sa or not sb:
         return 0.0
+    ratio = min(len(sa), len(sb)) / max(len(sa), len(sb))
+    if ratio < comparable:
+        return None
 
     def anchor(cells):
         xs = [c[0] for c in cells]

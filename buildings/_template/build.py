@@ -259,6 +259,20 @@ class Site:
         return self.rect(p.u0 - self.pad, p.u1 + self.pad,
                          p.v0 - self.pad, p.v1 + self.pad)
 
+    def terraces(self, name: str) -> list[tuple[int, Mask]]:
+        """(height, where) for a part whose roof is not one level, tallest first.
+
+        Empty for a flat roof, which is most parts: there the one number in
+        `self.tops` is the whole answer and the footprint is the whole shape.
+        A part that comes back with entries here is one the reference measured
+        as stepping, and building it to `self.tops[name]` puts the wrong height
+        over everything but the largest step -- quietly, because the section
+        grades against the same median.
+        """
+        entry = self.d.get("roof", {}).get(name, {})
+        return [(int(t["height"] + 0.5), Mask.loads(t["mask"]))
+                for t in entry.get("terraces", []) if "mask" in t]
+
 
 def ground(canvas: Canvas, site: Site, sched: Schedule) -> None:
     """The plinth, and whatever the parcel around the building is.
@@ -293,6 +307,31 @@ def ground(canvas: Canvas, site: Site, sched: Schedule) -> None:
     # them rather than where a rectangle would. A building with no map has no
     # drawn boundary to read, so its grounds are a chosen dimension like any
     # other -- `site.mass.dilate(APRON)` above is the whole of it.
+    #
+    # `parcel` needs the road loop to close. Four buildings found it returning
+    # either the footprint or the whole tile, and in every case the loop was
+    # open: the map's road ran off the edge, or the building sat on a corner
+    # with water on two sides. When it does that, the grounds come off the
+    # capture instead -- `flatmap.surrounds(paths.LAYOUT, site.mass)` reads what
+    # the map draws within reach of the building without needing a boundary --
+    # and the fallback is recorded as chosen rather than measured.
+
+
+    # -- the gap between the wings, which is usually not a gap ---------------
+    #
+    # A plan decomposed off a map draws two wings and the air between them, and
+    # the obvious reading is a courtyard: pave it, plant it, done. On four
+    # buildings out of six that reading was wrong, and the reference said so
+    # the whole time -- the roof grid holds material three to eight metres up
+    # over the whole gap. A pool deck, a lobby roof, a porte-cochere, a garage
+    # podium.
+    #
+    # The question is asked in `probes/derive.py`, where the reference is open,
+    # by naming the gap as a part of the plan and letting `roof` measure it like
+    # any other. A deck of 4.2 m over 900 cells is a building, not a court.
+    # Built as open ground it costs twice: the section grades those stations
+    # against material that is not there, and the render shows daylight through
+    # the middle of a building that has none.
 
 
 def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
@@ -337,6 +376,37 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
                       build.openings(foot, face, FACADE_PITCH, FACADE_WIDTH,
                                      THICK),
                       site.ground + 1, top - 1)
+
+    # -- when one height does not describe a part ----------------------------
+    #
+    # `site.tops[name]` is one number, and the loop above extrudes to it. That
+    # is right for a flat deck and wrong for a roof that steps, ridges or
+    # carries a plant room -- and the wrongness is quiet, because the section
+    # grades the same median the build was made from. `derive` prints the
+    # spread over every part and says so out loud when the deck and the maximum
+    # are more than a storey apart. Where it does, the steps come measured, with
+    # their shapes, and replace the single extrusion for that part:
+    #
+    #     for top, where in site.terraces("slab"):
+    #         build.walls(canvas, where, site.ground, top, WALL, THICK)
+    #         build.slab(canvas, where, top - 1, DECK, inset=THICK)
+    #
+    # `roof.plant` for what stands on the deck and `roof.plateau` for a part too
+    # narrow to read from above (a drum, a turret: read across it, where its
+    # shell separates from whatever crosses over) are measured the same way, in
+    # `probes/derive.py`, where the reference is open. What none of them do is
+    # follow the surface cell by cell -- every answer is a level a wall can be
+    # built to, and a build that voxelises a capture is a pile of rubble.
+    #
+    # -- a balcony is a recess, not a shelf ---------------------------------
+    #
+    # Balconies drawn as slabs sticking out of the wall plane fail the section
+    # at every station they touch: the reference reads them as part of the
+    # facade, the build puts them a metre and a half proud of it. Cut them into
+    # the wall instead -- `build.recess(canvas, foot, face, ...)` -- and the
+    # facade keeps its measured line while the rhythm reads from every camera
+    # the review uses. The exception is a balcony the capture itself holds as
+    # an overhang, which is a measured fact and is built where it was measured.
 
     # -- this building's own sections go here -------------------------------
     #

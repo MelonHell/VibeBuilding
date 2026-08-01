@@ -146,6 +146,27 @@ class Gate:
         return self.add(name, actual <= allowed,
                         f"{actual} {what}, budget {allowed}")
 
+    def witness(self, name: str, ok, detail: str, expected: str = "") -> Check:
+        """A row that a building may declare it cannot make agree.
+
+        Some disagreements are facts about the inputs rather than faults. A crop
+        from a game map draws a building of different proportions from the
+        capture of the real prototype it was modelled on; the registration will
+        never agree, and no clip, floor or tolerance will change it.
+
+        Declared, the row goes ungraded with the reason printed. That is not a
+        widened tolerance -- every other building still judges the same check on
+        the same number, and the verdict for this one is `ungraded` rather than
+        `pass`, because the disagreement was explained and not checked.
+
+        Four buildings wrote this same branch by hand in their own `gate.py`,
+        thirty lines each including the argument for it. One of them copied it
+        from another, which is how a copy comes to rot differently in each copy.
+        """
+        if expected:
+            return self.ungraded(name, f"{detail}. Declared expected: {expected}")
+        return self.add(name, ok, detail)
+
     def fresh(self, made, sources) -> Check:
         """Everything the gate reads must be newer than everything it grades.
 
@@ -391,6 +412,40 @@ class Registration:
         self.flip_v = flip_v
         self.u_scale = (mesh_u[1] - mesh_u[0]) / (build_u[1] - build_u[0])
         self.v_scale = (mesh_v[1] - mesh_v[0]) / (build_v[1] - build_v[0])
+
+    @classmethod
+    def measured(cls, derived: dict) -> "Registration | None":
+        """The registration the survey already fitted, out of `derived.json`.
+
+        Two fits of the same pair is one fit too many. `derive` registers the
+        plan against the reference on material above a stated height and every
+        number in the build comes through it; a gate that fits its own -- on a
+        fraction of the *build's* height, which changes whenever the build does
+        -- grades those numbers through a different map. On one building the two
+        were five metres apart across the width, which is eight per cent of the
+        depth, and the section reported that gap as the building's error.
+
+        Three buildings wrote this by hand with the same reasoning before it
+        moved here. Prefer it; `fit` is the fallback for a gate whose survey
+        never registered anything.
+        """
+        r = derived.get("registration") or {}
+        if not r.get("needed"):
+            return None
+        found = cls(tuple(r["u"]["mesh"]), tuple(r["v"]["mesh"]),
+                    tuple(r["u"]["plan"]), tuple(r["v"]["plan"]),
+                    float(r.get("floor", 0.0)))
+        found.flip_u = "u" in (r.get("turned") or "") or bool(r.get("flip_u"))
+        found.flip_v = "v" in (r.get("turned") or "") or bool(r.get("flip_v"))
+        if r.get("turned") == "half a turn":
+            found.flip_u = found.flip_v = True
+        elif r.get("turned") == "mirrored along u":
+            found.flip_u, found.flip_v = True, False
+        elif r.get("turned") == "mirrored across v":
+            found.flip_u, found.flip_v = False, True
+        elif r.get("turned") == "the same way round":
+            found.flip_u = found.flip_v = False
+        return found
 
     @classmethod
     def fit(cls, mesh: Cloud, build: Cloud, at: float = REGISTER_AT,

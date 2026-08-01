@@ -355,7 +355,13 @@ def main() -> int:
         else:
             mesh = Mesh.read(reference.path)
             datum = mesh.ground()
-            mesh_frame = mesh.frame(datum=datum, floor=6.0)
+            # The floor the survey chose, not a number typed here. A building
+            # that had to raise it -- a belt of palms, a podium, a neighbour --
+            # gets a frame fitted the same way its own measurements were, and
+            # one that did not is unaffected. Hardcoding six metres here made a
+            # gate read a frame the survey never used, 33 m longer than the
+            # mesh, and grade every station against the wrong place.
+            mesh_frame = mesh.frame(datum=datum, floor=derive.MESH_FLOOR)
 
         cloud_mesh = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
         cloud_build = gate.Cloud.from_model(model, frame, skip=SOFT)
@@ -366,9 +372,27 @@ def main() -> int:
         # perfectly and every station is graded against the opposite end of the
         # building.
         drawn = gate.Plan.from_parts(parts, frame)
-        reg = gate.Registration.fit(cloud_mesh, cloud_build, at=REGISTER_AT,
-                                    plan=drawn)
-        g.add("registration", reg.agrees(), reg.detail)
+
+        # One registration, not two. `derive` already fitted the plan to the
+        # reference, and every number in this build came through that fit;
+        # fitting a second one here -- on a fraction of the build's own height,
+        # which moves whenever the build does -- grades those numbers through a
+        # different map. Where the two differed by five metres, the section
+        # reported the gap between them as the building's error.
+        #
+        # `fit` stays as the fallback for a survey that never registered
+        # anything, and it is the only path that can still choose the
+        # orientation, so the measured one carries it across.
+        reg = gate.Registration.measured(derived)
+        if reg is None:
+            reg = gate.Registration.fit(cloud_mesh, cloud_build,
+                                        at=REGISTER_AT, plan=drawn)
+        # `EXPECTED` in probes/derive.py may declare either of these: a crop
+        # from a game map and a capture of the real prototype are drawings of
+        # different proportions, and no clip will bring them together.
+        expect = dict(getattr(derive, "EXPECTED", {}))
+        g.witness("registration", reg.agrees(), reg.detail,
+                  expect.get("registration", ""))
 
         # Two different questions, and only the first used to be asked. The row
         # above asks whether the two axes tell the same story; this one asks
@@ -376,13 +400,11 @@ def main() -> int:
         # reference on both axes registers perfectly and sections perfectly,
         # because the section compares heights through a normalised u and v --
         # and it is a quarter smaller.
-        g.add("scale", reg.scaled(SCALE_TRUE),
-              f"the build is {1 / reg.u_scale:.2f}x by {1 / reg.v_scale:.2f}x of "
-              f"the {reference.name}, tolerance {SCALE_TRUE:.0%}"
-              + ("" if reg.scaled(SCALE_TRUE) else
-                 ". A rescaled map crop and a reference of a different building "
-                 "both look exactly like this; if it is the second, say so here "
-                 "by widening SCALE_TRUE with the reason."))
+        g.witness("scale", reg.scaled(SCALE_TRUE),
+                  f"the build is {1 / reg.u_scale:.2f}x by "
+                  f"{1 / reg.v_scale:.2f}x of the {reference.name}, tolerance "
+                  f"{SCALE_TRUE:.0%}",
+                  expect.get("scale", ""))
 
         if reg.agrees():
             cuts = windows(parts, frame, derived, read.named)

@@ -93,6 +93,15 @@ def defects(gate, sections=(), finished=None, findings=None,
             out.append(Defect("check", "finish", note, "watch"))
 
     if findings is not None:
+        # Where, not how many. `structure.floating: 1` was a true statement that
+        # cost somebody a throwaway script to act on: the coordinates were
+        # already inside `Findings` and simply never reached the file.
+        for group in findings.adrift:
+            x, y, z = group.where()
+            out.append(Defect(
+                "structure", f"floating at ({x}, {y}, {z})",
+                f"{group.count} block(s) with nothing under them, "
+                f"y {group.y0}..{group.y1}"))
         for group in findings.strays:
             x, y, z = group.where()
             span = ""
@@ -145,6 +154,8 @@ def write(path, building: str, gate, sections=(), finished=None,
         doc["build"] = finished.report()
     if findings is not None:
         doc["structure"] = {
+            "floating_at": [{"where": list(g.where()), "count": g.count,
+                             "y": [g.y0, g.y1]} for g in findings.adrift],
             "pieces": len(findings.pieces),
             "largest": findings.pieces[0].count if findings.pieces else 0,
             "strays": len(findings.strays),

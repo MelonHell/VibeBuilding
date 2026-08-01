@@ -70,7 +70,9 @@ DECLARED_HEIGHTS: dict[str, dict] = {
 }
 
 DECLARED_STOREY: dict = {
-    # "spacing": 3.0, "source": "brief.md: 'floor to floor about three metres'",
+    # "spacing": 3.0,
+    # "base": 1.5,   # where the first floor line sits; 0 is ground level
+    # "source": "brief.md: 'floor to floor about three metres'",
 }
 
 # -- windows: the only hand-chosen numbers here -----------------------------

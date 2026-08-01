@@ -334,6 +334,63 @@ def parcel(path: str, min_cells: int = 200,
     return Parcel(inside, surfaces)
 
 
+def surrounds(path: str, mass: Mask, reach: float = 25.0,
+              palette: Palette | None = None,
+              min_cells: int = 200) -> Parcel:
+    """The ground around a building, by reach rather than by enclosure.
+
+    `parcel` floods outward until a drawn road stops it, and raises when the
+    flood escapes the crop. That is the right answer when the building sits
+    inside a closed ring of road, and four buildings in a row did not: a beach
+    on one side, a dune on another, open park on a third, a road present only
+    in one corner. Every one of them wrote the same replacement by hand --
+    everything within N metres of the drawn mass, classified by the map's own
+    colours -- so here it is.
+
+    The difference from `parcel` is honest and worth keeping in mind: a parcel
+    boundary is **found**, and this one is **chosen**. `reach` is a decision by
+    whoever writes it down, and the surfaces inside it are as measured as ever.
+    """
+    palette = palette or DEFAULT
+    px, w, h = _pixels(path)
+    inside = mass.dilate(reach)
+
+    # A road cuts it, where there is one: land across the street belongs to the
+    # next building even when it is within reach.
+    barrier = road(path, palette)
+    if barrier.count():
+        blocked = Mask(w, h)
+        stack = [i for i, v in enumerate(mass.bits) if v]
+        for i in stack:
+            blocked.bits[i] = 1
+        while stack:
+            i = stack.pop()
+            x, z = i % w, i // w
+            for nx, nz in ((x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)):
+                if not (0 <= nx < w and 0 <= nz < h):
+                    continue
+                j = nz * w + nx
+                if blocked.bits[j] or barrier.bits[j] or not inside.bits[j]:
+                    continue
+                blocked.bits[j] = 1
+                stack.append(j)
+        inside = blocked
+
+    surfaces = {name: Mask(w, h) for name in SURFACES}
+    for i, v in enumerate(inside.bits):
+        if not v:
+            continue
+        r, g, b = px[i % w, i // w]
+        if b > r + palette.tint:
+            name = "water"
+        elif g > b + palette.tint:
+            name = "grass"
+        else:
+            name = "ground"
+        surfaces[name].bits[i] = 1
+    return Parcel(inside, surfaces)
+
+
 def read(path: str, palette: Palette | None = None) -> tuple[Mask, Frame]:
     """The footprint and the frame fitted to it."""
     mask = footprint(path, palette=palette)
@@ -341,4 +398,5 @@ def read(path: str, palette: Palette | None = None) -> tuple[Mask, Frame]:
 
 
 __all__ = ["DEFAULT", "Guide", "Layers", "Palette", "Parcel", "SURFACES",
-           "footprint", "greys", "guides", "layers", "parcel", "read", "road"]
+           "footprint", "greys", "guides", "layers", "parcel", "read", "road",
+           "surrounds"]

@@ -51,17 +51,6 @@ SIZE = (1280, 720)
 # Where Blender is. Often not on PATH on Windows, so the usual install locations
 # are tried in turn before giving up and printing the command for a person to run
 # themselves.
-BLENDER = ("blender",)
-
-
-BLENDER_GLOBS = (
-    r"C:\Program Files\Blender Foundation\Blender */blender.exe",
-    r"C:\Program Files\Blender\Blender */blender.exe",
-    "/Applications/Blender.app/Contents/MacOS/Blender",
-    "/usr/local/bin/blender",
-)
-
-
 # Photographs, for material and rhythm. Every one there is, not a chosen few:
 # they are not matched to any shot and are not meant to be, so there is no reason
 # to prefer one over another, and between them they cover the parts of the
@@ -302,27 +291,10 @@ def frame_camera(entry: Outside, extent: tuple[float, float, float],
 
 
 def blender() -> str | None:
-    """Blender, on PATH or wherever the installer left it.
+    """Blender, from the one place that knows where it lives."""
+    from . import blender as finder
 
-    The install locations are globs and not fixed versions: a list naming 4.1
-    and 5.2 stops finding anything the week 5.3 comes out, and the failure is
-    silent -- the script prints a command for a person to run instead, which is
-    a perfectly good fallback nobody wants once a week.
-    """
-    for candidate in BLENDER:
-        if shutil.which(candidate):
-            return candidate
-    for pattern in BLENDER_GLOBS:
-        if "*" not in pattern:
-            if Path(pattern).exists():
-                return pattern
-            continue
-        root = Path(pattern).anchor or "."
-        rest = pattern[len(root):] if root != "." else pattern
-        found = sorted(Path(root).glob(rest.replace("\\", "/")), reverse=True)
-        if found:
-            return str(found[0])
-    return None
+    return finder.find()
 
 
 def place(frame, point: tuple[float, float, float]) -> tuple[float, float, float]:

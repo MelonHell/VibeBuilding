@@ -560,3 +560,45 @@ def windows(
     if block is None:
         return canvas.carve(bays, y0, y1)
     return canvas.fill(bays, y0, y1, block)
+
+
+def recess(
+    canvas: Canvas,
+    footprint: Mask,
+    facade: Facade,
+    y0: int,
+    y1: int,
+    period: float,
+    width: float,
+    depth: float = 1.0,
+    storey: int = 3,
+    thickness: float = 1.0,
+    phase: float = 0.0,
+    floor: str | None = None,
+    rail: str | None = None,
+) -> Mask:
+    """Balconies cut into the wall plane instead of hung off it.
+
+    A balcony built as a shelf reads well and grades badly: the reference holds
+    the facade at one line, the build stands a slab a metre and a half proud of
+    it, and every station the shelf touches fails the section by the depth of
+    the shelf. Cut inward and the measured line survives, the rhythm still reads
+    from every camera the review uses, and the loggia is a place rather than a
+    ledge.
+
+    Cut to `depth` behind the outer face, floored once per `storey` and railed
+    at the opening. Returns the cells it took, for the schedule.
+
+    The exception worth knowing: a balcony the capture itself holds as an
+    overhang is a measured fact, and is built where it was measured.
+    """
+    bays = openings(footprint, facade, period, width, thickness + depth, phase)
+    canvas.carve(bays, y0, y1)
+    if floor:
+        for y in range(y0, y1, max(1, storey)):
+            canvas.fill(bays, y, y + 1, floor)
+    if rail:
+        lip = bays & footprint.outline(thickness)
+        for y in range(y0, y1, max(1, storey)):
+            canvas.fill(lip, y + 1, y + 2, rail)
+    return bays

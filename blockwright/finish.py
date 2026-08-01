@@ -200,8 +200,16 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
         path = out / "compare" / f"{ortho}.png"
         compare.sheet(panels, path, scale=4.0, align=align)
         done.sheets[ortho] = path
-        done.overlap[f"{ortho} vs {view.name}"] = compare.iou(
-            panels[0], panels[1], 0.5)
+        score = compare.iou(panels[0], panels[1], 0.5)
+        if score is None:
+            done.notes.append(
+                f"{ortho} vs {view.name}: not comparable -- one panel covers "
+                "the site and the other only the clipped building, so their "
+                "overlap would be a number that never moves. Clip the render "
+                "to the plan, or read the sheet with your eyes and ignore the "
+                "score.")
+        else:
+            done.overlap[f"{ortho} vs {view.name}"] = score
 
     return done
 

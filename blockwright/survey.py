@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import declared, flatmap, gate, measure, sources, witnesses
+from . import declared, flatmap, gate, measure, roof, sources, witnesses
 from . import model as model3d
 from .flatmap import guides
 from .mask import iou
@@ -61,6 +61,11 @@ DEFAULTS = {
     "MODEL_UP": "y",
     "MODEL_SCALE": 1.0,
     "MAP_PALETTE": None,
+    # How far the cheap datum may sit from the height the ground actually piles
+    # up at before the capture is carrying geometry below its own grade. One
+    # metre: a real site's pavement, car park and pool deck come out within that
+    # of each other, so anything wider is not surface variation.
+    "DATUM_AGREEMENT": 1.0,
     # Witness disagreements that are facts about the inputs rather than faults,
     # keyed by question, each with the reason. See `witnesses.declare`.
     "EXPECTED": {},
@@ -170,12 +175,12 @@ class Link:
         return self.registration.to_build_v(v) if self.registration else v
 
 
-def levels_from(spacing: float, top: float) -> list[float]:
+def levels_from(spacing: float, top: float, base: float = 0.0) -> list[float]:
     """Floor lines at a declared spacing, from the ground to the highest part."""
     if spacing <= 0:
-        return [0.0]
-    count = max(1, int(top // spacing))
-    return [round(i * spacing, 2) for i in range(count + 1)]
+        return [base]
+    count = max(1, int((top - base) // spacing))
+    return [round(base + i * spacing, 2) for i in range(count + 1)]
 
 
 class Survey:
@@ -363,6 +368,55 @@ class Survey:
             return self.from_model(out, by)
         return self.from_declared(out, by)
 
+    def datum_of(self, mesh, path, note: dict) -> float:
+        """Where the ground is, having first checked that it is the ground.
+
+        `Mesh.ground` takes a low quantile of the height, which assumes the
+        lowest geometry in a capture is its own grade. Photogrammetry regularly
+        hangs skirts of unclosed polygons below the surface it could not seal --
+        seven per cent of the vertices on one export -- and then the quantile
+        lands metres underground.
+
+        Everything after that is quietly wrong and internally consistent. Every
+        threshold is measured off the datum, so "material above six metres" is
+        the whole clip box including its ground plane; the registration fits the
+        box rather than the building, and reports plausible numbers while doing
+        it. Two of the six buildings built with this pipeline lost the better
+        part of a day to it, and both times the search went sideways -- re-clip
+        tighter, raise the floor -- because the symptom points along the axis
+        the fault is not on.
+
+        The check is one comparison: the height at which vertices actually pile
+        up, against the quantile. On a real site the pavement, the car park, the
+        pool deck and the road agree to within a metre; a disagreement wider
+        than that is not surface variation.
+        """
+        cheap, real, gap = mesh.datum()
+        note["datum"] = {"quantile": round(cheap, 2),
+                         "ground_band": round(real, 2),
+                         "gap": round(gap, 2),
+                         "agrees": gap <= self.t.DATUM_AGREEMENT}
+        if gap <= self.t.DATUM_AGREEMENT:
+            return cheap
+
+        top = max(mesh.y)
+        raise SystemExit(
+            f"the datum of {Path(path).name} is not the ground.\n"
+            f"    a low quantile of the height says {cheap:.2f} m\n"
+            f"    vertices actually pile up at {real:.2f} m\n"
+            f"    they differ by {gap:.2f} m\n"
+            "This capture carries geometry below its own grade -- skirts "
+            "of unclosed polygons, which photogrammetry hangs under any "
+            "surface it could not seal. Every threshold below is measured "
+            "from the datum, so leaving it there puts 'above the ground' "
+            "inside the ground, and fits the registration to the clip box "
+            "rather than to the building.\n"
+            "Cut them off in the vertical clip and convert again:\n"
+            f"    --clip-up {real - 1:.0f} {top - real + 5:.0f}\n"
+            "If this capture really does have that much below grade -- a "
+            "basement the export modelled, a site that steps down -- raise "
+            "DATUM_AGREEMENT and say why.")
+
     def link_to(self, read: Read, reference, out: dict, record: bool = True) -> Link:
         """Load the reference OBJ and work out how to address it.
 
@@ -398,7 +452,7 @@ class Survey:
             return Link(mesh, read.massing.model_frame, datum, reference.name)
 
         mesh = Mesh.read(reference.path)
-        datum = mesh.ground()
+        datum = self.datum_of(mesh, reference.path, note)
         mesh_frame = mesh.frame(datum=datum, floor=self.t.MESH_FLOOR)
         cloud = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
 
@@ -502,6 +556,53 @@ class Survey:
             note["registration"]["expected"] = why
         return Link(mesh, mesh_frame, datum, reference.name, reg)
 
+    def from_texture(self, out: dict) -> dict | None:
+        """The storey rhythm read off an orthographic elevation's own texture.
+
+        The geometry of a capture cannot be trusted for this: the exporter lays
+        a seam of vertices every 4.5 m on every facade of every building, and
+        autocorrelation reports that seam as a storey with a confidence no real
+        facade reaches. The *texture* of the same capture is a photograph of the
+        wall, and window heads and sill courses are in it where they actually
+        are.
+
+        Two buildings measured this by hand -- one counting rows against a
+        photograph, one running the autocorrelation on an ortho by script -- and
+        both got a number that disagreed with the geometry by a metre and a
+        half. The apparatus for it was already in the library; nothing called it.
+        """
+        orthos = getattr(self.paths, "ORTHOS", None)
+        meta = Path(orthos) / "render_meta.json" if orthos else None
+        if meta is None or not meta.exists():
+            return None
+        views = json.loads(meta.read_text(encoding="utf-8")).get("views", {})
+        best = None
+        for side in ("north", "south", "east", "west"):
+            view = views.get(side) or {}
+            picture = Path(orthos) / f"{side}_tex.png"
+            scale = view.get("metres_per_pixel")
+            if not scale or not picture.exists():
+                continue
+            try:
+                from PIL import Image
+
+                lines = measure.floor_lines(Image.open(picture), scale)
+            except Exception:
+                continue
+            if len(lines) < 3:
+                continue
+            gaps = [b - a for a, b in zip(lines, lines[1:])]
+            gaps.sort()
+            spacing = gaps[len(gaps) // 2]
+            spread = (gaps[-1] - gaps[0]) / spacing if spacing else 9.9
+            if spacing <= 0 or measure.looks_like_tiling(spacing):
+                continue
+            if best is None or spread < best["spread"]:
+                best = {"by": f"{side}_tex.png", "spacing": round(spacing, 2),
+                        "lines": [round(v, 2) for v in lines],
+                        "spread": round(spread, 2)}
+        return best
+
     def storeys_of(self, out: dict, read: Read, link: Link | None) -> None:
         """The storey rhythm: measured off the reference, or declared.
 
@@ -541,6 +642,37 @@ class Survey:
                 "window": [round(body[0], 1), round(body[1], 1)],
             }
 
+        # A spacing that is the exporter's tile seam is not a storey, however
+        # confidently the autocorrelation reports it. Three buildings were told
+        # 4.5 m -- one of them a block whose window rows are 2.92 -- and each
+        # proved it wrong by hand, twice from a histogram of vertex heights and
+        # once by counting rows in a photograph.
+        if measured and measured["found"] and measure.looks_like_tiling(
+                measured["spacing"]):
+            measured["found"] = False
+            measured["tiling"] = True
+            measured["why"] = (
+                f"{measured['spacing']:.2f} m is the Google Earth tile seam, "
+                "not a storey: the exporter puts a band of vertices every "
+                f"{measure.TILE_SEAM} m on every facade of every building. "
+                "Read the rhythm off the texture instead -- "
+                "`measure.floor_lines` on an orthographic elevation -- or "
+                "declare it from a photograph with the row count named.")
+
+        # Before giving up on the geometry, ask the texture -- and offer the
+        # answer rather than take it. The texture is the same capture
+        # photographed instead of triangulated, so the tile seam is not in it;
+        # but it holds every other horizontal line as well, and on a facade with
+        # balconies it finds the slab *and* the rail and reports half a storey.
+        #
+        # Two candidates, neither trustworthy alone, is exactly the situation a
+        # declaration exists for. So both are printed with what they came from,
+        # and the run stops rather than picking.
+        if measured and not measured["found"]:
+            texture = self.from_texture(out)
+            if texture:
+                measured["from_texture"] = texture
+
         if measured and measured["found"]:
             out["storeys"] = measured
         elif self.t.DECLARED_STOREY.get("spacing"):
@@ -557,7 +689,9 @@ class Survey:
                 "found": True,
                 "declared": True,
                 "source": self.t.DECLARED_STOREY["source"],
-                "levels": levels_from(spacing, top),
+                "levels": levels_from(spacing, top,
+                                      float(self.t.DECLARED_STOREY.get("base",
+                                                                       0.0))),
                 "measured": measured,
             }
         elif measured:
@@ -569,6 +703,66 @@ class Survey:
                                      "self.t.DECLARED_STOREY to fall back on",
             }
         out["storeys"]["window"] = [round(body[0], 1), round(body[1], 1)]
+
+    def roof_of(self, out: dict, read: Read, link: Link | None) -> None:
+        """How level each part's roof actually is, before anything is built on it.
+
+        One number per part is the pipeline's default and it is right only for a
+        flat roof. Where it is wrong it is wrong quietly: the section grades the
+        same median the build was extruded to, so every number agrees with every
+        other while the building is metres out. Five buildings in a row lost
+        hours to it and every one of them had the evidence in `derived.json`
+        from the first run -- a part whose median and maximum were four metres
+        apart -- with nothing suggesting anybody look.
+
+        This is the suggestion. It measures nothing the build must use; it says
+        how much the one number can be trusted, and names the tool for the case
+        where it cannot.
+        """
+        if link is None:
+            return
+        surface = roof.Roof.read(link.mesh, link, read.frame,
+                                 read.mass.width, read.mass.length)
+        out["roof"] = {}
+        for name in read.order:
+            mask = read.named[name].mask
+            heights = sorted(surface.over(mask))
+            if not heights:
+                out["roof"][name] = {"cells": 0}
+                continue
+            deck = surface.deck(mask)
+            levels = surface.terraces(mask)
+            out["roof"][name] = {
+                "cells": len(heights),
+                "deck": round(deck, 2),
+                "median": round(heights[len(heights) // 2], 2),
+                "low": round(heights[0], 2),
+                "high": round(heights[-1], 2),
+                "above_deck": round(heights[-1] - deck, 2),
+                "terraces": [self._terrace(t, len(levels)) for t in levels],
+            }
+        out["roof_lines"] = [line for name in read.order
+                             for line in surface.lines(read.named[name].mask,
+                                                       name)]
+
+    @staticmethod
+    def _terrace(terrace, levels: int) -> dict:
+        """One measured level, with its shape when the shape is needed.
+
+        A part that came back as a single terrace is a flat roof and the build
+        already has its footprint, so the mask would be a copy of something it
+        holds. A part that came back as several is the case this measurement
+        exists for, and there the shapes are the answer: without them a build
+        can only put the steps in a bounding box, which is the mistake in a
+        different costume.
+        """
+        entry = {"height": round(terrace.height, 2),
+                 "low": round(terrace.low, 2),
+                 "high": round(terrace.high, 2),
+                 "cells": terrace.cells}
+        if levels > 1:
+            entry["mask"] = terrace.mask.dumps()
+        return entry
 
     def skyline_of(self, out: dict, read: Read, link: Link | None) -> None:
         """How tall each part is: read over its own footprint, or declared.
@@ -900,6 +1094,7 @@ class Survey:
 
         self.storeys_of(out, read, link)
         self.skyline_of(out, read, link)
+        self.roof_of(out, read, link)
         self.witnesses_of(out, evidence, read, link)
 
         # The building's own windows into the reference, if it opened any.
@@ -1037,13 +1232,27 @@ class Survey:
                 "  floors at " + ", ".join(f"{v:.2f}" for v in s["levels"]),
             ]
             if not s["found"]:
-                lines.append(
-                    "  NOT FOUND -- that correlation is noise, and the spacing "
-                    "above is the peak of it. Move the bands onto a facade the "
-                    "reference actually modelled, or set self.t.DECLARED_STOREY.")
+                if s.get("from_texture"):
+                    t = s["from_texture"]
+                    lines.append(
+                        f"  the texture of {t['by']} reads {t['spacing']} m over "
+                        f"{len(t['lines'])} lines -- a candidate, not an answer: "
+                        "a facade with balconies puts a line at every slab and "
+                        "every rail, which reads as half a storey. Count rows on "
+                        "a photograph before believing either number.")
+                lines.append("  NOT FOUND -- " + (
+                    s["why"] if s.get("tiling") else
+                    "that correlation is noise, and the spacing above is the "
+                    "peak of it. Move the bands onto a facade the reference "
+                    "actually modelled, read the rhythm off the texture, or "
+                    "declare it from a photograph."))
 
         if out.get("witness_lines"):
             lines += [""] + out["witness_lines"]
+
+        if out.get("roof_lines"):
+            lines += ["", "what the reference holds over each part"]
+            lines += out["roof_lines"]
 
         lines += ["", "skyline"]
         for name, p in out["skyline"].items():

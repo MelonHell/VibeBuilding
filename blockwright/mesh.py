@@ -60,9 +60,70 @@ class Mesh:
 
         A flat minimum would latch onto whatever the export clipped through --
         a kerb, a sliver of road cut below grade -- so take a quantile instead.
+
+        **This is the single most dangerous number in the pipeline, and it fails
+        quietly.** Photogrammetry hangs skirts of unclosed polygons below the
+        surface it could not seal; on one capture seven per cent of the vertices
+        were *under* the ground, and a two per cent quantile landed nine metres
+        below it. Nothing downstream complains: every threshold is measured from
+        the datum, so "six metres above the ground" becomes "inside the ground",
+        the registration fits the clip box instead of the building, and it
+        reports honest-looking numbers while doing it.
+
+        Use `datum()` instead wherever the answer matters. It returns this
+        number *and* the height the ground actually piles up at, so the two can
+        be compared before anything is built on either.
         """
         ys = sorted(self.y)
         return ys[max(0, min(len(ys) - 1, int(quantile * len(ys))))]
+
+    def levels(self, band: float = 0.5) -> list[tuple[float, int]]:
+        """How many vertices sit at each height, in bands of `band` metres.
+
+        The shape of a capture in one list: the ground is the fullest band by a
+        long way, each terrace is a bump, and a skirt of unclosed polygons is a
+        thin tail below everything. Sorted by height, not by count, because what
+        is being read off it is where things are and not which is biggest.
+        """
+        if not self.y:
+            return []
+        low = min(self.y)
+        tally: dict[int, int] = {}
+        for value in self.y:
+            k = int((value - low) / band)
+            tally[k] = tally.get(k, 0) + 1
+        return [(low + k * band, n) for k, n in sorted(tally.items())]
+
+    def datum(self, quantile: float = 0.02, band: float = 0.5,
+              floor: float = 0.5) -> tuple[float, float, float]:
+        """(quantile, densest ground band, how far apart they are).
+
+        The second number is the height at which the most vertices pile up
+        below the middle of the capture -- the pavement, the car park, the pool
+        deck, the road, which on a real site all come out within a metre of each
+        other. That is the ground. The first is what `ground()` says. When they
+        disagree by more than a metre, the capture is carrying geometry below
+        its own grade and the datum is wrong.
+
+        `floor` drops bands holding less than that fraction of the busiest, so a
+        skirt of a few hundred polygons cannot be mistaken for a surface.
+        """
+        cheap = self.ground(quantile)
+        bands = self.levels(band)
+        if not bands:
+            return cheap, cheap, 0.0
+        middle = (max(self.y) + min(self.y)) / 2
+        low = [(h, n) for h, n in bands if h <= middle]
+        if not low:
+            low = bands
+        busiest = max(n for _, n in low)
+        real = max((h for h, n in low if n >= floor * busiest), default=cheap)
+        # The *lowest* band that is still a surface, not the fullest one: a
+        # building with a big flat roof can out-vote its own pavement, and the
+        # ground is the thing underneath everything.
+        surfaces = [h for h, n in low if n >= floor * busiest]
+        real = min(surfaces) if surfaces else cheap
+        return cheap, real, abs(real - cheap)
 
     def above(self, datum: float, height: float) -> list[int]:
         """Indices of vertices more than `height` metres above `datum`."""

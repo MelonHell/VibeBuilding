@@ -46,6 +46,11 @@ from .plan import Part
 
 MARGIN = 4          # blocks of clear grid around the plan
 MIN_CELLS = 20      # a piece smaller than this is a sliver, not a part
+
+# The widest plan this will rasterise, in metres. Four kilometres is far larger
+# than any building and far smaller than the nine million metres a misread
+# projection produces, so it separates the two without ever refusing real work.
+LIMIT = 4000
 EARTH = 6378137.0   # metres, for the local projection
 
 # Longitude and latitude fall inside this and metres almost never do: a building
@@ -119,12 +124,34 @@ class Shape:
                 + (f", {len(self.holes)} hole(s)" if self.holes else "") + ">")
 
 
+# The widest a building can be and still be one, in degrees: about a kilometre
+# and a half of latitude. It is the second half of the degrees test, and without
+# it a plan drawn in metres near the origin -- which is what every hand-drawn
+# and every locally-surveyed plan looks like -- reads as longitude and latitude
+# and comes back nine million metres across.
+SPAN = 0.02
+
+
 def _degrees(shapes: list[Shape]) -> bool:
+    """Whether the numbers are longitude and latitude rather than metres.
+
+    Two questions, not one. Everything on Earth is within 180 by 90, so the
+    bounds alone say almost nothing: a fifty-metre building drawn about the
+    origin passes that test and is then projected as if it spanned half a
+    continent. What separates the two is *extent* -- a building is a fraction
+    of a degree across and tens of metres across, and those cannot be confused.
+    """
+    lo_x = lo_z = 1e18
+    hi_x = hi_z = -1e18
     for shape in shapes:
         for x, z in shape.outer.points:
             if abs(x) > DEGREES[0] or abs(z) > DEGREES[1]:
                 return False
-    return True
+            lo_x, hi_x = min(lo_x, x), max(hi_x, x)
+            lo_z, hi_z = min(lo_z, z), max(hi_z, z)
+    if hi_x < lo_x:
+        return False
+    return (hi_x - lo_x) <= SPAN and (hi_z - lo_z) <= SPAN
 
 
 def _project(shapes: list[Shape]) -> None:
@@ -337,6 +364,16 @@ def rasterise(shapes: list[Shape], margin: int = MARGIN,
     z1 = max(s.bounds()[3] for s in shapes) + margin
     width = int(math.ceil(x1 - x0)) + 1
     length = int(math.ceil(z1 - z0)) + 1
+    if width > LIMIT or length > LIMIT:
+        raise SystemExit(
+            f"the plan comes out {width} x {length} metres, which is not a "
+            "building.\n"
+            "One block is one metre here, so a plan this size is a units "
+            "problem and not a big building: coordinates read as longitude and "
+            "latitude when they were metres, an SVG scaled by the wrong VECTOR_"
+            "SCALE, or a file in feet.\n"
+            "Rasterising it would ask for a mask of "
+            f"{width * length / 1e6:.0f} million cells.")
 
     masks: dict[str, Mask] = {}
     for shape in shapes:

@@ -219,6 +219,23 @@ class Storeys:
                 f"at {heights}>")
 
 
+# Google Earth exports carry a horizontal seam every 4.5 metres: the tiler's
+# own grid, not the building's. It puts twenty to sixty times the usual number
+# of vertices in a band, on every facade of every building, and autocorrelation
+# reports it as a storey with a confidence no real facade reaches. Three
+# buildings in a row were told their floors were 4.5 m apart -- one of them a
+# 1960s block whose window rows are 2.92 m -- and each spent hours proving it
+# was not so.
+TILE_SEAM = 4.5
+TILE_MARGIN = 0.15
+
+
+def looks_like_tiling(spacing: float, seam: float = TILE_SEAM,
+                      margin: float = TILE_MARGIN) -> bool:
+    """Whether a spacing is the exporter's grid rather than the building's."""
+    return abs(spacing - seam) <= margin
+
+
 def storey_height(mesh, frame, bands, u0: float, u1: float,
                   datum: float | None = None, step: float = 0.25,
                   floor: float = 0.0, ceiling: float = 25.0,
