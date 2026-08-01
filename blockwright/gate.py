@@ -72,6 +72,28 @@ CLUTTER = 2.0
 # features; few enough that photogrammetry noise averages out inside one.
 PROFILE_BINS = 24
 
+# How far either way to turn the reference when checking that the two frames
+# agree about which way the building points, and how finely. Five degrees is
+# past anything a good fit produces and short of the half-turn `orient` handles;
+# half a degree is finer than the answer is meaningful to, which is the point --
+# a maximum that wanders inside a degree is a plateau and reads as one.
+SWEEP = 5.0
+SWEEP_STEP = 0.5
+
+# The grid the two footprints are compared on. Coarse deliberately: this is a
+# question about a couple of degrees of rotation, not about a wall, and a fine
+# grid would spend its time on photogrammetry speckle.
+SWEEP_GRID = 120
+
+# How many of the reference's points the sweep carries. A footprint's shape is
+# fully drawn by this many on a 120-cell grid, and a capture has twenty times
+# as many.
+SWEEP_POINTS = 60000
+
+# Fixed, because a measurement that changes between two runs of the same inputs
+# is not a measurement.
+SWEEP_SEED = 20260801
+
 
 # -- verdicts --------------------------------------------------------------
 
@@ -526,6 +548,95 @@ class Registration:
         # so the number is reported rather than swallowed.
         table["margin"] = round(ranked[0] - ranked[1], 3)
         return best[0], best[1], table
+
+    def square(self, points, plan: "Plan", sweep: float = SWEEP,
+               step: float = SWEEP_STEP, grid: int = SWEEP_GRID) -> dict:
+        """Whether the two frames are turned the same way, to within a degree.
+
+        The registration scales and shifts each axis and never rotates. That is
+        right, because the rotation is already in the two frames -- each was
+        fitted to its own source -- and it is right only if those two fits agree
+        about which way the building points. When they do not, nothing says so:
+        the extents simply stretch to cover a footprint that is lying across
+        them, both scales stay plausible, and the section reports the error as
+        noise spread evenly over every station. That is the most expensive kind
+        of wrong this pipeline can be, because it looks like photogrammetry.
+
+        So: turn the reference through a few degrees either way, re-fit, and
+        measure how much of the plan it covers each time. Reported, never
+        applied. If the answer is that the fit would be better a few degrees
+        round, the fix is the clip or the capture's heading, not a quiet
+        rotation inside the measuring stick.
+
+        Scored by mask overlap and not by the width profile `orient` uses.
+        Profile agreement rises as a shape is smeared across its own bins, so it
+        is maximised at both ends of the sweep and is useless for an angle;
+        overlap falls off on both sides of the truth, which is what a metric for
+        this has to do.
+        """
+        from .mask import Mask, iou
+
+        u0, u1 = self.build_u
+        v0, v1 = self.build_v
+        du = (u1 - u0) or 1.0
+        dv = (v1 - v0) or 1.0
+
+        def rasterise(pairs, close: float = 2.0) -> Mask:
+            mask = Mask(grid, grid)
+            for u, v in pairs:
+                x = int((u - u0) / du * (grid - 1))
+                z = int((v - v0) / dv * (grid - 1))
+                if 0 <= x < grid and 0 <= z < grid:
+                    mask.set(x, z)
+            return mask.close(close) if close else mask
+
+        # Thinned before the sweep. This is a question about a couple of degrees
+        # of rotation of a whole footprint, and a footprint's shape is drawn
+        # well enough by a fraction of the points on a 120-cell grid; carrying
+        # half a million through twenty-one rotations costs more than the rest
+        # of the survey.
+        #
+        # Sampled at random, from a fixed seed, and not by taking every nth. An
+        # OBJ's vertices arrive in the order the exporter wrote them, which is
+        # tile by tile, so a stride is a comb through the building and drops
+        # whole pieces of it -- on one capture that moved the answer by four
+        # degrees. The seed keeps the run reproducible, which every other number
+        # here already is.
+        if len(points) > SWEEP_POINTS:
+            import random
+
+            points = random.Random(SWEEP_SEED).sample(list(points),
+                                                      SWEEP_POINTS)
+
+        want = rasterise(plan.points)
+        cu = sum(p[0] for p in points) / len(points)
+        cv = sum(p[1] for p in points) / len(points)
+
+        rows = []
+        for i in range(int(-sweep / step), int(sweep / step) + 1):
+            angle = i * step
+            rad = math.radians(angle)
+            cos, sin = math.cos(rad), math.sin(rad)
+            turned = [((u - cu) * cos - (v - cv) * sin + cu,
+                       (u - cu) * sin + (v - cv) * cos + cv)
+                      for u, v in points]
+            trial = Registration(extent([p[0] for p in turned]),
+                                 extent([p[1] for p in turned]),
+                                 (u0, u1), (v0, v1), self.ceiling,
+                                 self.flip_u, self.flip_v)
+            got = rasterise([(trial.to_build_u(u), trial.to_build_v(v))
+                             for u, v in turned])
+            rows.append((angle, iou(want, got)))
+
+        best = max(rows, key=lambda r: r[1])
+        here = dict(rows)[0.0]
+        return {
+            "best": round(best[0], 2),
+            "overlap": round(best[1], 3),
+            "as_fitted": round(here, 3),
+            "gain": round(best[1] - here, 3),
+            "sweep": [[a, round(s, 3)] for a, s in rows],
+        }
 
     def to_mesh_u(self, u: float) -> float:
         out = self.mesh_u[0] + (u - self.build_u[0]) * self.u_scale

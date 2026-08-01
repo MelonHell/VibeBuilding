@@ -528,6 +528,16 @@ class Survey:
         flip_u, flip_v, scores = reg.orient(high, drawn)
         reg.flip_u, reg.flip_v = flip_u, flip_v
 
+        # Which way round is settled; whether the two frames are turned the
+        # *same* way is a different question, and until now nothing asked it.
+        # The registration does not rotate -- it does not have to, because each
+        # frame was fitted to its own source -- and that reasoning holds only
+        # while the two fits agree about which way the building points. When
+        # they disagree by a couple of degrees the extents stretch to cover a
+        # footprint lying across them, both scales stay plausible, and the
+        # section reports the error as noise on every station at once.
+        square = reg.square(high, drawn)
+
         note["mesh"] = {
             "read": True,
             "kind": reference.name,
@@ -558,6 +568,7 @@ class Survey:
             # of thing that works until somebody improves the wording.
             "flip": [reg.flip_u, reg.flip_v],
             "orientation": scores,
+            "square": square,
         }
         note["registration"]["graded"] = True
         if not reg.agrees():
@@ -1067,6 +1078,17 @@ class Survey:
                 found.append(witnesses.overlap(
                     iou(read.mass, same), by, "map"))
 
+        # The plan against the reference, which is the pair every building has
+        # and none of them was comparing. The number falls out of the squareness
+        # sweep -- it is the overlap at zero -- so it costs nothing extra, and it
+        # is the one shape check on the registration itself: two footprints that
+        # register perfectly by extent and overlap six tenths are not the same
+        # building seen twice.
+        square = (out.get("registration") or {}).get("square")
+        kind = (out.get("mesh") or {}).get("kind")
+        if square and kind and read.source.name != kind:
+            found.append(witnesses.overlap(square["as_fitted"], by, kind))
+
         # Disagreements the building has said to expect. Not a widened
         # tolerance: the row goes ungraded with the reason printed beside it,
         # so it stays legible and every other disagreement on that axis is
@@ -1325,6 +1347,23 @@ class Survey:
                     "symmetric building either way round is the same building "
                     "and it does not matter; on one with a short wing or a "
                     "round end, check it.")
+
+        sq = r.get("square") if r else None
+        if sq:
+            lines.append(
+                f"    frames square to within {sq['best']:+.1f} deg: the two "
+                f"footprints overlap {sq['as_fitted']:.3f} as fitted, "
+                f"{sq['overlap']:.3f} at the best angle in the sweep")
+            if abs(sq["best"]) >= 2.0 and sq["gain"] >= 0.05:
+                lines.append(
+                    f"    THE FRAMES ARE NOT SQUARE. Turning the reference "
+                    f"{sq['best']:+.1f} deg would gain {sq['gain']:.3f} of "
+                    "overlap, which means the two fits disagree about which "
+                    "way this building points. The registration does not "
+                    "rotate, so that disagreement is spread over every station "
+                    "of every section as if it were photogrammetry noise.\n"
+                    "    Fix the clip or the capture's heading. Do not widen a "
+                    "tolerance: the sections will still be wrong, quietly.")
 
         if out.get("facade", {}).get("bay"):
             lines.append("")
