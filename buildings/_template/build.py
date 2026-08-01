@@ -78,6 +78,19 @@ COURT = 8.0             # the widest gap between parts that is still one site
 FACADE_PITCH = 6.5      # window bay module, as arc length along the wall
 FACADE_WIDTH = 4.5      # how much of each bay is glass
 
+# FACADE_PITCH is in this block because nothing used to measure it. Something
+# does now: `derive` autocorrelates the vertical edges of every textured
+# elevation and reports the pier rhythm with how many of the four agreed.
+#
+#     bay = site.d.get("facade", {}).get("bay")
+#     if bay and bay["agreed"] >= 2:
+#         FACADE_PITCH = bay["value"]
+#
+# Two elevations landing on the same figure is a measurement and belongs in the
+# measured half; one elevation is a reading and belongs here, chosen, with the
+# reason. Take it or reject it -- but not without looking, which is what every
+# building before this one did.
+
 RENDER_SCALE = 6.0
 
 # -- the manifest -----------------------------------------------------------

@@ -46,6 +46,12 @@ DEFAULTS = {
     "BODY": (0.05, 0.60),
     "FACADE_INSET": 1.0,
     "STOREY_RANGE": (2.0, 6.0),
+    # Where to look for the pier rhythm on a textured elevation. Wider than the
+    # storey range because a bay is a composition rather than a constraint: a
+    # residential slab repeats every three metres and a hotel every twelve, and
+    # both are ordinary. The floor is above the rasterisation staircase so that
+    # what comes back is a building and not the pixel grid.
+    "BAY_RANGE": (2.5, 14.0),
     "STOREY_STEP": 0.25,
     "STOREY_CEILING": 26.0,
     "STOREY_SCORE": 0.15,
@@ -173,6 +179,40 @@ class Link:
 
     def to_build_v(self, v: float) -> float:
         return self.registration.to_build_v(v) if self.registration else v
+
+
+def _texture_lines(what: str, found: dict, against: float | None) -> list[str]:
+    """What the elevations' texture read, and whether they agreed with it.
+
+    The agreement count is the load-bearing part. One facade's autocorrelation
+    is a reading; three facades landing on the same figure is a measurement, and
+    the difference between them is the difference between a number worth
+    building to and a number worth printing.
+    """
+    sides = ", ".join(f"{r['side']} {r['value']:.2f}" for r in found["readings"])
+    out = [f"  texture {what}: {found['value']:.2f} m, "
+           f"{found['agreed']} of {found['of']} elevations agree "
+           f"(r={found['score']:+.2f}) -- {sides}"]
+    if found["doubled"]:
+        out.append(f"  {'':{len(what)}}          "
+                   f"{', '.join(found['doubled'])} read half of it -- the same "
+                   "rhythm at twice the frequency, which on a storey is the "
+                   "balcony rail between the floors and on a bay is the "
+                   "mullion between the piers")
+    if found["agreed"] < 2:
+        out.append(f"  {'':{len(what)}}          one elevation only, so this is "
+                   "a reading and not a measurement")
+    if what == "storey" and measure.looks_like_tiling(found["value"]):
+        out.append(f"  {'':{len(what)}}          and it lands on the "
+                   f"{measure.TILE_SEAM} m tile seam, so the texture agrees "
+                   "with the exporter rather than with the building. Count "
+                   "rows on a photograph.")
+    if against is not None and abs(against - found["value"]) > 0.5:
+        out.append(f"  {'':{len(what)}}          the geometry says "
+                   f"{against:.2f} m and the photograph says "
+                   f"{found['value']:.2f}; they are the same capture, so one of "
+                   "them is the exporter. Count rows on a photograph.")
+    return out
 
 
 def levels_from(spacing: float, top: float, base: float = 0.0) -> list[float]:
@@ -556,27 +596,36 @@ class Survey:
             note["registration"]["expected"] = why
         return Link(mesh, mesh_frame, datum, reference.name, reg)
 
-    def from_texture(self, out: dict) -> dict | None:
-        """The storey rhythm read off an orthographic elevation's own texture.
+    def from_texture(self, out: dict) -> dict:
+        """Two rhythms read off the orthographic elevations' own texture.
 
-        The geometry of a capture cannot be trusted for this: the exporter lays
-        a seam of vertices every 4.5 m on every facade of every building, and
-        autocorrelation reports that seam as a storey with a confidence no real
-        facade reaches. The *texture* of the same capture is a photograph of the
-        wall, and window heads and sill courses are in it where they actually
-        are.
+        The *geometry* of a capture cannot answer either of them. The exporter
+        lays a seam of vertices every 4.5 m on every facade of every building,
+        and autocorrelation reports that seam as a storey with a confidence no
+        real facade reaches; nothing in the geometry knows where a pier is at
+        all. The texture of the same capture is a photograph of the wall, and
+        window heads, sill courses and piers are in it where they actually are.
 
-        Two buildings measured this by hand -- one counting rows against a
-        photograph, one running the autocorrelation on an ortho by script -- and
-        both got a number that disagreed with the geometry by a metre and a
-        half. The apparatus for it was already in the library; nothing called it.
+        Read four elevations, not one, and report **how many of them agreed**.
+        A single facade's autocorrelation on a balconied elevation comes back
+        with the slab-and-rail pair rather than the storey -- half the real
+        number, at a score that looks respectable. Two independent facades
+        landing on the same figure is evidence; one facade landing on a figure
+        is a reading.
+
+        Nothing here decides anything. Both rhythms travel as candidates, with
+        their agreement, for the build to take or for a person to reject with a
+        reason -- and the piers in particular are a number that has been chosen
+        by hand on every building so far while being perfectly measurable.
         """
         orthos = getattr(self.paths, "ORTHOS", None)
         meta = Path(orthos) / "render_meta.json" if orthos else None
         if meta is None or not meta.exists():
-            return None
+            return {}
         views = json.loads(meta.read_text(encoding="utf-8")).get("views", {})
-        best = None
+
+        storeys: list[dict] = []
+        bays: list[dict] = []
         for side in ("north", "south", "east", "west"):
             view = views.get(side) or {}
             picture = Path(orthos) / f"{side}_tex.png"
@@ -586,22 +635,80 @@ class Survey:
             try:
                 from PIL import Image
 
-                lines = measure.floor_lines(Image.open(picture), scale)
-            except Exception:
+                image = Image.open(picture)
+                down = measure.period(measure.row_signal(image), scale,
+                                      *self.t.STOREY_RANGE)
+                across = measure.period(measure.column_signal(image), scale,
+                                        *self.t.BAY_RANGE)
+            except Exception:                              # noqa: BLE001
                 continue
-            if len(lines) < 3:
-                continue
-            gaps = [b - a for a, b in zip(lines, lines[1:])]
-            gaps.sort()
-            spacing = gaps[len(gaps) // 2]
-            spread = (gaps[-1] - gaps[0]) / spacing if spacing else 9.9
-            if spacing <= 0 or measure.looks_like_tiling(spacing):
-                continue
-            if best is None or spread < best["spread"]:
-                best = {"by": f"{side}_tex.png", "spacing": round(spacing, 2),
-                        "lines": [round(v, 2) for v in lines],
-                        "spread": round(spread, 2)}
-        return best
+            # Not filtered against the tile seam, unlike the geometry. The
+            # seam is a band of *vertices*; this is the photograph wrapped
+            # around them, and dropping a reading for landing near 4.5 m would
+            # throw away the one measurement that can tell a real 4.5 m storey
+            # from the exporter's. If the answer comes back on the seam anyway,
+            # `_texture_lines` says so and leaves the judgement outside.
+            if down.value > 0:
+                storeys.append({"side": side, "value": round(down.value, 2),
+                                "score": round(down.score, 3)})
+            if across.value > 0:
+                bays.append({"side": side, "value": round(across.value, 2),
+                             "score": round(across.score, 3)})
+
+        found = {}
+        for name, readings in (("storey", storeys), ("bay", bays)):
+            agreed = self._agreed(readings)
+            if agreed:
+                found[name] = agreed
+        return found
+
+    @staticmethod
+    def _agreed(readings: list[dict], tolerance: float = 0.12) -> dict | None:
+        """The largest group of facades that read the same rhythm.
+
+        Two readings agree within `tolerance` of the larger, and a reading also
+        agrees with twice itself: autocorrelation on a facade with a band
+        halfway up each storey returns the half, and a half that matches
+        somebody else's whole is the same fact seen at a different multiple, not
+        a disagreement. The doubled reading is what is reported, because the
+        whole is the storey and the half is the balcony.
+        """
+        if not readings:
+            return None
+
+        def near(a: float, b: float) -> bool:
+            return abs(a - b) <= tolerance * max(a, b)
+
+        best = None
+        for anchor in readings:
+            value = anchor["value"]
+            with_it = []
+            for other in readings:
+                if near(other["value"], value):
+                    with_it.append((other, other["value"]))
+                elif near(other["value"] * 2, value):
+                    with_it.append((other, other["value"] * 2))
+            if best is None or len(with_it) > len(best[1]) or (
+                    len(with_it) == len(best[1])
+                    and anchor["score"] > best[0]["score"]):
+                best = (anchor, with_it)
+
+        anchor, group = best
+        weight = sum(max(r["score"], 0.0) for r, _ in group)
+        if weight <= 0:
+            value = sum(v for _, v in group) / len(group)
+        else:
+            value = sum(max(r["score"], 0.0) * v
+                        for r, v in group) / weight
+        return {
+            "value": round(value, 2),
+            "agreed": len(group),
+            "of": len(readings),
+            "score": round(max(r["score"] for r, _ in group), 3),
+            "readings": readings,
+            "doubled": sorted(r["side"] for r, v in group
+                              if abs(v - r["value"]) > 1e-9),
+        }
 
     def storeys_of(self, out: dict, read: Read, link: Link | None) -> None:
         """The storey rhythm: measured off the reference, or declared.
@@ -668,10 +775,16 @@ class Survey:
         # Two candidates, neither trustworthy alone, is exactly the situation a
         # declaration exists for. So both are printed with what they came from,
         # and the run stops rather than picking.
-        if measured and not measured["found"]:
-            texture = self.from_texture(out)
-            if texture:
-                measured["from_texture"] = texture
+        #
+        # Read whether or not the geometry found something. When the geometry
+        # is confident and the texture disagrees, that disagreement is the news:
+        # a capture whose vertices say 4.5 m and whose photograph says 3.1 m has
+        # told you which one is the exporter.
+        skin = self.from_texture(out)
+        if skin.get("storey") and measured is not None:
+            measured["from_texture"] = skin["storey"]
+        if skin.get("bay"):
+            out["facade"] = {"bay": skin["bay"]}
 
         if measured and measured["found"]:
             out["storeys"] = measured
@@ -1213,6 +1326,13 @@ class Survey:
                     "and it does not matter; on one with a short wing or a "
                     "round end, check it.")
 
+        if out.get("facade", {}).get("bay"):
+            lines.append("")
+            lines.extend(_texture_lines("bay", out["facade"]["bay"], None))
+            lines.append("  the pier rhythm the elevations actually carry. It "
+                         "is a candidate for FACADE_PITCH, which every building "
+                         "so far has chosen by hand.")
+
         s = out["storeys"]
         if s["by"] == "declared":
             lines += ["", f"storey height {s['spacing']} m, declared from "
@@ -1222,6 +1342,10 @@ class Survey:
                 lines.append(f"  the reference was searched first and returned "
                              f"{s['measured']['spacing']} m at "
                              f"r={s['measured']['score']:+.2f}, which is noise")
+                if s["measured"].get("from_texture"):
+                    lines.extend(_texture_lines(
+                        "storey", s["measured"]["from_texture"],
+                        float(s["spacing"])))
         elif s["by"] == "nothing":
             lines += ["", "storey height: " + s["why"]]
         else:
@@ -1231,15 +1355,11 @@ class Survey:
                 f"modelled facades, u {s['window'][0]}..{s['window'][1]}",
                 "  floors at " + ", ".join(f"{v:.2f}" for v in s["levels"]),
             ]
+            if s.get("from_texture"):
+                lines.extend(_texture_lines(
+                    "storey", s["from_texture"], s["spacing"] if s["found"]
+                    else None))
             if not s["found"]:
-                if s.get("from_texture"):
-                    t = s["from_texture"]
-                    lines.append(
-                        f"  the texture of {t['by']} reads {t['spacing']} m over "
-                        f"{len(t['lines'])} lines -- a candidate, not an answer: "
-                        "a facade with balconies puts a line at every slab and "
-                        "every rail, which reads as half a storey. Count rows on "
-                        "a photograph before believing either number.")
                 lines.append("  NOT FOUND -- " + (
                     s["why"] if s.get("tiling") else
                     "that correlation is noise, and the spacing above is the "
