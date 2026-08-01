@@ -189,6 +189,14 @@ MAP_PALETTE = None
 #
 # A key that matches nothing is left alone, so a stale entry shows up as a row
 # that has gone back to being graded.
+#
+# One key is not a witness row: `registration`. The fit between the reference
+# and the plan is otherwise fatal, because two axes fitting differently usually
+# means the fit has latched onto a belt of trees or the neighbour. Declaring it
+# here says the two sources really are differently proportioned drawings of one
+# building -- a game map that keeps the frontage and squeezes the depth against
+# a capture of the real prototype -- and lets the run continue with that row
+# ungraded and the reason in the report.
 EXPECTED: dict[str, str] = {
     # "bearing": "the map is a game map and stands this building on its own "
     #            "street grid, 37.5 degrees off the real one the capture is of",

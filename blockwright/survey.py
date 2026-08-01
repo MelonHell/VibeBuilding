@@ -457,19 +457,49 @@ class Survey:
             "disagreement": round(reg.disagreement, 3),
             "agrees": reg.agrees(),
             "turned": reg.turned,
+            # The flips as booleans and not only as the sentence `turned`
+            # renders them. A gate that wants to grade through *this* fit rather
+            # than re-fitting its own has to rebuild the Registration, and
+            # parsing "mirrored across v" back into a pair of flags is the kind
+            # of thing that works until somebody improves the wording.
+            "flip": [reg.flip_u, reg.flip_v],
             "orientation": scores,
         }
+        note["registration"]["graded"] = True
         if not reg.agrees():
-            raise SystemExit(
-                "the reference and the plan do not register: " + reg.detail + ".\n"
-                "One axis fitting several per cent differently from the other means "
-                "the fit has latched onto something that is not this building -- a "
-                "neighbour inside the clip, a belt of trees, a datum from the wrong "
-                "capture. Every number below it would be measured in the wrong "
-                f"place, so nothing was written to {self.paths.DERIVED.name}.\n"
-                "Re-clip the capture tighter, or raise self.t.REGISTER_FLOOR until the "
-                "fit is made on building and not on landscaping -- knowing that "
-                "anything below the new floor stops being registered with it.")
+            # The same escape the witness rows have, and for the same argument.
+            # Two axes fitting differently is usually a fit that has latched
+            # onto something that is not this building, and then stopping is
+            # right. It is not always that: a crop from a game map is a drawing
+            # of the building, and a mapper who keeps the street frontage and
+            # squeezes the depth produces a plan whose aspect is a few per cent
+            # off the real one forever. No clip and no floor will change it.
+            #
+            # Naming that here makes the fit usable and the row ungraded, with
+            # the reason carried into the report. It is not a widened tolerance:
+            # widening would excuse every other disagreement on this axis too,
+            # including the ones that are faults, and would do it silently. The
+            # affine is still fitted from the data and still says where a
+            # station is; what it stops claiming is that the two sources are of
+            # the same size.
+            why = dict(self.t.EXPECTED).get("registration")
+            if not why:
+                raise SystemExit(
+                    "the reference and the plan do not register: " + reg.detail + ".\n"
+                    "One axis fitting several per cent differently from the other means "
+                    "the fit has latched onto something that is not this building -- a "
+                    "neighbour inside the clip, a belt of trees, a datum from the wrong "
+                    "capture. Every number below it would be measured in the wrong "
+                    f"place, so nothing was written to {self.paths.DERIVED.name}.\n"
+                    "Re-clip the capture tighter, or raise self.t.REGISTER_FLOOR until the "
+                    "fit is made on building and not on landscaping -- knowing that "
+                    "anything below the new floor stops being registered with it.\n"
+                    "If the two really are of differently proportioned drawings of "
+                    "one building -- a game map against a capture of the real "
+                    "prototype -- say so in EXPECTED['registration'] with the "
+                    "reason, and the run continues with the row ungraded.")
+            note["registration"]["graded"] = False
+            note["registration"]["expected"] = why
         return Link(mesh, mesh_frame, datum, reference.name, reg)
 
     def storeys_of(self, out: dict, read: Read, link: Link | None) -> None:
@@ -963,12 +993,16 @@ class Survey:
                 f"  registered on material above {r['floor']} m: "
                 f"u scale {r['u']['scale']}, v scale {r['v']['scale']}, "
                 f"differ by {r['disagreement']}"
-                + ("" if r["agrees"] else "  <-- DOES NOT REGISTER"),
+                + ("" if r["agrees"] else
+                   ("  <-- ungraded, expected" if r.get("expected")
+                    else "  <-- DOES NOT REGISTER")),
                 f"    u  mesh {r['u']['mesh'][0]}..{r['u']['mesh'][1]} "
                 f"-> plan {r['u']['plan'][0]}..{r['u']['plan'][1]}",
                 f"    v  mesh {r['v']['mesh'][0]}..{r['v']['mesh'][1]} "
                 f"-> plan {r['v']['plan'][0]}..{r['v']['plan'][1]}",
             ]
+            if r.get("expected"):
+                lines.append("    " + r["expected"])
         elif r:
             lines.append("  " + r["why"])
 
