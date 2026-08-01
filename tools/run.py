@@ -6,6 +6,7 @@
     python -m tools.run <name> --build      skip the measuring, build and grade
     python -m tools.run <name> --gate       grade what is already built
     python -m tools.run <name> --remeasure  measure again even if nothing moved
+    python -m tools.run <name> --review     and render the review folder after
 
 A round of work on a building is `derive`, `build`, `gate`, read the output,
 change one number, repeat. The three commands are cheap; reading their output is
@@ -201,10 +202,14 @@ def stage(building: str, step: str, quick: bool) -> tuple[int, str, float]:
     env = dict(os.environ)
     if quick:
         env["BLOCKWRIGHT_QUICK"] = "1"
+    command = [sys.executable, "-m", f"buildings.{building}.{step}"]
+    if step == "review":
+        # Without the reference renders a review is the build against the
+        # photographs alone, which is half a review and reads like a whole one.
+        command.append("--mesh")
     started = time.time()
     done = subprocess.run(
-        [sys.executable, "-m", f"buildings.{building}.{step}"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
         errors="replace", env=env)
     return (done.returncode,
             (done.stdout or "") + (done.stderr or ""),
@@ -227,6 +232,11 @@ def main(argv: list[str]) -> int:
         steps = ["gate"]
     elif "--build" in argv:
         steps = ["build", "gate"]
+    if "--review" in argv:
+        # The eyes, at the end of the numbers and never instead of them. A red
+        # gate stops the loop below before this runs: there is no sense spending
+        # a reviewer on a build the numbers have already rejected.
+        steps.append("review")
 
     where = ROOT / "buildings" / building / "out" / "report.json"
     before = load(where)

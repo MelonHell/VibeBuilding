@@ -220,6 +220,67 @@ def colour(block: str) -> tuple[int, int, int]:
     return UNKNOWN
 
 
+def nearest(rgb: tuple[int, int, int], count: int = 5,
+            solid: bool = True) -> list[tuple[str, float]]:
+    """The closest blocks to a colour, with their distances.
+
+    For answering a review finding about colour with a measurement instead of an
+    opinion. "There is no block at this hue" was written down twice as a reason
+    to leave a building the wrong colour, both times without a single candidate
+    named -- and one of those buildings is pale ice blue in its own capture, so
+    two independent references agreed and neither was consulted.
+
+    Distance is in a cylinder around the grey axis: hue and saturation are
+    weighted above lightness, because lightness is the axis a render's own
+    lighting moves anyway, and a block of the right hue two shades dark reads as
+    the building where a block of the right lightness and no hue does not. That
+    is the same argument one building made by hand when it took
+    `oxidized_copper` ninety levels darker than the real thing rather than
+    settle for grey.
+
+    `solid` keeps out the glass, the leaves and everything else whose colour on
+    screen is mostly whatever stands behind it -- a pane the exact hue of the
+    wall is not an answer to "what should this wall be made of".
+    """
+    import colorsys
+
+    want = colorsys.rgb_to_hls(*(v / 255 for v in rgb))
+    out = []
+    for block, colour in COLORS.items():
+        if solid and (not is_cube(block) or transparency(block) > 0.05):
+            continue
+        h, l, s = colorsys.rgb_to_hls(*(v / 255 for v in colour))
+        turn = abs(h - want[0])
+        turn = min(turn, 1.0 - turn) * 2.0        # 0..1 round the wheel
+        # Hue only means anything on a colour that has some. Between two greys
+        # the whole distance is lightness, which is why the weight rides on
+        # saturation rather than being a constant.
+        weight = min(s, want[2])
+        far = ((turn * 2.0 * weight) ** 2
+               + (s - want[2]) ** 2
+               + ((l - want[1]) * 0.6) ** 2) ** 0.5
+        out.append((block, round(far, 3)))
+    out.sort(key=lambda row: row[1])
+    return out[:count]
+
+
+def why_not(rgb: tuple[int, int, int], count: int = 5) -> list[str]:
+    """`nearest`, as the lines a rejected colour finding has to carry.
+
+    A finding closed with "no block matches" is an assertion; the same finding
+    closed with five named blocks and their distances is a measurement, and the
+    next round can argue with it.
+    """
+    found = nearest(rgb, count)
+    out = [f"  nothing in the palette is exactly rgb{rgb}; the nearest are:"]
+    for block, far in found:
+        out.append(f"    {far:5.3f}  {block:38s} rgb{COLORS[block]}")
+    out.append("  Take the closest in HUE even when it is darker: a colour of "
+               "the right hue and the wrong value reads as the building, and a "
+               "grey of the right value does not.")
+    return out
+
+
 def known(block: str) -> bool:
     return colour(block) is not UNKNOWN
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import math
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import render, sources
+from . import findings, render, sources
 from .schem import Schematic
 
 
@@ -114,6 +115,49 @@ PAIRING = (" Each numbered pair is the same camera in both models, but the two "
            "few percent and not exactly.")
 
 
+# Printed instead of PAIRING when nothing recorded which way the reference
+# stands to the plan. Promising "the same camera" when it may not be is worse
+# than promising nothing: the reviewer explains the difference between two sides
+# of a building as a fault in the build, at high confidence, and the finding is
+# about nothing at all.
+UNPAIRED = (" The numbered images are meant to be the same camera in both "
+            "models, but nothing in\nthis run could confirm the two models "
+            "stand the same way round. Check that each pair\nshows the same "
+            "side of the building before comparing them, and say so if one "
+            "does not.")
+
+
+# The light is deliberate and the reviewer cannot know that. Two rounds on one
+# building returned "one long face is a blank grey wall" and "the tonality is
+# inverted"; both were the render's own lighting, which separates a roof from a
+# wall by brightness so that the joint between two volumes reads at all.
+LIGHT = """The build renders are lit so that a roof and a wall separate in
+brightness. A face in shadow is a face in shadow and not another material: judge
+material by HUE, and call a colour wrong only when the hue is wrong."""
+
+
+# Asked because nothing else asks it. Every other question here is
+# build-against-reference; this one is about relations inside the building. A
+# build can satisfy every external comparison while making two parts identical
+# that the real building deliberately distinguishes -- on one hotel the left
+# tower is balconied and the right one a blank shaft, the build made them twins,
+# the gate passed them (same silhouette, same profile), and nobody asked.
+INTERNAL = """Then one more comparison, which is not against the references but
+inside the building. Where the real building makes two parts DIFFERENT -- one
+tower balconied and the other blank, one wing glazed and the other solid, one
+end tall and the other stepped -- does the build make them different too, and by
+the same means? And where the real building repeats a part unchanged, does the
+build repeat it? Report both directions: sameness where there should be
+difference, and difference where there should be sameness.
+
+And the ground: what stands on the terraces, the decks and the courts. Parasols,
+loungers, hedges, planting, kerbs, the trees close to the water. These are as
+much a part of how a building reads as its facade, a photograph is the authority
+for whether they exist and how many, and a capture flown from the air answers
+neither. Report an empty deck the way you would report a missing storey -- as a
+count and a proportion, never in metres."""
+
+
 # Said only where there is a capture to say it about. A reviewer told to ignore
 # surrounding vegetation in a folder that contains none spends its attention
 # looking for some.
@@ -145,17 +189,29 @@ Report each fault once, at the viewpoint that shows it best -- do not repeat a
 finding for every image it appears in. For each finding give:
  - what is wrong, in one sentence;
  - which images show it, by name;
- - how wrong, in metres, storeys, or a count, wherever you can put a number on it;
+ - what it should be instead, and which image says so;
+ - how wrong, as a count or a proportion -- three bays where there are five,
+   half the height of its neighbour. Not in metres: you have no scale, and a
+   finding in metres is answered by a section you cannot see.
  - your confidence: high, medium or low.
 
 Rank the findings by severity: anything that changes how the building reads goes
 first, fine detail last.
 
-Ignore differences that are only the medium: blocky staircasing along diagonals,
-the limited block palette, the dark background of the build renders, and the
-difference between a render and a photographic lens.{noise}
+{internal}
 
-Do not list anything the build gets right. Be specific and be brief.
+{light}
+
+Ignore differences that are only the medium: blocky staircasing along diagonals,
+the block grid, the dark background of the build renders, and the difference
+between a render and a photographic lens.{noise}
+
+**Colour and material are not the medium.** Report them every time they are
+wrong, including when you suspect no block matches: naming the colour you see is
+your job, and finding a block for it is not. A review that stays silent about
+colour because the palette is limited has skipped half of what it is for.
+
+Be specific and be brief.
 """
 
 
@@ -303,16 +359,38 @@ def place(frame, point: tuple[float, float, float]) -> tuple[float, float, float
     return (fu * frame.extent_u, fv * frame.extent_v, height)
 
 
-def shot_spec(shot: Shot, mesh_frame, datum: float) -> str:
+def shot_spec(shot: Shot, mesh_frame, datum: float,
+              turn: tuple[bool, bool] = (False, False)) -> str:
     """One `--shot` argument for the Blender script, in its world metres.
 
     The mesh frame is fitted in the export's (east, south) plane, so a point in
     it converts to Blender's axes as X = east, Y = -south, Z = height above the
     datum -- the datum being where the build's own ground sits.
+
+    `turn` is the registration's flips, and without it this whole module tells
+    the reviewer a lie. A camera is given as fractions of the frame so that it
+    lands in the same *place* in two frames fitted to two different sources --
+    which works only while those frames point the same way. Two independent fits
+    of one building often do not: three buildings of five in this repository
+    stand mirrored or half a turn round, recorded as `registration.turned`. On
+    those, fu=0.2 is one end of the building in the plan and the other end in
+    the capture, so the pair labelled "the same camera" showed the pool court in
+    one image and the street front in the other -- and the prompt said, in so
+    many words, that the framing agreed to a few per cent.
+
+    A reviewer given that pair compares two different sides of a building and
+    has no way to know. It is the worst kind of fault this stage can have: it
+    does not fail, it produces confident findings about nothing.
     """
     numbers = []
+    flip_u, flip_v = turn
     for point in (shot.eye, shot.target):
-        u, v, height = place(mesh_frame, point)
+        fu, fv, height = point
+        if flip_u:
+            fu = 1.0 - fu
+        if flip_v:
+            fv = 1.0 - fv
+        u, v, height = place(mesh_frame, (fu, fv, height))
         east, south = mesh_frame.to_world(u, v)
         numbers += [east, -south, datum + height]
     numbers.append(shot.fov)
@@ -335,6 +413,9 @@ class Review:
         self.description = description
         self.size = size
         self.out = paths.OUT / "review"
+        # Which round this run is. Set by `archive`, which counts what is
+        # already kept; 1 until then, because a first run has nothing to keep.
+        self.round = 1
         # Where `tools/render_orthos.py` lives: `paths.HERE` is
         # buildings/<name>, so two levels up is the project root.
         self.repo = Path(paths.HERE).resolve().parents[1]
@@ -371,6 +452,9 @@ class Review:
         for stale in self.out.iterdir():
             if stale.is_file() and stale.name != FINDINGS:
                 stale.unlink()
+        # `rounds/` is a directory and survives by being one, which is the kind
+        # of accident that stops being true the day somebody makes this
+        # recursive. It is stated instead: the archive is the point.
 
     def render_build(self, model, frame, shots) -> None:
         """The schematic, from each shot."""
@@ -382,8 +466,130 @@ class Review:
             render.render(model, out, view=view, frame=frame, size=self.size)
             print(f"[review] {out.relative_to(self.repo)}")
 
+    def check_written(self) -> None:
+        """Refuse a review whose tables are still the template's.
+
+        Three buildings of five went to a reviewer with `DESCRIPTION` left as
+        the literal `<what this building is, in a sentence or two...>`. It went
+        into `prompt.txt` verbatim, angle brackets and all, and the reviewer --
+        which is given pictures and nothing else -- did not know it was looking
+        at a hotel, that there were two towers, or that the towers differ. It
+        then reported what it could, which was less than half of what was wrong.
+
+        The same refusal `derive` makes for a declared number with no source,
+        for the same reason: the unfilled case and the filled case look
+        identical from the outside, and only one of them is a review.
+
+        A `reading` left as the template's is checked too but only warned about:
+        the shot still renders, and a generic reading blinds one viewpoint
+        rather than the whole round.
+        """
+        if self.description.lstrip().startswith("<"):
+            raise SystemExit(
+                "DESCRIPTION in review.py is still the template's placeholder, "
+                "and it goes into the prompt as written.\n"
+                "The reviewer is given pictures and nothing else, so this "
+                "sentence is the whole of what it knows: what the volumes are, "
+                "what they are made of, and how they stand to each other. "
+                "Three buildings were reviewed without it and every one came "
+                "back with findings about the wrong things.\n"
+                "Write it -- two or three sentences -- and run this again.")
+
+        blind = [s.name for s in self.plan
+                 if getattr(s, "reading", "").lstrip().startswith("<")]
+        if blind:
+            print("[review] ! no reading written for "
+                  f"{', '.join(blind)}: the reviewer will be told nothing about "
+                  "what to look at from those cameras")
+
+    def measured(self) -> dict:
+        """What `derive` fitted, so that this stage does not fit it again.
+
+        The review used to read the capture, take `Mesh.ground()` for the datum
+        and fit its own frame at a hard-coded six-metre floor. That is a second
+        answer to a question that must have one, and it is the same fault the
+        gate had before `Registration.measured`: the survey registers the plan
+        against the reference once, every number in the build comes through that
+        registration, and a second fit here points the cameras somewhere else.
+
+        It also costs a minute of reading an OBJ nobody needs read.
+        """
+        found = getattr(self.paths, "DERIVED", None)
+        if found is None or not Path(found).exists():
+            return {}
+        try:
+            return json.loads(Path(found).read_text(encoding="utf-8"))
+        except ValueError:
+            return {}
+
+    def turn_of(self, derived: dict) -> tuple[bool, bool]:
+        """Whether the reference stands mirrored to the plan, from `derive`."""
+        flip = (derived.get("registration") or {}).get("flip")
+        if not flip:
+            return (False, False)
+        return (bool(flip[0]), bool(flip[1]))
+
+    def mesh_frame_of(self, derived: dict):
+        """The frame and datum `derive` fitted to the reference.
+
+        Falls back to reading the capture and fitting one only when the survey
+        recorded none -- which means a building measured before this existed, or
+        a review run against a reference the survey never opened. The fallback
+        says so, because a second fit is a second answer and the first one is
+        supposed to be the only one.
+        """
+        from .frame import Frame
+
+        found = (derived.get("mesh") or {}).get("frame")
+        if found:
+            return (Frame(tuple(found["origin"]), float(found["angle"])),
+                    float(derived["mesh"]["datum"]))
+
+        from .mesh import Mesh
+
+        print("[review] ! derived.json records no fitted frame for the "
+              "reference, so this is fitting its own. Re-run probes/derive.py: "
+              "two fits of one pair point the cameras at two different places.")
+        mesh = Mesh.read(self.paths.MESH)
+        datum = mesh.ground()
+        return mesh.frame(datum=datum, floor=6.0), datum
+
+    def archive(self) -> Path | None:
+        """Keep the last round's images before this one overwrites them.
+
+        Without this a round leaves nothing behind, and two questions become
+        unanswerable: did a fix change the picture at all, and did it break a
+        viewpoint nobody was working on. The renderer is deterministic, so both
+        are a pixel comparison -- see `tools/review_diff.py` -- and a comparison
+        needs something to compare against.
+
+        Cheap: a round is two dozen images and the folder is regenerable in
+        full.
+        """
+        if not self.out.is_dir():
+            return None
+        images = [p for p in self.out.iterdir()
+                  if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg")]
+        if not images:
+            return None
+        rounds = self.out / "rounds"
+        rounds.mkdir(parents=True, exist_ok=True)
+        seen = [int(p.name) for p in rounds.iterdir()
+                if p.is_dir() and p.name.isdigit()]
+        self.round = (max(seen) if seen else 0) + 2
+        into = rounds / f"{(max(seen) + 1 if seen else 1):02d}"
+        into.mkdir()
+        for image in images:
+            shutil.copy2(image, into / image.name)
+        for named in (PROMPT_FILE, FINDINGS):
+            if (self.out / named).exists():
+                shutil.copy2(self.out / named, into / named)
+        print(f"[review] last round kept in {into.relative_to(self.repo)}")
+        return into
+
     def render_mesh(self, mesh_frame, datum: float, shots,
-                        geometry=None) -> bool:
+                    geometry=None, turn: tuple[bool, bool] = (False, False)
+                    ) -> bool:
         """The reference geometry, from the same cameras, through Blender.
 
         A capture and a 3D model go through the same script and come out looking
@@ -398,7 +604,7 @@ class Review:
             "--shot-size", str(self.size[0]), str(self.size[1]),
         ]
         for shot in shots:
-            command += ["--shot", shot_spec(shot, mesh_frame, datum)]
+            command += ["--shot", shot_spec(shot, mesh_frame, datum, turn)]
 
         if exe is None:
             print("[review] Blender is not installed where this expected it. Run:")
@@ -407,7 +613,7 @@ class Review:
         print("[review] " + subprocess.list2cmdline(command[1:]))
         return subprocess.run(command, cwd=self.repo).returncode == 0
 
-    def collect(self, shots, reference=None) -> None:
+    def collect(self, shots, reference=None, paired: bool = True) -> None:
         """One folder: both renders of every shot, the photographs, and the prompt.
 
         One folder and one prompt, because the review is one request. A reviewer that
@@ -465,9 +671,12 @@ class Review:
         noise = "" if not meshes else (NOISE_MODEL if is_model else NOISE_CAPTURE)
         views = "\n".join(f"  {s.name}  {s.reading}" for s in shots)
         (self.out / PROMPT_FILE).write_text(
-            PROMPT.format(count=len(images), views=views, description=self.description,
+            PROMPT.format(count=len(images), views=views,
+                          description=self.description,
                           kinds="\n".join(kinds), noise=noise,
-                          pairing=PAIRING if meshes else ""),
+                          internal=INTERNAL, light=LIGHT,
+                          pairing=("" if not meshes else
+                                   (PAIRING if paired else UNPAIRED))),
             encoding="utf-8")
 
         print(f"[review] {self.out.relative_to(self.repo)}: {len(images)} images")
@@ -494,6 +703,12 @@ class Review:
         print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
               f"write the findings and what was done about each to {FINDINGS}")
 
+        # The state of the loop, printed rather than looked up. A round that
+        # leaves findings open is a round that has not closed, and the count is
+        # the only thing that says so out loud.
+        for line in findings.lines(self.out / FINDINGS, rounds=self.round):
+            print(f"[review] {line}")
+
     def run(self, read, argv=None) -> int:
         """Render, collect, and say what to do with the folder.
 
@@ -511,6 +726,8 @@ class Review:
         if not self.paths.SCHEM.exists():
             raise SystemExit(f"{self.paths.SCHEM} is missing; run build.py first")
 
+        self.check_written()
+
         # The same freshness rule the gate applies, and for the same reason. A
         # stale schematic renders perfectly -- it was a real build of the same
         # building -- so a review of it reads as a review of the current one, and
@@ -521,6 +738,14 @@ class Review:
             raise SystemExit(f"{self.paths.SCHEM.name} is older than {recipe.name}; "
                              f"rebuild before reviewing")
 
+        derived = self.measured()
+        # Whether the pairing can be promised at all. `turn_of` reads the flips
+        # the survey fitted; no survey means no answer, and no answer means the
+        # prompt says so instead of claiming the cameras match.
+        paired = bool((derived.get("registration") or {}).get("flip") is not None
+                      or (derived.get("registration") or {}).get("needed") is False
+                      or read.massing is not None)
+        self.archive()
         self.clear()
         frame = read.frame
         model = Schematic.read(self.paths.SCHEM)
@@ -543,14 +768,10 @@ class Review:
                 self.render_mesh(read.massing.model_frame, read.massing.datum,
                                  shots, reference.path)
             else:
-                from .mesh import Mesh
+                self.render_mesh(*self.mesh_frame_of(derived), shots,
+                                 reference.path, turn=self.turn_of(derived))
 
-                mesh = Mesh.read(reference.path)
-                datum = mesh.ground()
-                self.render_mesh(mesh.frame(datum=datum, floor=6.0), datum,
-                                 shots, reference.path)
-
-        self.collect(shots, reference)
+        self.collect(shots, reference, paired=paired)
         return 0
 
 

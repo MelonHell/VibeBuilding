@@ -30,9 +30,16 @@ from blockwright.reviewing import Outside, Review, Shot
 from . import paths
 from .probes import derive
 
-# One sentence saying what this building is, for the reviewer's first paragraph.
-# It is the only building-specific text in the prompt: everything else the
-# reviewer needs it can see.
+# What this building is. It is the only building-specific text in the prompt --
+# everything else the reviewer needs it can see -- and it is the whole of what a
+# reviewer given pictures and nothing else knows.
+#
+# **The review refuses to run while this is still the placeholder**, because
+# three buildings went to a reviewer with these angle brackets in the prompt and
+# every one of them came back with findings about the wrong things. Name the
+# volumes, what they are made of, and how they stand to each other; where two
+# parts differ deliberately -- one tower balconied and one blank -- say so, since
+# that is exactly what a build makes identical and no number catches.
 DESCRIPTION = "<what this building is, in a sentence or two: the volumes, what " \
               "they are made of, and how they stand relative to each other>"
 
