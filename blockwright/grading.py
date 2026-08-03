@@ -109,6 +109,35 @@ def windows(parts, frame, derived: dict, names: dict | None = None):
     return tuple(("+".join(held), u0, u1, ()) for held, u0, u1 in runs)
 
 
+# What a building gets if it says nothing.
+#
+# Six constants were byte for byte the same in all six buildings, with the same
+# paragraph of explanation copied above each -- which is not six decisions, it is
+# one decision and five copies. A building's `gate.py` is supposed to be the part
+# only that building can say, so these move here and a building writes them only
+# where it differs.
+#
+# The two budgets are the awkward ones and they are handled rather than ducked.
+# `FREE_ENDS` and `GROUNDED_STRAYS` are meant to be lowered onto a build that
+# already passed -- a budget with an order of magnitude of slack has stopped
+# being a check -- so a default silently satisfying them would be exactly the
+# rot they exist to prevent. The row therefore says `(default)` when the number
+# came from here, and the reader can tell a measured budget from an inherited
+# one at a glance.
+DEFAULTS = {
+    # Half a storey: tight enough that a floor gained or lost fails, loose
+    # enough that photogrammetry's rounding of a parapet does not.
+    "TOLERANCE": 2.0,
+    # Below this a layer component is a fixture -- a column, a rail post, the
+    # corner of a planter clipped by the cut -- and not a floor plate.
+    "MIN_PART": 8,
+    "SCALE_TRUE": gate.SCALE_TRUE,
+    # Nothing may hang unsupported, ever. This one is not a budget.
+    "FLOATING_BLOCKS": 0,
+    "FREE_ENDS": 1200,
+}
+
+
 class Grading:
     """One building's gate, run in the order that makes its answers readable."""
 
@@ -118,7 +147,13 @@ class Grading:
         self.c = config
 
     def _(self, name: str, default=None):
+        if default is None and name in DEFAULTS:
+            default = DEFAULTS[name]
         return getattr(self.c, name, default)
+
+    def _own(self, name: str) -> bool:
+        """Whether the building set this itself or inherited the default."""
+        return hasattr(self.c, name)
 
     # -- the run -----------------------------------------------------------
 
@@ -193,16 +228,24 @@ class Grading:
 
     def soundness(self, g, model):
         c = self.c
-        findings = checks.inspect(model, layers=list(c.LEVELS), soft=c.SOFT)
+        findings = checks.inspect(model, layers=list(self._("LEVELS")), soft=self._("SOFT", set()))
         g.add("palette", not findings.unknown,
               "every block has a colour" if not findings.unknown
               else "unknown: " + ", ".join(sorted(findings.unknown)))
+        # A budget the building did not set is named as inherited. These are
+        # meant to be lowered onto a build that already passed, and a default
+        # quietly satisfying one is the rot they exist to prevent.
+        def whose(name: str) -> str:
+            return "" if self._own(name) else " (default, not measured here)"
+
         g.budget("floating", sum(p.count for p in findings.adrift),
-                 c.FLOATING_BLOCKS, "blocks with nothing under them")
+                 self._("FLOATING_BLOCKS"),
+                 "blocks with nothing under them" + whose("FLOATING_BLOCKS"))
         g.budget("strays", sum(p.count for p in findings.strays),
-                 c.GROUNDED_STRAYS, "blocks adrift from the main mass")
-        g.budget("free ends", len(findings.ends), c.FREE_ENDS,
-                 "blocks with one neighbour or none")
+                 self._("GROUNDED_STRAYS", 0),
+                 "blocks adrift from the main mass" + whose("GROUNDED_STRAYS"))
+        g.budget("free ends", len(findings.ends), self._("FREE_ENDS"),
+                 "blocks with one neighbour or none" + whose("FREE_ENDS"))
         return findings
 
     def divisions(self, g, model, sched):
@@ -214,7 +257,7 @@ class Grading:
         confusion the three-state verdict exists to prevent.
         """
         c = self.c
-        if not c.COUNTS and not self._("UNDIVIDED", False):
+        if not self._("COUNTS", {}) and not self._("UNDIVIDED", False):
             g.ungraded(
                 "division",
                 "COUNTS is empty, so nothing checks that this building still "
@@ -228,19 +271,19 @@ class Grading:
         # same layer, and a count taken over the whole layer either grades a
         # pier as a house or merges two houses through a bridge.
         cut = {}
-        for name, expected in c.COUNTS.items():
+        for name, expected in self._("COUNTS", {}).items():
             footprint = sched.built[name].mask
             cut[name] = {
                 y: (solid(model, y) & footprint).components(
-                    min_cells=c.MIN_PART)
-                for y in c.LEVELS}
+                    min_cells=self._("MIN_PART"))
+                for y in self._("LEVELS")}
             for y, found in cut[name].items():
                 g.add(f"{name} at {y} m", len(found) == expected,
                       f"{len(found)} parts, expected {expected}")
 
         for name, y in self._("RINGS", {}).items():
             found = (solid(model, y) & sched.built[name].mask).components(
-                min_cells=c.MIN_PART)
+                min_cells=self._("MIN_PART"))
             g.add(f"{name} at {y} m", len(found) == 1,
                   f"{len(found)} parts, expected one closed ring"
                   if len(found) != 1
@@ -342,19 +385,19 @@ class Grading:
     def watertight(self, g, cut):
         c = self.c
         names = self._("WATERTIGHT", ())
-        if names and c.WATERTIGHT_AT not in c.LEVELS:
+        if names and self._("WATERTIGHT_AT", 0) not in self._("LEVELS"):
             raise SystemExit(
-                f"WATERTIGHT_AT is {c.WATERTIGHT_AT} m and LEVELS are "
-                f"{c.LEVELS}: the watertightness test reads the cut this gate "
+                f"WATERTIGHT_AT is {self._("WATERTIGHT_AT", 0)} m and LEVELS are "
+                f"{self._("LEVELS")}: the watertightness test reads the cut this gate "
                 "already took, and there is no cut at that height. Add it to "
                 "LEVELS or move it onto one.")
 
         for name in names:
-            rings = cut[name][c.WATERTIGHT_AT]
+            rings = cut[name][self._("WATERTIGHT_AT", 0)]
             leaking = [r for r in rings if holds(r) == 0]
             g.add(f"{name} watertight", not leaking,
                   f"all {len(rings)} hold what they enclose" if not leaking
-                  else f"{len(leaking)} of {len(rings)} at {c.WATERTIGHT_AT} m "
+                  else f"{len(leaking)} of {len(rings)} at {self._("WATERTIGHT_AT", 0)} m "
                        "are open to the outside")
 
     def witnesses(self, g, derived):
@@ -416,7 +459,7 @@ class Grading:
             mesh_frame = mesh.frame(datum=datum, floor=derive.MESH_FLOOR)
 
         cloud_mesh = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
-        cloud_build = gate.Cloud.from_model(model, frame, skip=c.SOFT)
+        cloud_build = gate.Cloud.from_model(model, frame, skip=self._("SOFT", set()))
         shape = self._("build_cloud")
         if shape is not None:
             cloud_build = shape(cloud_build, derived)
@@ -440,10 +483,10 @@ class Grading:
         # Size, separately from position. A build the right shape in the wrong
         # place fails the registration; a build the right place and the wrong
         # size fails this, and the two are fixed in different files.
-        g.witness("scale", reg.scaled(c.SCALE_TRUE),
+        g.witness("scale", reg.scaled(self._("SCALE_TRUE")),
                   f"the build is {1 / reg.u_scale:.2f}x by "
                   f"{1 / reg.v_scale:.2f}x of the {reference.name}, tolerance "
-                  f"{c.SCALE_TRUE:.0%}",
+                  f"{self._("SCALE_TRUE"):.0%}",
                   expect.get("scale", ""))
 
         # Sections only if the registration holds, or if the building declared
@@ -459,7 +502,7 @@ class Grading:
             sections = [
                 gate.section(name, u0, u1, mesh=cloud_mesh, build=cloud_build,
                              plan=drawn, registration=reg,
-                             tolerance=c.TOLERANCE, exemptions=allowed,
+                             tolerance=self._("TOLERANCE"), exemptions=allowed,
                              seams=seams)
                 for name, u0, u1, allowed in cuts]
             for section in sections:
@@ -533,7 +576,7 @@ class Grading:
             if reg is not None:
                 return reg
         return gate.Registration.fit(cloud_mesh, cloud_build,
-                                     at=self.c.REGISTER_AT, plan=drawn)
+                                     at=self._("REGISTER_AT", 0.5), plan=drawn)
 
 
 __all__ = ["Grading", "holds", "solid", "windows"]
