@@ -59,6 +59,22 @@ class Site:
     # False and takes the drawn masks instead.
     ROUND = True
 
+    # How far a drawn outline may be moved to take the drawing's wobble out of
+    # it, in metres. None keeps the traced edge exactly as the map drew it.
+    #
+    # The third idiom between `footprint` and `box`, and the one most parts
+    # want. `footprint` keeps every wobble, which matters where the plan's shape
+    # carries a measurement and is noise everywhere else; `box` replaces the
+    # part with its extent and squares off the raked end the mapper drew on
+    # purpose. This keeps the corners and drops the rest -- see
+    # `Mask.straighten`.
+    #
+    # A metre is the useful setting: it is the scale of a hand-drawn edge's
+    # wander and half the scale of anything deliberate. `checks.jaggedness` is
+    # the number that says whether a part needed it, and the gate asks every
+    # run.
+    STRAIGHT: float | None = None
+
     def __init__(self, derived: dict, read, pad: float = 0.5):
         self.d = derived
         self.read = read
@@ -274,8 +290,15 @@ class Site:
         if p.kind == "disc" and self.ROUND:
             return self.disc(p.centre[0], p.centre[1], p.radius + self.pad)
         if not self.CLOSE:
-            return p.mask.dilate(self.pad) if self.pad else p.mask
-        return p.mask.dilate(self.pad + self.CLOSE).erode(self.CLOSE)
+            out = p.mask.dilate(self.pad) if self.pad else p.mask
+        else:
+            out = p.mask.dilate(self.pad + self.CLOSE).erode(self.CLOSE)
+        # Last, after the pad and the closing: both are morphological and both
+        # leave their own small teeth along a diagonal, so straightening first
+        # would put them back.
+        if self.STRAIGHT:
+            out = out.straighten(self.frame, self.STRAIGHT)
+        return out
 
     def box(self, name: str) -> Mask:
         """One part as the rectangle its extent describes, opened by the pad.

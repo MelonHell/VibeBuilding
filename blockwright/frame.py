@@ -65,7 +65,7 @@ class Frame:
     """
 
     __slots__ = ("origin", "angle", "extent_u", "extent_v", "_cos", "_sin",
-                 "flip_u")
+                 "flip_u", "flip_v")
 
     def __init__(
         self,
@@ -74,14 +74,16 @@ class Frame:
         extent_u: float = 0.0,
         extent_v: float = 0.0,
         flip_u: float | None = None,
+        flip_v: float | None = None,
     ):
         self.origin = (float(origin[0]), float(origin[1]))
         self.angle = float(angle_deg)
         self.extent_u = float(extent_u)
         self.extent_v = float(extent_v)
-        # The u of a mirror plane, or None for the ordinary frame. See
+        # The u (or v) of a mirror plane, or None for the ordinary frame. See
         # `flipped`.
         self.flip_u = None if flip_u is None else float(flip_u)
+        self.flip_v = None if flip_v is None else float(flip_v)
         rad = math.radians(self.angle)
         self._cos = math.cos(rad)
         self._sin = math.sin(rad)
@@ -91,11 +93,17 @@ class Frame:
         dz = z - self.origin[1]
         u = dx * self._cos + dz * self._sin
         v = -dx * self._sin + dz * self._cos
-        return (2.0 * self.flip_u - u if self.flip_u is not None else u, v)
+        if self.flip_u is not None:
+            u = 2.0 * self.flip_u - u
+        if self.flip_v is not None:
+            v = 2.0 * self.flip_v - v
+        return (u, v)
 
     def to_world(self, u: float, v: float) -> tuple[float, float]:
         if self.flip_u is not None:
             u = 2.0 * self.flip_u - u
+        if self.flip_v is not None:
+            v = 2.0 * self.flip_v - v
         return (
             self.origin[0] + u * self._cos - v * self._sin,
             self.origin[1] + u * self._sin + v * self._cos,
@@ -105,10 +113,10 @@ class Frame:
         return self.to_local(x, z)[0]
 
     def v_of(self, x: float, z: float) -> float:
-        return -(x - self.origin[0]) * self._sin + (z - self.origin[1]) * self._cos
+        return self.to_local(x, z)[1]
 
-    def flipped(self, axis_u: float) -> "Frame":
-        """The same frame with u reflected across `axis_u`.
+    def flipped(self, axis: float, along: str = "u") -> "Frame":
+        """The same frame with u (or v) reflected across `axis`.
 
         For building the second half of something symmetrical. Draw one tower,
         then draw it again through this and it lands mirrored, exactly, with no
@@ -130,9 +138,21 @@ class Frame:
         from scratch, at the same angle, with its own correctly centre-sampled
         staircase and its own facings. Lossless, because nothing was sampled
         twice.
+
+        `along` is "u" for a pair standing end to end and "v" for a pair
+        standing side by side -- which is the more common arrangement and was
+        missing for a while, so a building whose two bars face each other across
+        a court could not say they were a pair at all.
         """
+        if along not in ("u", "v"):
+            raise ValueError(f"a frame is flipped along u or v, not {along!r}")
+        if along == "u":
+            return Frame(self.origin, self.angle, self.extent_u, self.extent_v,
+                         flip_u=None if self.flip_u is not None else axis,
+                         flip_v=self.flip_v)
         return Frame(self.origin, self.angle, self.extent_u, self.extent_v,
-                     flip_u=None if self.flip_u is not None else axis_u)
+                     flip_u=self.flip_u,
+                     flip_v=None if self.flip_v is not None else axis)
 
     @property
     def direction(self) -> str:

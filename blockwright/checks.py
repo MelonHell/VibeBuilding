@@ -295,13 +295,14 @@ def watertight(footprint, wall) -> list[tuple[int, int]]:
 # sees in a render and none of them is a number anywhere else in this pipeline.
 
 
-def twins(model, a: Mask, b: Mask, frame, axis_u: float,
+def twins(model, a: Mask, b: Mask, frame, axis: float, along: str = "u",
           y0: int = 0, y1: int | None = None) -> dict:
     """How far two parts that should be mirror images actually differ.
 
-    `a` and `b` are the two footprints and `axis_u` is the u of the plane
-    between them. Every filled cell of `a` is reflected across that plane and
-    looked for in `b`, and vice versa, course by course.
+    `a` and `b` are the two footprints and `axis` is the u -- or the v, if
+    `along` is "v" -- of the plane between them. Every filled cell of `a` is
+    reflected across that plane and looked for in `b`, and vice versa, course by
+    course.
 
     Reflected through the frame rather than through the block array, for the
     reason `Frame.flipped` gives at length: at fifty degrees to the world grid a
@@ -316,7 +317,7 @@ def twins(model, a: Mask, b: Mask, frame, axis_u: float,
     height = model.height if y1 is None else min(model.height, y1)
     area = model.width * model.length
     air = {i for i, block in enumerate(model.palette) if block == AIR}
-    mirror = frame.flipped(axis_u)
+    mirror = frame.flipped(axis, along)
 
     def opposite(x: int, z: int) -> tuple[int, int] | None:
         u, v = frame.to_local(x + 0.5, z + 0.5)
@@ -361,47 +362,57 @@ def twins(model, a: Mask, b: Mask, frame, axis_u: float,
     }
 
 
-def jaggedness(mask: Mask, frame) -> dict:
-    """How much of an outline is staircase that the building does not have.
+def jaggedness(mask: Mask, frame, tolerance: float = 1.0) -> dict:
+    """How much of a shape is the drawing's wobble rather than the building.
 
-    A wall drawn at eight degrees to the world grid rasterises as a sawtooth,
-    and at one block to the metre that sawtooth is a metre deep -- it is the
-    first thing anyone notices about a roof edge beside a photograph of the real
-    one, and it is invisible to every other check here.
+    A map is drawn by hand and its edges wander by a cell or two. Traced, that
+    wander becomes a sawtooth, and at one block to the metre a sawtooth is a
+    metre deep -- the first thing anyone notices about a roof edge beside a
+    photograph of the real one, and invisible to every other check here: a
+    jagged edge measures the same at every station, encloses the same area and
+    casts the same silhouette as a straight one.
 
-    Measured as the share of contour cells that sit off the straight line their
-    neighbours define by more than half a cell, in the building's own frame. A
-    genuinely raked or curved edge scores low, because its neighbours turn with
-    it; a straight edge chopped into steps scores high, because they do not.
+    Measured as the difference between the shape and its own straightened
+    reading -- `1 - iou(mask, mask.straighten(frame, tolerance))`. Defining it
+    in terms of the fix is the point: the number is exactly what
+    `Mask.straighten` would change, so a budget on it is a budget on how much of
+    the part is drawing noise, and nothing else has to be agreed.
 
-    A number, not a verdict, and the decision it informs already exists:
-    `Site.footprint` takes the drawn mask and `Site.box` re-rasterises the
-    part's extent, which is straight by construction. Where the plan's own shape
-    carries a measurement -- a raked end, a bowed face, a diagonal row -- the
-    sawtooth is the price of the frame and the drawn mask is right. Where it is
-    a rectangle the map drew square and the wobble is the map's hand, this
-    number says so and `box` spends it.
+    The obvious metric is not this and was tried: the share of contour cells
+    sitting off the chord their neighbours span. It counts the staircase, and a
+    staircase is not the defect. A mathematically perfect line at eight degrees
+    to the world grid is a staircase -- that is what rasterising a rotated line
+    means -- and it scored *higher* than the hand-drawn edge it was meant to
+    condemn. Any measure of local roughness has that problem; this one compares
+    against the straightest reading of the same shape instead.
+
+    `vertices` is the other half of the answer and often the more legible one:
+    how many straight segments the outline really is. A rectangle the map drew
+    square comes back four or five. Thirty means thirty, and no tolerance is
+    going to make that a rectangle.
     """
-    ring = mask.contour()
-    if len(ring) < 5:
-        return {"cells": len(ring), "jagged": 0, "share": 0.0}
+    from .mask import iou
 
+    ring = mask.contour()
+    if len(ring) < 5 or not mask.count():
+        return {"share": 0.0, "cells": 0, "vertices": len(ring)}
+
+    straight = mask.straighten(frame, tolerance)
+    return {
+        "share": 1.0 - iou(mask, straight),
+        "cells": (mask | straight).count() - (mask & straight).count(),
+        "vertices": len(straight.contour()) and len(
+            _simplify_count(mask, frame, tolerance)),
+    }
+
+
+def _simplify_count(mask: Mask, frame, tolerance: float):
+    """The simplified ring itself, for the vertex count."""
+    from .mask import _simplify_ring
+
+    ring = mask.contour()
     local = [frame.to_local(x + 0.5, z + 0.5) for x, z in ring]
-    jagged = 0
-    n = len(local)
-    for i in range(n):
-        (au, av) = local[(i - 2) % n]
-        (bu, bv) = local[(i + 2) % n]
-        (u, v) = local[i]
-        du, dv = bu - au, bv - av
-        span = math.hypot(du, dv)
-        if span < 1e-9:
-            continue
-        # Distance from the chord its own neighbours span.
-        off = abs(dv * (u - au) - du * (v - av)) / span
-        if off > 0.5:
-            jagged += 1
-    return {"cells": n, "jagged": jagged, "share": jagged / n}
+    return _simplify_ring(local, tolerance)
 
 
 def level_runs(model, mask: Mask, y0: int = 0, y1: int | None = None) -> dict:

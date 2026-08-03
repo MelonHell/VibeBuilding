@@ -215,6 +215,45 @@ def _texture_lines(what: str, found: dict, against: float | None) -> list[str]:
     return out
 
 
+CLIP_BOX_SAME = 1.0
+
+
+def fits_clip_box(mesh, frame, within: float = CLIP_BOX_SAME) -> dict:
+    """Whether the frame fitted to the reference is the building or the box.
+
+    A clip is a rectangle cut out of a larger capture, and its ground plane runs
+    all the way to the corners of that rectangle. `Mesh.frame` fits above
+    `MESH_FLOOR` precisely so that plane is excluded -- but when the datum lands
+    under the real ground, everything is above the floor, and what gets fitted
+    is the cut itself. The frame then comes back the size of the clip.
+
+    Nothing downstream can tell. The section reads both sides through that
+    frame, so every station is consistent with every other and none of them is
+    evidence; the registration prints plausible numbers; the whole run is
+    self-consistent and about nothing. One building spent an hour re-clipping
+    horizontally because the symptom -- `u 1.077 vs v 1.144` -- reads exactly
+    like a clip that is too wide, and the fault was vertical.
+
+    The test is a subtraction. A frame the same size as its clip to within a
+    metre on both axes has measured the clip; a frame fitted to a building
+    inside one is smaller, because a building is not a rectangle filling its
+    own crop. Reported, never failed: what it says is "this run cannot tell you
+    whether the frame is real", and the fix is a re-clip or a datum, neither of
+    which the gate can make.
+    """
+    (x0, y0, z0), (x1, y1, z1) = mesh.bounds()
+    clip = sorted((x1 - x0, z1 - z0))
+    got = sorted((frame.extent_u, frame.extent_v))
+    worst = max(abs(a - b) for a, b in zip(clip, got))
+    return {
+        "checked": True,
+        "frame": [round(got[1], 1), round(got[0], 1)],
+        "clip": [round(clip[1], 1), round(clip[0], 1)],
+        "worst": round(worst, 2),
+        "is_the_box": worst <= within,
+    }
+
+
 def levels_from(spacing: float, top: float, base: float = 0.0) -> list[float]:
     """Floor lines at a declared spacing, from the ground to the highest part."""
     if spacing <= 0:
@@ -547,7 +586,8 @@ class Survey:
             "frame": {"origin": [round(v, 2) for v in mesh_frame.origin],
                       "angle": round(mesh_frame.angle, 2),
                       "extent": [round(mesh_frame.extent_u, 1),
-                                 round(mesh_frame.extent_v, 1)]},
+                                 round(mesh_frame.extent_v, 1)],
+                      "clip_box": fits_clip_box(mesh, mesh_frame)},
         }
         note["registration"] = {
             "needed": True,
@@ -736,14 +776,28 @@ class Survey:
 
         measured = None
         if link is not None:
-            strips = sorted(parts, key=lambda p: p.v0 + p.v1)
-            if len(strips) >= 2:
-                edges = ((strips[0].v1 - self.t.FACADE_INSET, strips[0].v1 + self.t.FACADE_INSET),
-                         (strips[-1].v0 - self.t.FACADE_INSET, strips[-1].v0 + self.t.FACADE_INSET))
-            else:
-                one = strips[0]
-                edges = ((one.v0 - self.t.FACADE_INSET, one.v0 + self.t.FACADE_INSET),
-                         (one.v1 - self.t.FACADE_INSET, one.v1 + self.t.FACADE_INSET))
+            # The two long facades, in v, and which parts carry them.
+            #
+            # This used to take the outermost parts in v and read the inner face
+            # of each -- which assumes the building's parts are stacked across
+            # v. On a building whose parts are stacked along u instead, both
+            # bands landed within a metre of each other at one end and the
+            # rhythm was measured on the end wall. It found one, with a
+            # respectable correlation, off a facade eight metres wide.
+            #
+            # So the bands are the two long faces of the whole drawn building,
+            # inset from its own extent, and they do not depend on how the plan
+            # happens to divide. `FACADE_INSET` is how thick a band to read.
+            reach = self.t.FACADE_INSET
+            edges = ((v0 - reach, v0 + reach), (v1 - reach, v1 + reach))
+            if v1 - v0 < 4 * reach and parts:
+                # A building narrower than the two bands are thick: the bands
+                # would overlap and both would read the same wall. Fall back to
+                # the parts' own division, which is what a stack of narrow
+                # strips has instead of two long faces.
+                strips = sorted(parts, key=lambda p: p.v0 + p.v1)
+                edges = ((strips[0].v0 - reach, strips[0].v0 + reach),
+                         (strips[-1].v1 - reach, strips[-1].v1 + reach))
             found = measure.storey_height(
                 link.mesh, link.frame,
                 tuple(link.across(a, b) for a, b in edges),
@@ -796,6 +850,43 @@ class Survey:
             measured["from_texture"] = skin["storey"]
         if skin.get("bay"):
             out["facade"] = {"bay": skin["bay"]}
+
+        # A weak geometry reading loses to a texture that four facades agree on.
+        #
+        # The autocorrelation returns a number and a score, and the score is a
+        # threshold rather than a confidence: just over it means "found", and
+        # just over it is where the wrong answers live. One hotel came back at
+        # 2.25 m with a score of 0.167 against a bar of 0.15, while the texture
+        # read 3.04, 3.09, 3.05 and 3.00 on its four elevations -- four
+        # independent photographs of the same building agreeing to five
+        # centimetres, losing to one marginal correlation over a cloud of
+        # vertices.
+        #
+        # So: where the geometry is inside `STOREY_SURE` of its own bar and the
+        # texture agrees across at least `TEXTURE_SIDES` elevations, the texture
+        # wins and says so. Both numbers stay in the file either way -- this
+        # picks which the build uses, it does not throw the other away.
+        sure = getattr(self.t, "STOREY_SURE", 2.0) * self.t.STOREY_SCORE
+        sides = getattr(self.t, "TEXTURE_SIDES", 3)
+        read_off = (measured or {}).get("from_texture") or {}
+        if (measured and measured.get("found")
+                and measured["score"] < sure
+                and read_off.get("agreed", 0) >= sides
+                and read_off.get("value")):
+            measured["geometry"] = {"spacing": measured["spacing"],
+                                    "score": measured["score"]}
+            measured["spacing"] = round(float(read_off["value"]), 2)
+            measured["by"] = "texture"
+            measured["why"] = (
+                f"the geometry read {measured['geometry']['spacing']:.2f} m at "
+                f"r={measured['geometry']['score']:.3f}, inside {sure:.2f} of "
+                f"the bar it had to clear; the texture read "
+                f"{read_off['value']:.2f} m and {read_off['agreed']} of "
+                f"{read_off['of']} elevations agree with it")
+            top = max((h["top"] for h in self.t.DECLARED_HEIGHTS.values()),
+                      default=0.0)
+            top = max(top, out.get("mesh", {}).get("top", 0.0))
+            measured["levels"] = levels_from(measured["spacing"], top)
 
         if measured and measured["found"]:
             out["storeys"] = measured

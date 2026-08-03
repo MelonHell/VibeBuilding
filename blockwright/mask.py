@@ -17,6 +17,7 @@ than trusting a Euclidean band to close.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from . import fast
@@ -480,6 +481,64 @@ class Mask:
 
     # -- output -----------------------------------------------------------
 
+    def straighten(self, frame, tolerance: float = 1.0) -> "Mask":
+        """The same shape with its outline's staircase taken off.
+
+        A map is a drawing and a drawn edge wobbles by a cell or two. Traced,
+        that wobble becomes a sawtooth, and at one block to the metre a sawtooth
+        is a metre deep -- it is the first thing anyone notices about a roof
+        edge beside a photograph of the real one, and no other check here can
+        see it: a jagged edge measures the same as a straight one at every
+        station, encloses the same area, and casts the same silhouette.
+
+        Two idioms already existed and neither covers this. `Site.footprint`
+        keeps the drawn mask, sawtooth and all, which is right wherever the
+        plan's own shape carries a measurement. `Site.box` replaces the part
+        with its extent, which is straight and throws away every real corner:
+        on a slab whose creek end is raked eight degrees it squares off the one
+        thing the mapper drew on purpose.
+
+        This is the third: keep the corners, drop the noise. The contour is read
+        into the building's own frame, simplified by Douglas-Peucker at
+        `tolerance`, and the simplified ring is rasterised again through
+        `frame.region` -- so the angle is still handled in exactly one place and
+        the result is a clean staircase of one straight edge instead of a
+        stack of little ones.
+
+        `tolerance` is in metres and is the whole control. Under a cell it
+        preserves the wobble it was meant to remove; a real rake, a bow or a
+        curve survives at any tolerance, because its vertices are further from
+        the chord than the noise is. Above about two metres it starts cutting
+        corners the building has, and `checks.jaggedness` is the number that
+        says which side of that you are on.
+
+        A couple of degrees away from the reference costs nothing. A sawtooth
+        costs the whole edge.
+        """
+        ring = self.contour()
+        if len(ring) < 4:
+            return self.copy()
+
+        local = [frame.to_local(x + 0.5, z + 0.5) for x, z in ring]
+        kept = _simplify_ring(local, tolerance)
+        if len(kept) < 3:
+            return self.copy()
+
+        # Point in polygon, on the cell centre, which is the same question
+        # `Frame.region` asks of every other shape in this library.
+        def inside(u: float, v: float) -> bool:
+            hit = False
+            j = len(kept) - 1
+            for i, (ui, vi) in enumerate(kept):
+                uj, vj = kept[j]
+                if (vi > v) != (vj > v) and \
+                        u < (uj - ui) * (v - vi) / (vj - vi) + ui:
+                    hit = not hit
+                j = i
+            return hit
+
+        return frame.region(self.width, self.length, inside)
+
     def to_png(
         self,
         path: str | Path,
@@ -501,6 +560,65 @@ class Mask:
             )
         image.save(path)
         return image
+
+
+def _simplify(points: list[tuple[float, float]],
+              tolerance: float) -> list[tuple[float, float]]:
+    """Douglas-Peucker on an open run: keep the ends and whatever is furthest.
+
+    Iterative rather than recursive. A traced contour of a large building runs
+    to a few thousand points, and the noisy case -- a staircase, where almost
+    nothing can be dropped -- is exactly the one that recurses deepest.
+    """
+    if len(points) < 3:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi <= lo + 1:
+            continue
+        au, av = points[lo]
+        bu, bv = points[hi]
+        du, dv = bu - au, bv - av
+        span = math.hypot(du, dv)
+        worst, at = 0.0, lo
+        for i in range(lo + 1, hi):
+            u, v = points[i]
+            off = (abs(dv * (u - au) - du * (v - av)) / span if span > 1e-9
+                   else math.hypot(u - au, v - av))
+            if off > worst:
+                worst, at = off, i
+        if worst > tolerance:
+            keep[at] = True
+            stack.append((lo, at))
+            stack.append((at, hi))
+    return [p for p, on in zip(points, keep) if on]
+
+
+def _simplify_ring(points: list[tuple[float, float]],
+                   tolerance: float) -> list[tuple[float, float]]:
+    """The same, on a closed loop.
+
+    Cut at the two points furthest apart and simplify each side. A loop
+    simplified from an arbitrary start keeps that start as a vertex whether or
+    not it is a corner, which on a rectangle traced from the middle of an edge
+    leaves a kink in the middle of that edge.
+    """
+    n = len(points)
+    if n < 4:
+        return list(points)
+    au, av = points[0]
+    far = max(range(n), key=lambda i: math.hypot(points[i][0] - au,
+                                                 points[i][1] - av))
+    bu, bv = points[far]
+    other = max(range(n), key=lambda i: math.hypot(points[i][0] - bu,
+                                                  points[i][1] - bv))
+    lo, hi = sorted((far, other))
+    first = _simplify(points[lo:hi + 1], tolerance)
+    second = _simplify(points[hi:] + points[:lo + 1], tolerance)
+    return first[:-1] + second[:-1]
 
 
 def iou(a: Mask, b: Mask) -> float:

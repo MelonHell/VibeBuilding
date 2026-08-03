@@ -294,12 +294,41 @@ class Grading:
         for pair in pairs:
             a_name, b_name = pair[0], pair[1]
             a, b = read.named[a_name], read.named[b_name]
-            axis = pair[2] if len(pair) > 2 else 0.5 * (a.u1 + b.u0)
-            found = checks.twins(model, a.mask, b.mask, read.frame, axis)
+            # Which way the pair stands is read off the pair rather than
+            # configured: whichever axis separates their centres more is the one
+            # the mirror plane cuts. Two towers end to end mirror across u, two
+            # bars facing each other over a court mirror across v, and nobody
+            # has to say which.
+            along = ("u" if abs((a.u0 + a.u1) - (b.u0 + b.u1))
+                     >= abs((a.v0 + a.v1) - (b.v0 + b.v1)) else "v")
+            gap = ((min(a.u1, b.u1), max(a.u0, b.u0)) if along == "u"
+                   else (min(a.v1, b.v1), max(a.v0, b.v0)))
+            axis = pair[2] if len(pair) > 2 else 0.5 * (gap[0] + gap[1])
+            found = checks.twins(model, a.mask, b.mask, read.frame, axis, along)
+            # One decimal, because the interesting cases sit on the budget and
+            # "95% against a budget of 95%" reads as a bug in the check.
             g.add(f"{a_name} mirrors {b_name}", found["same"] >= budget,
-                  f"{found['same']:.0%} of {found['cells']} paired columns "
+                  f"{found['same']:.1%} of {found['cells']} paired columns "
                   f"agree, worst course y {found['worst_course']} with "
-                  f"{found['worst']} cells; budget {budget:.0%}")
+                  f"{found['worst']} cells; budget {budget:.1%}")
+
+        # How much of each drawn part is the map's hand rather than the
+        # building. Always asked, with a default rather than a table, because a
+        # sawtoothed edge is a thing every map-read building can have and an
+        # opt-in check for it would be filled in by nobody -- the whole point is
+        # that nothing else can see it.
+        budget = self._("JAGGED", 0.15)
+        floor = self._("JAGGED_FLOOR", 200)
+        if budget is not None:
+            for name, part in read.named.items():
+                if part.mask.count() < floor:
+                    continue
+                found = checks.jaggedness(part.mask, read.frame)
+                g.add(f"{name} is drawn straight", found["share"] <= budget,
+                      f"{found['share']:.0%} of it is wobble -- {found['cells']}"
+                      f" cells differ from its own straightened reading, which "
+                      f"is {found['vertices']} straight segments; budget "
+                      f"{budget:.0%}")
 
         for name, allowed in self._("LEVEL", {}).items():
             where = (read.named[name].mask if name in read.named

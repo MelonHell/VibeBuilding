@@ -863,6 +863,35 @@ def next_lot(name: str = "next lot"):
     return make
 
 
+def station_of(reg, mesh_v: float) -> int:
+    """Which station a v in the reference's own coordinates belongs to.
+
+    The section bins the reference by whole metres **of the mesh** -- `int(v)`
+    -- and nothing else in the pipeline does. A probe that measures the same
+    building in plan metres and reports a run as `v 34..40` is speaking a
+    different language: the two frames differ by a few per cent, and over fifty
+    metres that is a whole station. It does not show up as a wrong number
+    anywhere, because both numbers are right; it shows up as a station failing
+    at every edge of every step, which is where two buildings spent a day.
+
+    So the convention lives here and both sides call it. A probe handing the
+    build a step boundary hands it a station, not a metre.
+    """
+    return int(mesh_v)
+
+
+def build_bin(reg, station: int) -> int:
+    """The build's v that a reference station is compared against.
+
+    The other half of the same convention. A mesh band runs `[k, k+1)` and is
+    read at its centre, so the build is looked for at `round(to_build_v(k +
+    0.5))` -- binning it at `to_build_v(k)` puts the two skylines half a metre
+    apart in v, which on a sloping roof is most of a station's worth of height
+    and fails one that agreed.
+    """
+    return int(round(reg.to_build_v(station + 0.5)))
+
+
 def one_station_off(why: str, name: str = "one station off",
                     drop: float = 4.0):
     """A station the reference disagrees with **both** its neighbours about.
@@ -1105,7 +1134,7 @@ def section(name: str, u0: float, u1: float, *, mesh: Cloud, build: Cloud,
             continue
         if any(abs(bu - s) < seam for s in seams):
             continue
-        k = int(v)
+        k = station_of(reg, v)
         if h > mesh_top.get(k, -math.inf):
             mesh_top[k] = h
 
@@ -1120,8 +1149,7 @@ def section(name: str, u0: float, u1: float, *, mesh: Cloud, build: Cloud,
     # ones it does not. Counted before the table, so a filter that quietly stops
     # firing is visible rather than assumed.
     offered = [k for k, h in mesh_top.items() if h >= floor]
-    graded = sorted(k for k in offered
-                    if int(round(reg.to_build_v(k + 0.5))) in expected)
+    graded = sorted(k for k in offered if build_bin(reg, k) in expected)
 
     band = Band(name, u0, u1, mesh_top, build_top, reg)
     excused = [make(band) for make in exemptions]

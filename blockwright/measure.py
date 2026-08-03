@@ -194,6 +194,82 @@ def histogram(samples, step: float, lo: float, hi: float):
     return counts, lo
 
 
+def flatten(profile, rise: float = 1.5, run: float = 4.0) -> list[dict]:
+    """A measured profile as the runs it actually has: flat unless proven.
+
+    The default reading of a skyline is one number per station, and built that
+    way a flat roof comes out a staircase. Photogrammetry's noise on a plain
+    surface is a metre and more; every wobble across a block boundary becomes a
+    step, and the section is perfectly happy with all of them because the
+    staircase is exactly as tall as what it was read from. One hotel built nine
+    treads on a roof its photographs show as one plane with one step in it.
+
+    The other default is as bad and is what a median does: one number over a
+    part that really steps is wrong at both ends, and neither error shows in a
+    silhouette.
+
+    So, runs. A station joins the run beside it while the **whole run** stays
+    within `rise` of its own mid-range -- mid-range and not mean, because the
+    section grades the worst station of a run rather than the typical one, so a
+    run has to be centred on its extremes. A run shorter than `run` stations is
+    not a step, it is a noisy station, and is folded into whichever neighbour it
+    is closer to in height. The fold takes the stations, never the height: a
+    three-station stub at 17 m folded into a forty-station run at 67 m by
+    averaging moved that whole roof to 54.
+
+    Three buildings each wrote a version of this -- `bands`, `_steps`,
+    `roof_step` -- with three different statistics and three different answers.
+
+    `profile` is `[(station, height), ...]` or `{station: height}`. Returns
+    `[{"from": k0, "to": k1, "top": h, "stations": n}]`, in station order and
+    with no gaps between neighbours.
+    """
+    rows = sorted(profile.items() if isinstance(profile, dict) else profile)
+    if not rows:
+        return []
+
+    runs: list[list] = []
+    for station, height in rows:
+        if runs:
+            held = runs[-1]
+            lo = min(held[2], height)
+            hi = max(held[3], height)
+            if station == held[1] + 1 and hi - lo <= 2 * rise:
+                held[1], held[2], held[3] = station, lo, hi
+                held[4] += 1
+                continue
+        runs.append([station, station, height, height, 1])
+
+    while len(runs) > 1:
+        short = [i for i, r in enumerate(runs) if r[4] < run]
+        if not short:
+            break
+        i = min(short, key=lambda k: runs[k][4])
+        mine = 0.5 * (runs[i][2] + runs[i][3])
+        left = runs[i - 1] if i else None
+        right = runs[i + 1] if i + 1 < len(runs) else None
+        pick = left
+        if right is not None and (
+                left is None
+                or abs(0.5 * (right[2] + right[3]) - mine)
+                < abs(0.5 * (left[2] + left[3]) - mine)):
+            pick = right
+        pick[0] = min(pick[0], runs[i][0])
+        pick[1] = max(pick[1], runs[i][1])
+        pick[4] += runs[i][4]
+        runs.pop(i)
+
+    # Each run reaches the start of the next, so a station the reference dropped
+    # is spanned by its neighbour instead of coming out as a hole in the roof.
+    out = []
+    for i, r in enumerate(runs):
+        end = runs[i + 1][0] if i + 1 < len(runs) else r[1] + 1
+        out.append({"from": r[0], "to": end,
+                    # The middle of the range, for the reason above.
+                    "top": 0.5 * (r[2] + r[3]), "stations": r[4]})
+    return out
+
+
 def twins(profiles: dict, tolerance: float = 1.5, mirror: bool = False) -> dict:
     """Whether two parts the building repeats were measured the same.
 
