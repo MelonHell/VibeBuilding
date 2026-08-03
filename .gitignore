@@ -1,11 +1,19 @@
 **/__pycache__/
 
 # Buildings are not part of the project: each is its own inputs, its own recipe
-# and its own results, and they come and go. The skeleton they start from is,
-# so it is the one thing under here that is versioned.
+# and its own results, and they come and go. What is shared here is the
+# generator, and somebody who takes it should get the generator and not a
+# stranger's buildings. The skeleton they start from is part of it, so it is the
+# one thing under here that is versioned.
 #
 # `buildings/*` rather than `buildings/`, because git does not look inside an
 # ignored directory and the exception below would never be reached.
+#
+# What keeps the ignored buildings in step with the library is not git, and it
+# was a mistake to reach for git for it. It is `tools/lint_buildings.py`, which
+# reads every building's calls against the library it actually has and is run by
+# `pipeline_selftest` -- so a rename that breaks six untracked buildings turns
+# the selftest red the same minute. See the note at the top of that file.
 buildings/*
 !buildings/__init__.py
 !buildings/_template/

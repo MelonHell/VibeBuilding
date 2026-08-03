@@ -194,6 +194,124 @@ def histogram(samples, step: float, lo: float, hi: float):
     return counts, lo
 
 
+def twins(profiles: dict, tolerance: float = 1.5, mirror: bool = False) -> dict:
+    """Whether two parts the building repeats were measured the same.
+
+    A mirror pair, a row of identical villas, a stack of identical floors: the
+    building says they are the same and the reference is measured once per copy.
+    Nothing downstream compares those measurements, and the difference between
+    them is pure noise -- so it gets built, faithfully, as if it were the
+    building.
+
+    That is not a small effect. On one hotel the two towers' measured roofs
+    differed by up to five metres at stations where the real roofs are level;
+    the build stepped one of them nine times and the other five, and every check
+    passed: two towers of the same footprint cast the same silhouette and the
+    same profile, and the section grades each against its own half of the
+    reference. The only thing that could have caught it was somebody looking at
+    a render.
+
+    `profiles` is `{name: {station: height}}`, one entry per copy, stations
+    counted from each copy's own start so that they line up. `mirror` reverses
+    every profile but the first, for a pair that faces the other way.
+
+    Returns the reconciled profile -- the per-station median, which is the right
+    estimator for three or more and the mean for two -- and, more importantly,
+    where and by how much the copies disagree. **It does not decide.** A caller
+    that merges a pair disagreeing by five metres has replaced a visible defect
+    with an invisible one: the section will fail runs of stations on both copies,
+    correctly, because neither of them is what was measured. What a disagreement
+    means is that one copy is modelled worse than the other, and that is a
+    sentence for the report, not a number to average away.
+    """
+    names = list(profiles)
+    if len(names) < 2:
+        return {"agree": None, "why": "one copy is not a pair",
+                "members": names, "level": {}, "worst": 0.0, "at": None,
+                "rows": []}
+
+    ordered = {}
+    for i, name in enumerate(names):
+        entry = dict(profiles[name])
+        if mirror and i:
+            keys = sorted(entry)
+            entry = {k: entry[j] for k, j in zip(keys, reversed(keys))}
+        ordered[name] = entry
+
+    shared = set.intersection(*(set(p) for p in ordered.values()))
+    rows, level = [], {}
+    worst, at = 0.0, None
+    for k in sorted(shared):
+        heights = [ordered[name][k] for name in names]
+        got = sorted(heights)
+        level[k] = (got[len(got) // 2] if len(got) % 2
+                    else 0.5 * (got[len(got) // 2 - 1] + got[len(got) // 2]))
+        spread = max(heights) - min(heights)
+        rows.append((k, heights, spread))
+        if spread > worst:
+            worst, at = spread, k
+
+    only = {name: sorted(set(ordered[name]) - shared) for name in names}
+    return {
+        "agree": worst <= tolerance,
+        "members": names,
+        "level": level,
+        "worst": worst,
+        "at": at,
+        "tolerance": tolerance,
+        "rows": rows,
+        # Stations one copy has and another does not. A hole in the capture
+        # over one of a pair reads as a station the other simply lacks, and
+        # that is worth naming rather than dropping.
+        "only": {name: got for name, got in only.items() if got},
+    }
+
+
+def mode(values, step: float = 0.5) -> dict:
+    """The densest band of `values`, and how much of the population it holds.
+
+    The answer to "what level is this surface at" when the surface is measured
+    by a cloud of vertices rather than by a ruler. The median is the obvious
+    reading and is wrong on a flat roof: photogrammetry puts no vertex at all on
+    a third of a plain surface, and the highest thing it holds in those cells is
+    whatever it saw underneath -- a pavement under an overhang, the deck under a
+    glazed canopy -- so those cells vote in the median as if the roof were at
+    four metres. The mode reads the plane the vertices actually lie on.
+
+    `share` is what makes it usable rather than merely plausible: a flat roof
+    comes back with most of its population in one band, and a stepped or
+    cluttered one does not. A caller that ignores `share` is treating a
+    two-level roof's busiest level as its only one.
+
+    Returns `samples`, `level`, `share` and `median`; `samples` is zero and the
+    rest are None when there is nothing to read, so the caller says what it
+    wants to do about that rather than getting a confident zero.
+
+    Three buildings each wrote a private copy of this -- `_mode`, `_deck`,
+    `roof_step`'s inner helper -- and each rounded and reported it differently.
+    """
+    values = [v for v in values if v is not None]
+    if not values:
+        return {"samples": 0, "level": None, "share": 0.0, "median": None}
+
+    lo, hi = min(values), max(values) + step
+    counts, base = histogram(values, step, lo, hi)
+    best = max(range(len(counts)), key=lambda i: counts[i])
+    band = [v for v in values
+            if base + best * step <= v < base + (best + 1) * step]
+
+    got = sorted(values)
+    return {
+        "samples": len(values),
+        # The mean of the band rather than the band's centre: the bin is an
+        # accident of where `lo` fell, and half a bin is half the tolerance the
+        # section has to spend before anything is actually wrong.
+        "level": sum(band) / len(band) if band else base + best * step,
+        "share": len(band) / len(values),
+        "median": got[len(got) // 2],
+    }
+
+
 # -- the mesh --------------------------------------------------------------
 
 

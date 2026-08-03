@@ -25,7 +25,10 @@ walk along and reads as broken -- which is the failure being looked for.
 
 from __future__ import annotations
 
-from .blocks import base, unknown_blocks
+import math
+
+from .blocks import AIR, base, unknown_blocks
+from .mask import Mask
 
 # Blocks that are allowed to float or to end in mid-air: planting, water, and
 # anything else that is scenery rather than structure. A leaf block with one
@@ -275,6 +278,170 @@ def watertight(footprint, wall) -> list[tuple[int, int]]:
                 leaked.append((nx, nz))
             stack.append(j)
     return leaked
+
+
+# -- evenness ---------------------------------------------------------------
+#
+# Three questions the rest of this file cannot ask, because every check above
+# compares the build against something outside it. These compare the build
+# against **itself**: two parts that ought to match, a line that ought to be
+# straight, a horizontal that ought to be one height.
+#
+# That is the whole blind spot the section has by construction. Two towers of
+# the same footprint cast the same silhouette and the same profile whatever
+# their facades do; a roof edge sawtoothed by a metre at every step measures the
+# same as a straight one; a parapet at nine different heights along one building
+# passes every station it is graded at. All three are the first thing a person
+# sees in a render and none of them is a number anywhere else in this pipeline.
+
+
+def twins(model, a: Mask, b: Mask, frame, axis_u: float,
+          y0: int = 0, y1: int | None = None) -> dict:
+    """How far two parts that should be mirror images actually differ.
+
+    `a` and `b` are the two footprints and `axis_u` is the u of the plane
+    between them. Every filled cell of `a` is reflected across that plane and
+    looked for in `b`, and vice versa, course by course.
+
+    Reflected through the frame rather than through the block array, for the
+    reason `Frame.flipped` gives at length: at fifty degrees to the world grid a
+    voxel reflection is a resampling and would report its own rounding as the
+    building's error. Here the reflected point is mapped back to a cell and
+    tested, which rounds once and symmetrically, so a build that really is a
+    mirror pair comes back at or near zero and the residue is honest.
+
+    Returns the count each way, the worst course, and the share of the pair that
+    matches -- `same`, which is the number to put a budget on.
+    """
+    height = model.height if y1 is None else min(model.height, y1)
+    area = model.width * model.length
+    air = {i for i, block in enumerate(model.palette) if block == AIR}
+    mirror = frame.flipped(axis_u)
+
+    def opposite(x: int, z: int) -> tuple[int, int] | None:
+        u, v = frame.to_local(x + 0.5, z + 0.5)
+        wx, wz = mirror.to_world(u, v)
+        wx, wz = int(wx), int(wz)
+        if 0 <= wx < model.width and 0 <= wz < model.length:
+            return wx, wz
+        return None
+
+    pairs = []
+    for source, target in ((a, b), (b, a)):
+        for x, z in source.cells():
+            other = opposite(x, z)
+            if other is not None and target.get(*other):
+                pairs.append((z * model.width + x,
+                              other[1] * model.width + other[0]))
+
+    matched = differ = 0
+    worst, at = 0, None
+    for y in range(max(0, y0), height):
+        base = y * area
+        wrong = 0
+        for here, there in pairs:
+            one = model.blocks[base + here] not in air
+            two = model.blocks[base + there] not in air
+            if one == two:
+                matched += 1
+            else:
+                wrong += 1
+        differ += wrong
+        if wrong > worst:
+            worst, at = wrong, y
+
+    total = matched + differ
+    return {
+        "cells": len(pairs),
+        "matched": matched,
+        "differ": differ,
+        "same": matched / total if total else 1.0,
+        "worst_course": at,
+        "worst": worst,
+    }
+
+
+def jaggedness(mask: Mask, frame) -> dict:
+    """How much of an outline is staircase that the building does not have.
+
+    A wall drawn at eight degrees to the world grid rasterises as a sawtooth,
+    and at one block to the metre that sawtooth is a metre deep -- it is the
+    first thing anyone notices about a roof edge beside a photograph of the real
+    one, and it is invisible to every other check here.
+
+    Measured as the share of contour cells that sit off the straight line their
+    neighbours define by more than half a cell, in the building's own frame. A
+    genuinely raked or curved edge scores low, because its neighbours turn with
+    it; a straight edge chopped into steps scores high, because they do not.
+
+    A number, not a verdict, and the decision it informs already exists:
+    `Site.footprint` takes the drawn mask and `Site.box` re-rasterises the
+    part's extent, which is straight by construction. Where the plan's own shape
+    carries a measurement -- a raked end, a bowed face, a diagonal row -- the
+    sawtooth is the price of the frame and the drawn mask is right. Where it is
+    a rectangle the map drew square and the wobble is the map's hand, this
+    number says so and `box` spends it.
+    """
+    ring = mask.contour()
+    if len(ring) < 5:
+        return {"cells": len(ring), "jagged": 0, "share": 0.0}
+
+    local = [frame.to_local(x + 0.5, z + 0.5) for x, z in ring]
+    jagged = 0
+    n = len(local)
+    for i in range(n):
+        (au, av) = local[(i - 2) % n]
+        (bu, bv) = local[(i + 2) % n]
+        (u, v) = local[i]
+        du, dv = bu - au, bv - av
+        span = math.hypot(du, dv)
+        if span < 1e-9:
+            continue
+        # Distance from the chord its own neighbours span.
+        off = abs(dv * (u - au) - du * (v - av)) / span
+        if off > 0.5:
+            jagged += 1
+    return {"cells": n, "jagged": jagged, "share": jagged / n}
+
+
+def level_runs(model, mask: Mask, y0: int = 0, y1: int | None = None) -> dict:
+    """How many different heights a surface that should be one height has.
+
+    The top of a wall, a parapet, a roof deck: things a building has one of and
+    a build measured station by station has nine of. Photogrammetry noise on a
+    flat roof is a metre and more, and a profile cut at every station turns each
+    wobble across a block boundary into a step -- so the build comes out a
+    staircase where the reference is a plane, and the section is perfectly happy
+    because the staircase is exactly as tall as what it was read from.
+
+    Returns the distinct top heights under `mask` and how many cells hold each,
+    commonest first. One entry is a level surface. Two or three with one of them
+    dominant is a real step. Nine, each with a handful of cells, is noise that
+    was built.
+    """
+    height = model.height if y1 is None else min(model.height, y1)
+    area = model.width * model.length
+    air = {i for i, block in enumerate(model.palette) if block == AIR}
+
+    tally: dict[int, int] = {}
+    for x, z in mask.cells():
+        i = z * model.width + x
+        top = None
+        for y in range(max(0, y0), height):
+            if model.blocks[y * area + i] not in air:
+                top = y
+        if top is not None:
+            tally[top] = tally.get(top, 0) + 1
+
+    order = sorted(tally.items(), key=lambda kv: -kv[1])
+    covered = sum(tally.values())
+    return {
+        "levels": order,
+        "count": len(order),
+        "cells": covered,
+        # What share stands at the commonest height. A flat roof is near 1.
+        "share": (order[0][1] / covered) if order else 1.0,
+    }
 
 
 class Findings:

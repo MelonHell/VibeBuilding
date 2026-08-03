@@ -64,7 +64,8 @@ class Frame:
     +X (east) towards +Z (south), matching Minecraft's left-handed grid.
     """
 
-    __slots__ = ("origin", "angle", "extent_u", "extent_v", "_cos", "_sin")
+    __slots__ = ("origin", "angle", "extent_u", "extent_v", "_cos", "_sin",
+                 "flip_u")
 
     def __init__(
         self,
@@ -72,11 +73,15 @@ class Frame:
         angle_deg: float,
         extent_u: float = 0.0,
         extent_v: float = 0.0,
+        flip_u: float | None = None,
     ):
         self.origin = (float(origin[0]), float(origin[1]))
         self.angle = float(angle_deg)
         self.extent_u = float(extent_u)
         self.extent_v = float(extent_v)
+        # The u of a mirror plane, or None for the ordinary frame. See
+        # `flipped`.
+        self.flip_u = None if flip_u is None else float(flip_u)
         rad = math.radians(self.angle)
         self._cos = math.cos(rad)
         self._sin = math.sin(rad)
@@ -84,19 +89,50 @@ class Frame:
     def to_local(self, x: float, z: float) -> tuple[float, float]:
         dx = x - self.origin[0]
         dz = z - self.origin[1]
-        return (dx * self._cos + dz * self._sin, -dx * self._sin + dz * self._cos)
+        u = dx * self._cos + dz * self._sin
+        v = -dx * self._sin + dz * self._cos
+        return (2.0 * self.flip_u - u if self.flip_u is not None else u, v)
 
     def to_world(self, u: float, v: float) -> tuple[float, float]:
+        if self.flip_u is not None:
+            u = 2.0 * self.flip_u - u
         return (
             self.origin[0] + u * self._cos - v * self._sin,
             self.origin[1] + u * self._sin + v * self._cos,
         )
 
     def u_of(self, x: float, z: float) -> float:
-        return (x - self.origin[0]) * self._cos + (z - self.origin[1]) * self._sin
+        return self.to_local(x, z)[0]
 
     def v_of(self, x: float, z: float) -> float:
         return -(x - self.origin[0]) * self._sin + (z - self.origin[1]) * self._cos
+
+    def flipped(self, axis_u: float) -> "Frame":
+        """The same frame with u reflected across `axis_u`.
+
+        For building the second half of something symmetrical. Draw one tower,
+        then draw it again through this and it lands mirrored, exactly, with no
+        second set of numbers to keep in step.
+
+        **Reflected here and not in the block array, and that distinction is the
+        whole point.** A voxel copy mirrored across an axis at fifty degrees to
+        the world grid is a resampling: the reflection is an isometry of the
+        plane but not an automorphism of the cell lattice, so cell centres do
+        not land on cell centres. A forward splat leaves pinholes -- guaranteed
+        on a one-block wall at that angle, and a pinhole under a block is a
+        floating block -- and a backward sample re-rasterises every edge, so the
+        copy differs from a true mirror by up to a cell along each face, on top
+        of the staircase the source already has. Neither survives `finalize`
+        either: a block's `north`/`east`/`south`/`west` state is world-facing,
+        and a reflection at fifty degrees maps cardinals onto non-cardinals.
+
+        Reflect the *predicate* instead and `region` rasterises the mirror image
+        from scratch, at the same angle, with its own correctly centre-sampled
+        staircase and its own facings. Lossless, because nothing was sampled
+        twice.
+        """
+        return Frame(self.origin, self.angle, self.extent_u, self.extent_v,
+                     flip_u=None if self.flip_u is not None else axis_u)
 
     @property
     def direction(self) -> str:

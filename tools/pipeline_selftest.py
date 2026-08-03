@@ -226,6 +226,16 @@ def main(argv: list[str]) -> int:
             shutil.rmtree(ROOT / "buildings" / f"_selftest_{kind}",
                           ignore_errors=True)
 
+    # And the buildings that actually exist, which the four synthetic branches
+    # above do not stand in for. They are built from `_template`, and the
+    # template calls a strict subset of the library: not `site`, not `grading`,
+    # not `paths.Layout`, not `roof`, not `palm`. Everything a real building
+    # leans on was outside this harness until this call, and the price of that
+    # was six buildings dead on import for a fortnight with this test green.
+    print()
+    from . import lint_buildings
+    bad += lint_buildings.main()
+
     print()
     if bad:
         print(f"{bad} of {len(SCENARIOS)} branches did not come through clean.")

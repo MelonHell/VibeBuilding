@@ -391,6 +391,74 @@ def surrounds(path: str, mass: Mask, reach: float = 25.0,
     return Parcel(inside, surfaces)
 
 
+def size(path: str) -> tuple[int, int]:
+    """The crop's grid, for a caller building a mask to match it."""
+    _, w, h = _pixels(path)
+    return w, h
+
+
+def everywhere(path: str) -> Mask:
+    """The whole crop as a mask, for a parcel that is the whole crop."""
+    _, w, h = _pixels(path)
+    return Mask(w, h, bytearray([1] * (w * h)))
+
+
+def surfaces(path: str, mask: Mask, kinds) -> dict[str, Mask]:
+    """Split a region of the crop by the map's own colours, on the map's terms.
+
+    `parcel` and `surrounds` both answer "where is the plot" and then classify
+    what they found into water, grass and ground. That fixed three-way split is
+    right for a map drawn in three colours and wrong for every crop that carries
+    a boardwalk, a beach, painted asphalt or a swimming pool -- and four
+    buildings in a row wrote the same pixel loop by hand to get around it, twice
+    byte for byte including the comment explaining why.
+
+    So the region is the caller's (`mask` -- usually `mass.dilate(reach)`) and so
+    is the vocabulary. `kinds` is an ordered sequence of `(name, predicate)`
+    tried in turn, the first match winning, with a single trailing `None`
+    predicate as the catch-all:
+
+        surfaces(str(paths.LAYOUT), site.mass.dilate(SITE), kinds=(
+            ("water", lambda r, g, b: b > r + 12),
+            ("road",  lambda r, g, b: r < 115),
+            ("paving", None),
+        ))
+
+    Order is the whole design. A pixel belongs to exactly one surface, so the
+    returned masks are disjoint by construction and no section downstream has to
+    know which of them ran first -- which was the other half of what those four
+    hand-written copies kept getting subtly differently.
+
+    The thresholds are the crop's, and they are read off its own colour census
+    rather than guessed: `tools/map_probe.py` prints it.
+    """
+    px, w, h = _pixels(path)
+    if (mask.width, mask.length) != (w, h):
+        raise ValueError(
+            f"the mask is {mask.width} x {mask.length} and {path} is {w} x {h}; "
+            "a surface mask has to be on the crop's own grid")
+
+    names = [name for name, _ in kinds]
+    if len(set(names)) != len(names):
+        raise ValueError(f"two surfaces are both called {names}")
+    fallback = [name for name, test in kinds if test is None]
+    if len(fallback) > 1:
+        raise ValueError(
+            "only one surface may be the catch-all, and these are: "
+            + ", ".join(fallback))
+
+    out = {name: Mask(w, h) for name in names}
+    for i, on in enumerate(mask.bits):
+        if not on:
+            continue
+        r, g, b = px[i % w, i // w]
+        for name, test in kinds:
+            if test is None or test(r, g, b):
+                out[name].bits[i] = 1
+                break
+    return out
+
+
 def read(path: str, palette: Palette | None = None) -> tuple[Mask, Frame]:
     """The footprint and the frame fitted to it."""
     mask = footprint(path, palette=palette)
@@ -398,5 +466,6 @@ def read(path: str, palette: Palette | None = None) -> tuple[Mask, Frame]:
 
 
 __all__ = ["DEFAULT", "Guide", "Layers", "Palette", "Parcel", "SURFACES",
+           "everywhere", "size",
            "footprint", "greys", "guides", "layers", "parcel", "read", "road",
-           "surrounds"]
+           "surfaces", "surrounds"]

@@ -129,6 +129,55 @@ class Canvas:
         """Cut a mask out again -- windows, doorways, light wells."""
         return self.fill(mask, y0, y1, AIR)
 
+    def repeat(self, y0: int, y1: int, step: int, count: int,
+               mask: Mask | None = None) -> int:
+        """Copy the courses [y0, y1) upwards `count` more times, every `step`.
+
+        For the storey a building has more than one of. Drawn once and stamped,
+        every floor is identical because it is the same blocks -- where a loop
+        that redraws each floor from the same numbers is identical only as long
+        as nothing rounds differently at one level, and something always does:
+        a level carried as 5.75 becomes 5 at one storey and 6 at the next, and
+        the facade bands step out of line halfway up.
+
+        Along y this is exact and needs no argument. The frame is
+        two-dimensional and y is the one axis the rotation never touches, so a
+        vertical stamp moves whole cells onto whole cells -- no resampling, no
+        pinholes, nothing to round. That is precisely what a horizontal mirror
+        of the block array is not; see `Frame.flipped`.
+
+        `mask` limits it to one part of the plan, for a building whose tower
+        repeats and whose podium does not. Blocks are copied as written and
+        `finalize` still runs once at the end, so connecting states come out
+        right for the neighbours each copy actually has.
+        """
+        if step <= 0:
+            raise ValueError("a repeat rises by at least one course")
+        y0, y1 = self._clamp(y0, y1)
+        if y1 <= y0:
+            return 0
+        area = self.width * self.length
+        cells = (list(range(area)) if mask is None
+                 else [i for i, v in enumerate(mask.bits) if v])
+        if mask is not None and (mask.width, mask.length) != (self.width,
+                                                              self.length):
+            raise ValueError("mask does not match the canvas grid")
+
+        written = 0
+        for n in range(1, count + 1):
+            lift = n * step
+            for y in range(y0, y1):
+                if y + lift >= self.height:
+                    break
+                source = y * area
+                target = (y + lift) * area
+                for i in cells:
+                    value = self.data[source + i]
+                    if value:
+                        self.data[target + i] = value
+                        written += 1
+        return written
+
     def finalize(self) -> int:
         """Give panes, bars, fences and walls the state their neighbours imply.
 
@@ -387,32 +436,63 @@ class Facade:
     sit at the same point along the wall but a metre apart in raw arc length.
     """
 
-    __slots__ = ("width", "length", "ring", "s", "facing", "perimeter")
+    __slots__ = ("width", "length", "ring", "rings", "s", "facing",
+                 "perimeter", "perimeters", "piece")
 
     SMOOTH = 2  # half-width of the averaging window, in contour cells
 
     def __init__(self, footprint: Mask):
         self.width = footprint.width
         self.length = footprint.length
-        self.ring = footprint.contour()
-        self.s = [-1.0] * (footprint.width * footprint.length)
-        self.facing = [-1] * (footprint.width * footprint.length)
+        area = footprint.width * footprint.length
+        self.s = [-1.0] * area
+        self.facing = [-1] * area
+        # Which piece of the footprint each cell belongs to, so a rhythm can be
+        # set out per piece rather than per mask.
+        self.piece = [-1] * area
 
-        path = self._smoothed(self.ring)
-        walked = 0.0
-        for i, (x, z) in enumerate(self.ring):
-            if i:
-                px, pz = path[i - 1]
-                walked += math.hypot(path[i][0] - px, path[i][1] - pz)
-            self.s[z * self.width + x] = walked
-        self.perimeter = walked
+        # One ring per piece, and this is the whole reason the class does not
+        # simply call `contour()`.
+        #
+        # `Mask.contour` traces the outermost ring of **one** component -- it
+        # says so -- and starts from the raster-first set cell. Handed a mask
+        # with two pieces in it, everything below then ran on the first piece
+        # alone: every cell of the second kept `s = -1`, `bays` skips those
+        # (`if value < 0: continue`), and the caller got an empty opening mask
+        # for half its building. Silently. A hotel shipped with one blank tower
+        # and a villa row shipped with seven blank villas, and neither the
+        # schedule audit nor the section can see a missing window.
+        #
+        # Arc length restarts at zero on each piece, which is also what makes a
+        # mirror pair come out a mirror pair: two towers handed to one Facade
+        # get the same rhythm from the same phase instead of the second one
+        # inheriting whatever the first one's perimeter happened to leave.
+        self.rings = []
+        self.perimeters = []
+        for index, part in enumerate(footprint.components(min_cells=1)):
+            ring = part.contour()
+            if not ring:
+                continue
+            path = self._smoothed(ring)
+            walked = 0.0
+            for i, (x, z) in enumerate(ring):
+                if i:
+                    px, pz = path[i - 1]
+                    walked += math.hypot(path[i][0] - px, path[i][1] - pz)
+                self.s[z * self.width + x] = walked
+                self.piece[z * self.width + x] = len(self.rings)
+            for (x, z), side in zip(ring, self._outward(part, ring)):
+                self.facing[z * self.width + x] = side
+            self.rings.append(ring)
+            self.perimeters.append(walked)
 
-        for (x, z), side in zip(self.ring, self._outward(footprint)):
-            self.facing[z * self.width + x] = side
+        # Kept for the common case and for anything that reports one number.
+        self.ring = self.rings[0] if self.rings else []
+        self.perimeter = max(self.perimeters, default=0.0)
 
-        # Spread inwards so thick walls inherit the ring's arc length and the
-        # direction it looks out in.
-        queue = [z * self.width + x for x, z in self.ring]
+        # Spread inwards so thick walls inherit the ring's arc length, the
+        # direction it looks out in, and which piece they are part of.
+        queue = [z * self.width + x for ring in self.rings for x, z in ring]
         head = 0
         while head < len(queue):
             i = queue[head]
@@ -426,9 +506,10 @@ class Facade:
                 if footprint.bits[j] and self.s[j] < 0:
                     self.s[j] = self.s[i]
                     self.facing[j] = self.facing[i]
+                    self.piece[j] = self.piece[i]
                     queue.append(j)
 
-    def _outward(self, footprint: Mask) -> list[int]:
+    def _outward(self, footprint: Mask, ring) -> list[int]:
         """Which way each ring cell looks out, as an index into `_SIDES`.
 
         Taken from the clear side of each cell rather than from the contour's
@@ -439,7 +520,7 @@ class Facade:
         writes a run of stairs that rotate back and forth along a straight wall.
         """
         raw = []
-        for x, z in self.ring:
+        for x, z in ring:
             ox = oz = 0.0
             for dx, dz in _AROUND:
                 if not footprint.get(x + dx, z + dz):
@@ -509,19 +590,150 @@ class Facade:
 
         The period is nudged so a whole number of bays fits the perimeter --
         otherwise the last bay before the loop closes lands hard against the
-        first one.
+        first one. Nudged **per piece**, because that is where a ring closes: one
+        step computed from the longest piece leaves every other piece with a
+        doubled or a missing bay wherever its loop comes round.
         """
         if period <= 0:
             raise ValueError("bay period must be positive")
-        count = max(1, round(self.perimeter / period))
-        step = self.perimeter / count
+        # A piece too small to have a perimeter -- one cell, or a two-cell
+        # splinter the rasteriser left at a corner -- has no rhythm to set out,
+        # and dividing by its zero-length loop is a crash rather than an answer.
+        # It falls back to the period it was asked for, which puts its one cell
+        # in a bay: at that size the difference is invisible and the alternative
+        # is the build stopping on a splinter.
+        steps = [perimeter / max(1, round(perimeter / period)) if perimeter
+                 else period
+                 for perimeter in self.perimeters] or [period]
         out = Mask(self.width, self.length)
         for i, value in enumerate(self.s):
             if value < 0:
                 continue
+            step = steps[self.piece[i]] if self.piece[i] >= 0 else steps[0]
             if (value - phase) % step < width:
                 out.bits[i] = 1
         return out
+
+
+# -- planting ---------------------------------------------------------------
+#
+# Not architecture, and here anyway. Five buildings each wrote their own palm
+# and their own scatter, three of them wrote the same paragraph of comment
+# explaining the same mistake, and one of them still has the mistake.
+
+
+def scatter(mask: Mask, pitch, seed: int = 0) -> list[tuple[int, int]]:
+    """One position per `pitch` metres of a region, jittered inside its cell.
+
+    Two ways of doing this are wrong and both have been built.
+
+    Every nth cell of the mask spaces by *cell order*, which runs along the
+    world grid. On a frame at fifty degrees to it that is not a distance at all:
+    the picks bunch into diagonal streaks, and a belt that runs diagonally holds
+    a different number of cells per metre than one square to the grid, so the
+    same `n` plants a row that thins out wherever the wall turns.
+
+    One at every grid intersection spaces correctly and reads as an avenue.
+    Photographs of these sites are groves: things stand *near* a rhythm, not on
+    it.
+
+    So: bucket by a `pitch` grid, and take one cell out of each bucket chosen by
+    a hash of the bucket. Deterministic -- the same crop gives the same grove on
+    every run, which is what makes a render diff mean something -- and off the
+    grid lines, which is what makes it read as planting.
+
+    `pitch` may be a callable `(x, z) -> float`, for a region that is dense belt
+    at one end and open terrace at the other.
+    """
+    buckets: dict[tuple, list[tuple[int, int]]] = {}
+    for x, z in mask.cells():
+        step = pitch(x, z) if callable(pitch) else pitch
+        if step <= 0:
+            continue
+        buckets.setdefault(
+            (int(x // step), int(z // step), round(step, 3)), []).append((x, z))
+
+    out = []
+    for key in sorted(buckets):
+        cells = buckets[key]
+        mix = (key[0] * 73856093) ^ (key[1] * 19349663) ^ seed
+        out.append(cells[(mix & 0x7FFFFFFF) % len(cells)])
+    return out
+
+
+# The name three buildings called it, kept because it says where the jitter
+# comes from. One function, so the two names cannot drift apart.
+hash_scatter = scatter
+
+
+def palm(
+    canvas: Canvas,
+    at: tuple[int, int],
+    *,
+    base: int,
+    height: int,
+    trunk: str,
+    frond: str,
+    radius: float = 2.0,
+    crown: int = 1,
+    shape: str = "round",
+) -> Mask:
+    """One tree: a trunk with a head on it, standing at `at`.
+
+    Returns trunk and head together, and that is not a convenience. A head with
+    no trunk under it is what `checks.floating` calls adrift and a trunk with no
+    head is a post, so a caller that declares them separately has two parts that
+    can each pass while the tree is broken.
+
+    The head narrows by a metre a course, which is what makes it read as a palm
+    rather than a mushroom at one block to the metre, and it is capped on the
+    axis so the trunk does not end in open air.
+
+    `shape` is "round" for a disc and "diamond" for the taxicab version, which is
+    a metre narrower on the diagonals and stops a close-planted row from closing
+    into a green slab at altitude.
+    """
+    if crown < 1:
+        raise ValueError("a tree has at least one course of head")
+    if blocklib.base(frond).endswith("_leaves") \
+            and "persistent=true" not in frond:
+        raise SystemExit(
+            f"{frond} has no persistent=true, so Minecraft will destroy every "
+            "leaf more than six blocks from a log -- which is most of a palm's "
+            "head -- a couple of minutes after the schematic is pasted. Write "
+            f'"{blocklib.base(frond)}[persistent=true]".')
+
+    x, z = at
+    if not (0 <= x < canvas.width and 0 <= z < canvas.length):
+        return Mask(canvas.width, canvas.length)
+
+    stem = Mask(canvas.width, canvas.length)
+    stem.set(x, z)
+    top = base + height
+    canvas.fill(stem, base, top, trunk)
+
+    placed = stem.copy()
+    for course in range(crown):
+        reach = radius - course
+        if reach <= 0:
+            break
+        head = Mask(canvas.width, canvas.length)
+        span = int(reach)
+        for dz in range(-span, span + 1):
+            for dx in range(-span, span + 1):
+                near = (abs(dx) + abs(dz) if shape == "diamond"
+                        else math.hypot(dx, dz))
+                if near > reach:
+                    continue
+                nx, nz = x + dx, z + dz
+                if 0 <= nx < canvas.width and 0 <= nz < canvas.length:
+                    head.set(nx, nz)
+        canvas.fill(head - stem, top - 1 + course, top + course, frond)
+        placed = placed | head
+
+    # The bud, so the trunk does not end in daylight.
+    canvas.fill(stem, top + crown - 1, top + crown, frond)
+    return placed
 
 
 def openings(

@@ -123,6 +123,16 @@ class Mask:
         if 0 <= x < self.width and 0 <= z < self.length:
             self.bits[z * self.width + x] = 1 if value else 0
 
+    def __bool__(self) -> bool:
+        """Whether anything is set.
+
+        Without this a Mask is always truthy, and `mask.erode(1.0) or mask` --
+        the obvious way to write "shrink it, but not to nothing" -- never takes
+        its fallback. It reads as a guard and is not one, so the day the erosion
+        does empty the mask the caller quietly builds nothing at all.
+        """
+        return any(self.bits)
+
     def count(self) -> int:
         return fast.count(self.bits) if fast.HAVE else sum(self.bits)
 

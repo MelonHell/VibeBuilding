@@ -863,6 +863,86 @@ def next_lot(name: str = "next lot"):
     return make
 
 
+def one_station_off(why: str, name: str = "one station off",
+                    drop: float = 4.0):
+    """A station the reference disagrees with **both** its neighbours about.
+
+    Two failures of the method look identical in the numbers and neither is the
+    build being wrong.
+
+    A hole in the capture: photogrammetry loses a facade it had too few views
+    of and reads 13.7 m at one station with 29 to 36 m at every station beside
+    it. The building has no such notch -- nothing does -- and the give-away is
+    that the two neighbours agree with each other.
+
+    A step on the wrong side of a line: the section bins the reference by whole
+    metres of its own frame, and where the plan and the reference differ by a
+    few per cent a measured tread lands one station over. The build is right and
+    is being compared against the station next door, which is why this also
+    covers a station whose build height matches one of its neighbours' mesh.
+
+    Both are properties of the method, not of the building, so this belongs
+    here and not in a building's own gate. What it deliberately does not cover
+    is a run: three stations in a row out of tolerance is a shape a building can
+    have, and the section should say so.
+    """
+    def make(band: Band) -> Exemption:
+        tops = band.mesh_top
+        if not tops:
+            return Exemption(name, "no mesh material in this window", set())
+        covered = set()
+        for k, here in tops.items():
+            before, after = tops.get(k - 1), tops.get(k + 1)
+            if before is None or after is None:
+                continue
+            # Isolated: this station argues with both sides and they agree.
+            if (abs(here - before) > drop and abs(here - after) > drop
+                    and abs(before - after) <= drop):
+                covered.add(k)
+                continue
+            # Or the build agrees with a neighbouring station instead of this
+            # one, which is a tread that fell across a station line.
+            mine = band.build_top.get(k)
+            if mine is None:
+                continue
+            if (abs(mine - here) > drop
+                    and min(abs(mine - before), abs(mine - after)) <= drop):
+                covered.add(k)
+        return Exemption(name, why, covered)
+    return make
+
+
+def capture_hole(name: str = "capture hole", under: float = 2.0):
+    """Stations where the reference holds ground and nothing else.
+
+    A capture is flown, and an aircraft cannot see into a courtyard, a light
+    well, or the space under a canopy. What photogrammetry reconstructs there is
+    the surrounding roofs and then a smear at the ground, because it never had a
+    view of what is between them. The section then compares a deck the build
+    lays at three metres against a station the reference reads at nothing, and
+    reports it as three metres of error.
+
+    That is not a disagreement about a height, it is the absence of a witness,
+    and the two want saying differently -- which is the whole reason the verdict
+    has three states rather than two.
+
+    Deliberately narrow: only where the reference has *nothing* above `under`
+    metres. A court the capture did see, however roughly, is graded.
+    """
+    def make(band: Band) -> Exemption:
+        tops = band.mesh_top
+        if not tops:
+            return Exemption(name, "no mesh material in this window", set())
+        covered = {k for k, h in tops.items() if h <= under}
+        return Exemption(
+            name,
+            f"the capture holds nothing above {under:.1f} m at these stations, "
+            "which is a court or a well it was never flown into rather than a "
+            "height it disagrees about",
+            covered)
+    return make
+
+
 # -- the section ------------------------------------------------------------
 
 

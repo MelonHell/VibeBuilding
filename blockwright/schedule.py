@@ -109,14 +109,22 @@ class Declaration:
 
 
 class Standing:
-    """What was found under a declaration: the cells, and how tall they run."""
+    """What was found under a declaration: the cells, and how tall they run.
 
-    __slots__ = ("mask", "y0", "y1")
+    `foreign` is what stands in the declared mask that the item's `blocks` do
+    not name, counted by block. It is the answer to the question the audit used
+    to leave open: a part reported as five per cent built is either five per
+    cent built or built out of something else, and those are different bugs in
+    different files.
+    """
 
-    def __init__(self, mask: Mask, y0: int, y1: int):
+    __slots__ = ("mask", "y0", "y1", "foreign")
+
+    def __init__(self, mask: Mask, y0: int, y1: int, foreign=None):
         self.mask = mask
         self.y0 = y0
         self.y1 = y1
+        self.foreign = foreign or {}
 
 
 class Schedule:
@@ -226,9 +234,20 @@ class Schedule:
             parts out of two or three materials, and the walk is over the whole
             schematic.
             """
+            # Both sides stripped of state, not just the one that was found.
+            # `Item.blocks` promises that `minecraft:oak_fence` covers
+            # `minecraft:oak_fence[north=true]`, and it did -- but a manifest
+            # that named the state itself, as every building with
+            # `jungle_leaves[persistent=true]` in it does, could never match
+            # anything: the palette entry was stripped and the wanted name was
+            # not, so the two never met. That line then reported nothing
+            # standing under a part that was fully built, or -- before the
+            # audit compared declared against found -- reported a handful of
+            # cells and passed.
+            names = {name.split("[", 1)[0] for name in wanted}
             keep = {i for i, block in enumerate(model.palette)
                     if i not in air
-                    and (not wanted or block.split("[", 1)[0] in wanted)}
+                    and (not names or block.split("[", 1)[0] in names)}
             column = [0] * area
             for y in range(model.height):
                 base = y * area
@@ -246,7 +265,8 @@ class Schedule:
 
         out: dict[str, Standing] = {}
         for name, d in self.built.items():
-            column = columns[tuple(sorted(self.by_name[name].blocks))]
+            item = self.by_name[name]
+            column = columns[tuple(sorted(item.blocks))]
             lo = max(0, int(math.floor(d.y0)))
             hi = min(model.height, int(math.ceil(d.y1)))
             window = ((1 << hi) - 1) ^ ((1 << lo) - 1) if hi > lo else 0
@@ -261,7 +281,24 @@ class Schedule:
                 found.bits[i] = 1
                 y0 = min(y0, (bits & -bits).bit_length() - 1)
                 y1 = max(y1, bits.bit_length() - 1)
-            out[name] = Standing(found, y0, y1)
+
+            # What else is standing there. Only computed where the answer might
+            # matter -- a part that filled its whole declaration out of the
+            # blocks it named needs no explaining.
+            foreign: dict[str, int] = {}
+            if item.blocks and found.count() < d.mask.count():
+                wanted = set(item.blocks)
+                for i, v in enumerate(d.mask.bits):
+                    if not v or found.bits[i]:
+                        continue
+                    for y in range(lo, hi):
+                        value = model.blocks[y * area + i]
+                        if value in air:
+                            continue
+                        block = model.palette[value].split("[", 1)[0]
+                        if block not in wanted:
+                            foreign[block] = foreign.get(block, 0) + 1
+            out[name] = Standing(found, y0, y1, foreign)
         return out
 
     def audit(self, model):
@@ -279,15 +316,45 @@ class Schedule:
                 yield (f"part {item.name}", False,
                        f"not built; nothing declares it ({item.what})")
                 continue
+            claim = self.built[item.name]
+            made = (" of " + ", ".join(item.blocks)) if item.blocks else ""
+            instead = ""
+            if here.foreign:
+                worst = sorted(here.foreign.items(), key=lambda kv: -kv[1])[:3]
+                instead = ("; what stands in the rest is "
+                           + ", ".join(f"{b} ({n})" for b, n in worst))
+
             if here.mask.count() == 0:
-                claim = self.built[item.name]
-                made = (" of " + ", ".join(item.blocks)) if item.blocks else ""
                 yield (f"part {item.name}", False,
                        f"declared {claim.mask.count()} cells over y "
-                       f"{claim.y0:g}..{claim.y1:g}, nothing{made} stands there")
+                       f"{claim.y0:g}..{claim.y1:g}, nothing{made} stands "
+                       f"there{instead}")
                 continue
-            yield (f"part {item.name}", True,
-                   f"{here.mask.count()} cells, y {here.y0}..{here.y1}")
+
+            # Declared against found, both numbers, every run.
+            #
+            # A part that is mostly missing used to pass with one cheerful
+            # number: a hotel declared its glazing over 297 cells and twenty-
+            # seven courses, 158 cells of it stood in the bottom three, and the
+            # audit printed "158 cells, y 1..3" and called it built. The tower
+            # windows were cut in a different block from the one the manifest
+            # named and were invisible to this check; the two blank facades
+            # survived three rounds.
+            #
+            # The thresholds are blunt on purpose. A quarter of the cells and
+            # half the courses is far below anything a rasteriser loses and far
+            # above nothing, and a part that trips them is a part to look at
+            # rather than a tolerance to widen.
+            covered = (here.y1 - here.y0 + 1) / max(1.0, claim.y1 - claim.y0)
+            share = here.mask.count() / max(1, claim.mask.count())
+            detail = (f"{here.mask.count()} of {claim.mask.count()} cells, "
+                      f"y {here.y0}..{here.y1} of {claim.y0:g}..{claim.y1:g}")
+            if share < 0.25 or covered < 0.5:
+                yield (f"part {item.name}", False,
+                       detail + f" -- most of what was declared{made} is not "
+                                f"there{instead}")
+                continue
+            yield (f"part {item.name}", True, detail + instead)
 
             for other in item.near:
                 there = found.get(other)
