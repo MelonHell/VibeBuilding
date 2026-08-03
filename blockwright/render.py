@@ -58,6 +58,51 @@ DIFFUSE = 0.56
 # the courses; not so much that a wall turns into a grid.
 SEAM = 0.88
 
+# -- how a render is coloured -----------------------------------------------
+#
+# `shaded` is the picture: block colours, sun, seams. It answers what something
+# is made of and nothing else answers that.
+#
+# The other two answer questions it is bad at, and they were added because the
+# photo review kept failing at them. A defect a reviewer *can* see and cannot
+# name is a defect that comes back every round in a different shape.
+#
+#   `ink`     white, with a line only where two different parts meet or the
+#             depth jumps. The building as a drawing. Shape, silhouette,
+#             rhythm, whether a volume is one thing or three -- all the
+#             questions where the block colours and the deliberately hard sun
+#             are noise. A reviewer told to "judge by hue, not by lightness"
+#             is being asked to do this in their head.
+#
+#   `parts`   one flat colour per declared part, black between. This is the one
+#             that answers "which part is that" and "is this part here at all",
+#             and no amount of looking at a white building answers either. Two
+#             towers that should match come out as two colour maps to lay side
+#             by side; a part that was never built is a hole of the colour
+#             underneath it.
+#
+# Both are the same geometry and the same camera as the shaded pass -- one
+# render call with a different `mode` -- so a finding on one lands on the same
+# pixel in the others.
+MODES = ("shaded", "ink", "parts")
+
+INK_BACKGROUND = (255, 255, 255)
+INK_LINE = (24, 26, 30)
+
+# A depth step bigger than this, between neighbouring faces, is an edge worth
+# drawing in `ink`. In metres, so it means the same thing at every camera.
+INK_DEPTH = 1.5
+
+# Flat colours for `parts`, in declaration order. Chosen to stay apart in
+# lightness as well as in hue, so the sheet survives being looked at in
+# greyscale and by anybody who does not separate red from green.
+PART_COLORS = (
+    (222, 93, 84), (86, 148, 214), (240, 190, 76), (108, 186, 128),
+    (176, 122, 200), (86, 196, 199), (232, 142, 92), (150, 160, 176),
+    (196, 108, 152), (120, 132, 96), (72, 118, 160), (208, 168, 128),
+)
+PART_UNCLAIMED = (238, 238, 238)
+
 
 def _unit(vector: tuple[float, float, float]) -> tuple[float, float, float]:
     n = math.sqrt(sum(c * c for c in vector)) or 1.0
@@ -229,6 +274,81 @@ def _clip_near(polygon):
     return out
 
 
+_KINDS = ("up", "down", "east", "west", "south", "north")
+
+
+def _tag(group: int, kind: str, depth: float) -> tuple[int, int, int]:
+    """A colour that encodes what a pixel is, for the edge pass.
+
+    Group and face direction only. Never (0, 0, 0), which is reserved for the
+    background: the +1 on the group is what makes the silhouette an edge like
+    any other.
+
+    Depth is deliberately not in here. It was, quantised into the third
+    channel, and it drew a line at every block: two cells of one flat wall
+    differ in depth by most of a metre in an oblique view, so whatever bucket
+    size is chosen, some pair of neighbours straddles a boundary and the
+    drawing comes back as a wireframe of the block grid. Depth is a continuous
+    quantity and wants comparing, not bucketing -- see `_drawn`.
+    """
+    gid = group + 1
+    return (gid & 255, (gid >> 8) & 255, _KINDS.index(kind) * 40)
+
+
+def _drawn(tags, depths, mode: str):
+    """Turn the tag and depth buffers into a drawing: flat fills, lines at changes.
+
+    A line is drawn wherever a pixel differs from its right or lower neighbour
+    in *what it is* -- a different part, a face pointing another way, or nothing
+    at all behind it -- or in *how far away it is* by more than `INK_DEPTH`. The
+    first three catch part boundaries, corners and the silhouette; the last
+    catches the one thing they cannot, a far surface seen past a near one of the
+    same part and the same orientation.
+    """
+    from PIL import Image
+
+    width, height = tags.size
+    src = tags.load()
+    far = depths.load()
+    out = Image.new("RGB", (width, height), INK_BACKGROUND)
+    px = out.load()
+    step = int(INK_DEPTH * 64)
+
+    if mode == "parts":
+        for y in range(height):
+            for x in range(width):
+                here = src[x, y]
+                if here == (0, 0, 0):
+                    continue
+                gid = here[0] | (here[1] << 8)
+                px[x, y] = (PART_UNCLAIMED if gid <= 1
+                            else PART_COLORS[(gid - 2) % len(PART_COLORS)])
+
+    def edge(a, b, da, db) -> bool:
+        if a != b:
+            return True
+        return a != (0, 0, 0) and abs(da - db) > step
+
+    for y in range(height):
+        for x in range(width):
+            here, dh = src[x, y], far[x, y]
+            for nx, ny in ((x + 1, y), (x, y + 1)):
+                if nx >= width or ny >= height:
+                    there, dt = (0, 0, 0), 0
+                else:
+                    there, dt = src[nx, ny], far[nx, ny]
+                if not edge(here, there, dh, dt):
+                    continue
+                # The line goes on whichever side is the building, so a
+                # silhouette never leaves a gap where the outside pixel was the
+                # one that noticed.
+                if here != (0, 0, 0):
+                    px[x, y] = INK_LINE
+                elif nx < width and ny < height:
+                    px[nx, ny] = INK_LINE
+    return out
+
+
 def render(
     model,
     path: str | Path,
@@ -239,6 +359,8 @@ def render(
     background: tuple[int, int, int] = BACKGROUND,
     seams: bool | None = None,
     size: tuple[int, int] = (1600, 900),
+    mode: str = "shaded",
+    groups=None,
 ):
     """Draw a canvas or schematic from one camera. Returns the image.
 
@@ -249,13 +371,32 @@ def render(
     world axes, which is right for a schematic nobody has fitted a frame to.
     `seams` outlines each block, which shows the courses and the joints between
     volumes; left as None the view decides.
+
+    `mode` is one of `MODES` -- see the note there for what each is for.
+    `groups` is `[(name, Mask), ...]` in manifest order, usually
+    `schedule.built`; `parts` needs it and `ink` uses it to know where one part
+    ends and the next begins.
     """
     from PIL import Image, ImageDraw
 
+    if mode not in MODES:
+        raise ValueError(f"mode is one of {MODES}, not {mode!r}")
     view = view or View.iso()
     seams = view.seams if seams is None else seams
     data, palette, W, H, L = _blocks(model)
     area = W * L
+
+    # Which declared part owns each column, as an index into `PART_COLORS`.
+    # Later declarations win, which is what a reader expects: a balcony drawn
+    # over a wall is a balcony.
+    group_of = [0] * area
+    group_names: list[str] = []
+    if groups:
+        for n, (name, mask) in enumerate(groups, start=1):
+            group_names.append(name)
+            for i, v in enumerate(mask.bits):
+                if v:
+                    group_of[i] = n
 
     if frame is None:
         to_local = lambda x, z: (float(x), float(z))  # noqa: E731
@@ -425,7 +566,8 @@ def render(
                     ]
                     depth = sum(s[2] for s in screen) * 0.25
                     quads.append((depth, [(s[0], s[1]) for s in screen],
-                                  colour(value, kind)))
+                                  colour(value, kind),
+                                  _tag(group_of[rest], kind, depth)))
                     continue
 
                 offsets = [(p[0] - ex, p[1] - ey_, p[2] - ez) for p in points]
@@ -447,11 +589,12 @@ def render(
                     [(half_width + a / c2 * focal, half_height - b / c2 * focal)
                      for a, b, c2 in camera],
                     colour(value, kind),
+                    _tag(group_of[rest], kind, depth),
                 ))
 
     if eye is None:
-        xs = [p[0] for _, poly, _ in quads for p in poly]
-        ys = [p[1] for _, poly, _ in quads for p in poly]
+        xs = [p[0] for _, poly, _, _ in quads for p in poly]
+        ys = [p[1] for _, poly, _, _ in quads for p in poly]
         x0, y0 = min(xs), min(ys)
         width = int((max(xs) - x0) * scale) + 2 * margin + 1
         height = int((max(ys) - y0) * scale) + 2 * margin + 1
@@ -470,15 +613,42 @@ def render(
     # exactly the order alpha wants.
     draw = ImageDraw.Draw(image, "RGBA")
     quads.sort(key=lambda q: -q[0])
-    for _, poly, (fill, edge) in quads:
-        pts = place(poly)
+
+    def on_screen(pts) -> bool:
         # Off-screen quads are common in perspective -- a wall a metre from the
         # lens projects to something the size of a city -- and PIL rasterises
         # the whole of one before clipping it.
-        if (max(p[0] for p in pts) < 0 or min(p[0] for p in pts) > width
-                or max(p[1] for p in pts) < 0 or min(p[1] for p in pts) > height):
-            continue
-        draw.polygon(pts, fill=fill, outline=edge)
+        return not (max(p[0] for p in pts) < 0 or min(p[0] for p in pts) > width
+                    or max(p[1] for p in pts) < 0
+                    or min(p[1] for p in pts) > height)
+
+    for _, poly, (fill, edge), _ in quads:
+        pts = place(poly)
+        if on_screen(pts):
+            draw.polygon(pts, fill=fill, outline=edge)
+
+    if mode != "shaded":
+        # The same geometry drawn a second time into a buffer whose colour *is*
+        # the tag -- which part, which way the face points, how far away. Two
+        # neighbouring pixels with different tags are an edge, and that single
+        # test catches all three things a line should be drawn for: a part
+        # boundary, a corner, and a silhouette against what is behind it.
+        #
+        # Done in image space and not in geometry because it has to be exact: an
+        # edge worked out per quad would have to know what its neighbour drew,
+        # and after the painter's algorithm has run only the picture knows that.
+        tags = Image.new("RGB", (width, height), (0, 0, 0))
+        mark = ImageDraw.Draw(tags)
+        depths = Image.new("I", (width, height), 0)
+        sink = ImageDraw.Draw(depths)
+        for depth, poly, _, tag in quads:
+            pts = place(poly)
+            if not on_screen(pts):
+                continue
+            mark.polygon(pts, fill=tag, outline=tag)
+            far = max(0, int(depth * 64))
+            sink.polygon(pts, fill=far, outline=far)
+        image = _drawn(tags, depths, mode)
 
     if path:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

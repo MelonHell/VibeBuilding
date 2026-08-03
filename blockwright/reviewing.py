@@ -78,6 +78,28 @@ DRAWING_EDGE = 1500
 KIND_BUILD = """  <n>-<view>.build   the Minecraft build, one block to one metre."""
 
 
+KIND_INK = """  <n>-<view>.ink     the same build from the same camera, drawn as lines: a
+                     line wherever one part meets another, a surface turns, or
+                     something stands in front of something else. No colour, no
+                     shading, no block grid. This is the image to judge SHAPE on
+                     -- silhouette, proportion, rhythm, how many volumes there
+                     are and where each one stops. The shaded render's sun is
+                     deliberately hard so that a roof and a wall never take the
+                     same brightness, which is exactly what makes it a poor
+                     picture for this."""
+
+
+KIND_PARTS = """  <n>-<view>.parts   the same build from the same camera, with each declared part
+                     of the building in one flat colour and black between them.
+                     One colour is one part throughout the set, so the same
+                     colour in two images is the same thing. Use it to answer
+                     "which part is that" and "is this part there at all" --
+                     including the question the other images are worst at: two
+                     things that ought to be identical come out as two colour
+                     maps you can lay side by side. The colours are arbitrary
+                     labels and say NOTHING about material; do not report them."""
+
+
 KIND_MESH = """  <n>-<view>.mesh    a Google Earth photogrammetry capture of the real building,
                      rendered from the same camera as the build image with the
                      same number. Trustworthy for bulk, height and proportion; it
@@ -456,15 +478,39 @@ class Review:
         # of accident that stops being true the day somebody makes this
         # recursive. It is stated instead: the archive is the point.
 
-    def render_build(self, model, frame, shots) -> None:
-        """The schematic, from each shot."""
+    def render_build(self, model, frame, shots, groups=None) -> None:
+        """The schematic, from each shot, in each way of looking at it.
+
+        Three pictures per viewpoint, and the second two are not decoration.
+
+        The shaded render answers what something is made of and nothing else
+        does. It is also the worst picture in the folder for every other
+        question: the sun is deliberately hard so that a roof and a wall never
+        take the same shade, the palette is the palette, and a reviewer is
+        asked in the prompt to judge material "by hue, not by lightness" --
+        which is to say, asked to do a conversion in their head.
+
+        So the same camera also draws the building as a line drawing, where
+        shape and rhythm and silhouette are all there is, and as a map of its
+        declared parts in flat colour, where "which part is that" and "is this
+        part here at all" are answered by looking rather than inferred. Two
+        towers that should match become two colour maps to lay side by side.
+
+        Same geometry, same camera, same pixel, so a finding on one lands on the
+        same place in the others.
+        """
         self.out.mkdir(parents=True, exist_ok=True)
         for shot in shots:
             view = render.View.shot(place(frame, shot.eye), place(frame, shot.target),
                                     fov=shot.fov, name=shot.name)
-            out = self.out / f"{shot.name}.build.png"
-            render.render(model, out, view=view, frame=frame, size=self.size)
-            print(f"[review] {out.relative_to(self.repo)}")
+            for mode, suffix in (("shaded", "build"), ("ink", "ink"),
+                                 ("parts", "parts")):
+                if mode == "parts" and not groups:
+                    continue
+                out = self.out / f"{shot.name}.{suffix}.png"
+                render.render(model, out, view=view, frame=frame,
+                              size=self.size, mode=mode, groups=groups)
+                print(f"[review] {out.relative_to(self.repo)}")
 
     def check_written(self) -> None:
         """Refuse a review whose tables are still the template's.
@@ -664,7 +710,13 @@ class Review:
         images = sorted(p.name for p in self.out.iterdir()
                         if p.suffix.lower() in (".png", ".jpg", ".jpeg"))
         is_model = reference is not None and reference.name == "model"
+        # Named only where they exist, like every other kind: the part map is
+        # not made for a build that declared no manifest.
+        inks = any(n.endswith(".ink.png") for n in images)
+        parts = any(n.endswith(".parts.png") for n in images)
         kinds = ([KIND_BUILD]
+                 + [KIND_INK] * inks
+                 + [KIND_PARTS] * parts
                  + [KIND_MODEL if is_model else KIND_MESH] * bool(meshes)
                  + [KIND_DRAWING] * bool(drawings)
                  + [KIND_PHOTO] * bool(photos))
@@ -762,7 +814,16 @@ class Review:
         shots = self.resolve((frame.extent_u, frame.extent_v,
                               float(model.height)),
                              self.size[0] / self.size[1])
-        self.render_build(model, frame, shots)
+        # The manifest, if the build wrote one, so the part map has names to
+        # colour by. Absent -- a build that declared nothing -- the shaded and
+        # line renders still go out and the part map is simply not made, which
+        # is the honest answer rather than a picture of one colour.
+        groups = None
+        if self.paths.SCHEDULE.exists():
+            from .schedule import Schedule
+            groups = [(name, held.mask) for name, held
+                      in Schedule.load(self.paths.SCHEDULE).built.items()]
+        self.render_build(model, frame, shots, groups)
 
         reference = sources.survey(self.paths).reference
         if args.mesh:
