@@ -7,17 +7,27 @@ green and the report would read exactly as it does now. The shape sheets exist
 because an unexercised code path rots; this exists for the same reason, and
 because a schedule has no picture to look at, it asserts instead of drawing.
 
-The subject is a 24x24x12 toy with four deliberate faults, one per failure mode:
+The subject is a 24x24x12 toy with six deliberate faults, one per failure mode:
 
-    pool    in the manifest, never declared             -- nobody built it
-    ghost   declared over empty air                     -- built to nothing
-    bridge  stops five metres short of the cone         -- wrong place, in plan
-    mast    sits over the tower with five metres of air -- wrong place, in y
+    pool      in the manifest, never declared             -- nobody built it
+    ghost     declared over empty air                     -- built to nothing
+    bridge    stops five metres short of the cone         -- wrong place, in plan
+    mast      sits over the tower with five metres of air -- wrong place, in y
+    glazing   declared over ten courses, built in three   -- mostly not there
+    cladding  declared in moss, standing in concrete      -- built of something else
 
 and three parts that are correct, so a check that failed everything would not
 pass either. The audit runs against a schedule that has been through
 `save`/`load`, because the build and the gate are separate processes and the
 sidecar is the only thing between them.
+
+The last two modes are newer than this file and were unexercised for as long as
+they existed, which is how this check came to be failing on its own expected
+strings: the audit learned to print found against declared -- after a hotel
+declared its glazing over 297 cells and 27 courses, stood 158 cells of it in the
+bottom three, and passed with the cheerful half of that -- and nothing here was
+updated to the wider line. A guard whose expectations lag the thing it guards
+reports a fault every run, which is the same as reporting none.
 
     python -m tools.schedule_selftest
 """
@@ -36,6 +46,7 @@ WIDE, TALL, LONG = 24, 12, 24
 
 STONE = "minecraft:white_concrete"
 MOSS = "minecraft:moss_block"
+GLASS = "minecraft:light_blue_stained_glass"
 
 MANIFEST = [
     Item("tower", "the stair core", "photo 1"),
@@ -44,24 +55,45 @@ MANIFEST = [
     Item("cone", "the leaning cone", "photo 2"),
     Item("lawn", "open ground inside the road", "the map"),
     Item("mast", "aerial on the tower roof", "photo 3", near="tower"),
+    Item("glazing", "the window wall, full height", "photo 5", blocks=GLASS),
+    Item("cladding", "the planted screen", "photo 6", blocks=MOSS),
     Item("pool", "plunge pool under the cone", "photo 4"),
     Item("ghost", "a part whose code places nothing", "nowhere"),
 ]
 
-# name -> (ok, detail), in manifest order. Adjacency lines follow the part they
+# (name, ok, detail), in manifest order. Adjacency lines follow the part they
 # belong to, which is the order `audit` yields them in.
+#
+# Every detail here is worked out from the subject below rather than pasted out
+# of a run, because an expectation copied from the output tests only that the
+# output has not changed. `tower` is 4x4 declared over y 0..6 and filled solid,
+# so sixteen of sixteen cells occupying layers 0 to 5; `lawn` is 18x8 one course
+# deep, and it counts the cells the tower overwrote because a part that names no
+# material is satisfied by anything that is not air.
 EXPECTED = [
-    ("part tower", True, "16 cells, y 0..5"),
-    ("part bridge", True, "12 cells, y 4..4"),
+    ("part tower", True, "16 of 16 cells, y 0..5 of 0..6"),
+    ("part bridge", True, "12 of 12 cells, y 4..4 of 4..5"),
     ("bridge meets tower", True,
      "1.0 m apart, 0 m of daylight in y; reach 1.5 m"),
     ("bridge meets cone", False,
      "5.0 m apart, 0 m of daylight in y; reach 1.5 m"),
-    ("part cone", True, "16 cells, y 0..5"),
-    ("part lawn", True, "144 cells, y 0..0"),
-    ("part mast", True, "4 cells, y 10..10"),
+    ("part cone", True, "16 of 16 cells, y 0..5 of 0..6"),
+    ("part lawn", True, "144 of 144 cells, y 0..0 of 0..1"),
+    ("part mast", True, "4 of 4 cells, y 10..10 of 10..11"),
     ("mast meets tower", False,
      "0.0 m apart, 5 m of daylight in y; reach 1.5 m"),
+    # Every declared cell is glazed and only three of the ten declared courses
+    # are, so the cell count alone would read as fully built. The y range is
+    # what gives it away, and it has to be in the line for that to happen.
+    ("part glazing", False,
+     "16 of 16 cells, y 0..2 of 0..10 -- most of what was declared of "
+     f"{GLASS} is not there"),
+    # Nothing of the named block stands in the mask, and the concrete that does
+    # is named and counted: sixteen cells over two courses. Without the material
+    # in the declaration this part would have passed on the concrete.
+    ("part cladding", False,
+     f"declared 16 cells over y 0..2, nothing of {MOSS} stands there; what "
+     f"stands in the rest is {STONE} (32)"),
     ("part pool", False, "not built; nothing declares it "
                          "(plunge pool under the cone)"),
     ("part ghost", False, "declared 16 cells over y 0..4, nothing stands there"),
@@ -109,6 +141,20 @@ def subject() -> tuple[Canvas, Schedule]:
     mast = box(3, 5, 11, 13)
     canvas.fill(mast, 10, 11, STONE)
     sched.declare("mast", mast, 10, 11)
+
+    # Declared the full height of a window wall and glazed only at the bottom.
+    # The share of cells is perfect and the share of courses is three tenths,
+    # which is the shape of the real defect this branch was written for.
+    pane = box(2, 6, 2, 6)
+    canvas.fill(pane, 0, 3, GLASS)
+    sched.declare("glazing", pane, 0, 10)
+
+    # Declared in moss and standing in concrete. Nothing of the named block is
+    # there at all, so the part is not "five per cent built" -- it is built out
+    # of something else, and the audit has to say which.
+    screen = box(8, 12, 2, 6)
+    canvas.fill(screen, 0, 2, STONE)
+    sched.declare("cladding", screen, 0, 2)
 
     # Claimed, never placed.
     sched.declare("ghost", box(2, 6, 20, 24), 0, 4)
@@ -192,7 +238,7 @@ def main(argv: list[str]) -> int:
     if faults:
         print(f"{faults} fault(s): the schedule is not grading what it claims to")
         return 1
-    print("the schedule sees all four failure modes and rejects all five "
+    print("the schedule sees all six failure modes and rejects all five "
           "authoring errors")
     return 0
 
