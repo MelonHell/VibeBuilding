@@ -111,6 +111,19 @@ KIND_MESH = """  <n>-<view>.mesh    a Google Earth photogrammetry capture of the
                      photographs instead."""
 
 
+KIND_SOLID = """  <n>-<view>.mesh-solid  the same reference from the same camera, shaded flat in
+                     one colour with cavity shading and no texture at all. It is
+                     the reference's answer to the ink drawing: photogrammetry
+                     glues a photograph of a wall onto whatever shape it
+                     reconstructed, and the photograph hides the shape. Read
+                     *form* here -- where a roof steps, whether a face is one
+                     plane or two, what stands proud of a facade, what is a
+                     separate box on a roof -- and read material off the
+                     textured image beside it. Where the two disagree about
+                     whether something is there, the solid pass is the geometry
+                     and the texture is a picture painted on it."""
+
+
 KIND_MODEL = """  <n>-<view>.mesh    the 3D model this build was made from, rendered from the
                      same camera as the build image with the same number. It is
                      the authority for shape and for proportion, so where the
@@ -588,7 +601,20 @@ class Review:
 
         found = (derived.get("mesh") or {}).get("frame")
         if found:
-            return (Frame(tuple(found["origin"]), float(found["angle"])),
+            # The extents as well as the origin and the angle. A camera in this
+            # module is given as *fractions* of the frame it stands in -- that
+            # is the whole mechanism by which one shot lands in the same place
+            # in two frames fitted to two different sources -- and `Frame`
+            # defaults both extents to zero. Rebuilt without them, every
+            # fraction multiplied out to nought: eye and target collapsed onto
+            # the frame's own origin, differing only in height, so Blender was
+            # handed a camera standing on one corner of the capture looking
+            # vertically down. Every `*.mesh.jpg` in every review came out as a
+            # close-up of a roof, and the prompt went on saying the pair was
+            # framed alike.
+            extent = found.get("extent") or (0.0, 0.0)
+            return (Frame(tuple(found["origin"]), float(found["angle"]),
+                          float(extent[0]), float(extent[1])),
                     float(derived["mesh"]["datum"]))
 
         from .mesh import Mesh
@@ -676,13 +702,30 @@ class Review:
         """
         self.out.mkdir(parents=True, exist_ok=True)
 
-        meshes = 0
+        # Both passes of every mesh shot, not just the textured one. Blender
+        # already renders each camera twice -- the photographic texture, and a
+        # flat single-colour pass with cavity shading -- and the second was
+        # being left on the floor. It is the mesh's answer to the build's `ink`:
+        # a photogrammetric texture is a picture of a wall glued to whatever
+        # shape the reconstruction happened to make, and it hides the shape it
+        # is glued to. The orthographic stage has read massing off the solid
+        # pass since it was written, for exactly this reason; the perspective
+        # shots had no reason to be different.
+        meshes = solids = 0
         for shot in shots:
             mesh = self.paths.ORTHOS / f"{shot.name}_tex.png"
             if mesh.exists():
                 Image.open(mesh).convert("RGB").save(
                     self.out / f"{shot.name}.mesh.jpg", quality=90)
                 meshes += 1
+            solid = self.paths.ORTHOS / f"{shot.name}_solid.png"
+            if solid.exists():
+                # PNG, not JPEG: this pass is flat colour with a shading term,
+                # so it compresses like the build renders rather than like a
+                # photograph, and the edges are the whole of what it carries.
+                Image.open(solid).convert("RGB").save(
+                    self.out / f"{shot.name}.mesh-solid.png")
+                solids += 1
 
         def gather(folder: Path) -> list[Path]:
             if not folder.is_dir():
@@ -718,6 +761,7 @@ class Review:
                  + [KIND_INK] * inks
                  + [KIND_PARTS] * parts
                  + [KIND_MODEL if is_model else KIND_MESH] * bool(meshes)
+                 + [KIND_SOLID] * bool(solids)
                  + [KIND_DRAWING] * bool(drawings)
                  + [KIND_PHOTO] * bool(photos))
         noise = "" if not meshes else (NOISE_MODEL if is_model else NOISE_CAPTURE)
