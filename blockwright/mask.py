@@ -28,6 +28,21 @@ INF = 1e12
 # neighbours so "the next one round" is well defined.
 _MOORE = [(-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1)]
 
+# The large primes are `build.scatter`'s, so the two places in the library that
+# turn a position into a number do it the same way. The avalanche step after
+# them is what `scatter` does not need and this does: scatter reduces its hash
+# modulo a bucket's cell count, where this compares the low bits against a
+# threshold, and the raw XOR of two multiples is far too orderly down there --
+# without a mix, neighbouring cells share most of their low bits and the coin
+# comes out combed rather than random.
+def _coin(x: int, z: int, seed: int = 0) -> int:
+    """A stable 16-bit number for a cell. Same cell, same answer, every run."""
+    h = (x * 73856093) ^ (z * 19349663) ^ (seed * 83492791)
+    h &= 0xFFFFFFFF
+    h = ((h ^ (h >> 15)) * 2246822519) & 0xFFFFFFFF
+    h = ((h ^ (h >> 13)) * 3266489917) & 0xFFFFFFFF
+    return (h ^ (h >> 16)) & 0xFFFF
+
 
 def _edt_1d(f: list[float], out: list[float]) -> None:
     """Exact squared distance transform of a 1D sampled function.
@@ -260,6 +275,44 @@ class Mask:
         w = self.width
         for i, v in enumerate(self.bits):
             if v and predicate(i % w, i // w):
+                out.bits[i] = 1
+        return out
+
+    def speckle(self, share: float = 0.5, seed: int = 0) -> "Mask":
+        """A deterministic `share` of the set cells, picked cell by cell.
+
+        The thing five call sites across two buildings wrote by hand, all five
+        the same way and all five wrong: `(x * 7 + z * 3) % 11 < 4`. A modulus of
+        a small linear combination is a lattice, not a coin. That one repeats
+        along the diagonal 82% of the time -- so what it lays down is diagonal
+        stripes, and on a planting bed at one block to the metre the stripes are
+        the first thing a render shows. A coin repeats along the diagonal 50% of
+        the time, which is to say it has no diagonal at all.
+
+        Whether that matters is not a matter of taste here. The one piece of
+        texture that was measured rather than recommended -- three fifths of
+        every dithered surface on a 50-million-block city -- came out as an
+        honest fifty-fifty coin per cell: no checkerboard, no stripes, no
+        clumps, median run of two, which is simply what a coin does. See
+        `docs/gta5-style-findings.md`. A lattice reproduces none of that.
+
+        Hashed on position and not drawn from a sequence, for two reasons that
+        both carry weight. The render loop proves a fix landed by showing a view
+        moved -- `tools/review_diff.py` answers it mechanically -- and a
+        sequential generator would dirty every view on every run. And a mask
+        that grows by one cell when the map is redrawn shifts a positional hash
+        by one cell, where a sequential one reshuffles the whole surface.
+
+        `share` is the fraction kept, so 0.5 is the measured recipe and anything
+        else is a decision the caller is making on purpose.
+        """
+        if not 0.0 <= share <= 1.0:
+            raise ValueError(f"a share is between 0 and 1, not {share}")
+        out = self.empty_like()
+        w = self.width
+        cut = int(share * 0x10000)
+        for i, v in enumerate(self.bits):
+            if v and _coin(i % w, i // w, seed) < cut:
                 out.bits[i] = 1
         return out
 

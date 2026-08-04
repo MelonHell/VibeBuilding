@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import checks, gate, report, sources
+from . import checks, gate, report, sources, style
 from . import model as model3d
 from .mask import Mask
 from .mesh import Mesh
@@ -204,9 +204,19 @@ class Grading:
         sections, reg = self.section(g, derived, read, reference, model, frame,
                                      parts, evidence)
 
+        # Printed, never graded. There is no correct value for how varied a
+        # surface should be -- the building's own photographs outrank any figure
+        # taken off another city -- so this is a column of numbers beside a
+        # column of numbers and nothing turns red. What it buys is that a review
+        # finding about texture can be answered with a measurement instead of
+        # another opinion, and that a deck laid as one flat rectangle says so on
+        # every run rather than waiting for somebody to notice in a render.
+        texture = style.texture(model)
+
         doc = report.write(paths.REPORT, c.BUILDING, g,
                            sections=sections, findings=findings, frame=frame,
                            registration=reg, schedule=audit,
+                           texture=texture.report(),
                            evidence=derived.get("evidence"))
 
         for line in (reg.lines() if reg is not None else []):
@@ -217,6 +227,9 @@ class Grading:
                 print(line)
         print()
         for line in g.lines():
+            print(line)
+        print()
+        for line in texture.lines():
             print(line)
         print()
         for line in report.lines(doc):

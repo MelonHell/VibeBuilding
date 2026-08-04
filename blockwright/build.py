@@ -362,6 +362,51 @@ def slab(
     return canvas.fill(footprint.erode(inset), cell, cell + 1, block)
 
 
+def dither(
+    canvas: Canvas,
+    mask: Mask,
+    y: int,
+    a: str,
+    b: str,
+    share: float = 0.5,
+    seed: int = 0,
+    inset: float = 0.0,
+) -> int:
+    """One course of two blocks mixed by a coin -- a roof deck, a pavement.
+
+    The one recipe in this library that was measured off a finished city rather
+    than recommended by anybody. On the GTA V map, three fifths of all the
+    texture on every flat roof is a single pair of blocks twenty RGB units
+    apart, laid fifty-fifty by an honest coin: not a checkerboard, not stripes,
+    not patches. Twenty units is the point of it. The pair introduces no new
+    colour -- it cannot, at that distance -- so what it does is break the plane
+    without touching the palette, and a deck stops reading as one printed
+    rectangle while staying the colour the photographs say it is.
+
+    Ours are flat by measurement, not by suspicion. The same neighbour-differs
+    statistic over six finished builds comes out at 0.015 to 0.067 on horizontal
+    surfaces where that city measures 0.50 -- ten to thirty times flatter --
+    while our facades already sit at 0.10 to 0.22 against its 0.166.
+
+    Which is why this writes **one course**, and why that is the signature
+    rather than a note in the documentation. On the same map the facades do not
+    dither at all: the vertical planes stay clean and the horizontal ones carry
+    the noise, and a tool that lays a single horizontal layer cannot be pointed
+    at a wall. The same argument `slab` makes by refusing to put a cube at half
+    height -- the rule is easier to keep when it is the shape of the thing.
+
+    The pair is named here, never chosen for you. Two blocks twenty units apart
+    can still be a stone and a log, and which pair a building's deck takes is a
+    palette judgement of the same rank as its wall colour -- it belongs in the
+    recipe where a reviewer reads it. `blocks.pairs` prints candidates with
+    their distances, the way `nearest` does for a colour, and stops there.
+    """
+    over = mask.erode(inset) if inset else mask
+    heads = over.speckle(share, seed)
+    return (canvas.fill(heads, y, y + 1, a)
+            + canvas.fill(over - heads, y, y + 1, b))
+
+
 def storeys(
     canvas: Canvas,
     footprint: Mask,

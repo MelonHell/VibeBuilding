@@ -34,6 +34,8 @@ far more than a faithful one that arrives later.
 
 from __future__ import annotations
 
+import math
+
 AIR = "minecraft:air"
 
 UNKNOWN = (255, 0, 255)
@@ -125,6 +127,32 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "minecraft:cobblestone": (127, 127, 127),
     "minecraft:iron_bars": (150, 152, 155),
     "minecraft:chain": (100, 104, 112),
+    # The rest of the grey stone family, and the dark glazing one. Added
+    # together because the survey in `docs/gta5-style-findings.md` is what named
+    # them: four of the ten colours covering the most surface on that city were
+    # blocks this table had never heard of, so a recipe reaching for them got a
+    # magenta build and a failed `checks.palette` rather than a material. The
+    # greys matter twice over -- they are also where the dither pairs live, and
+    # `smooth_stone` at 159 is the one partner `light_gray_concrete` had no
+    # answer for.
+    "minecraft:smooth_stone": (159, 159, 159),
+    "minecraft:granite": (149, 103, 85),
+    "minecraft:polished_granite": (154, 107, 89),
+    "minecraft:cut_sandstone": (216, 203, 155),
+    "minecraft:chiseled_sandstone": (214, 202, 157),
+    "minecraft:red_sandstone": (166, 82, 26),
+    # Glazing that is not glass. Measured on that map as the way a window reads
+    # from any distance: an opaque dark plane rather than a hole with the sky
+    # behind it. Kept here as material, not as policy -- what a given building's
+    # windows are made of is what its own photographs say.
+    "minecraft:black_stained_glass": (25, 25, 25),
+    "minecraft:black_wool": (21, 21, 26),
+    "minecraft:gray_wool": (62, 68, 71),
+    "minecraft:light_gray_wool": (142, 142, 134),
+    "minecraft:white_wool": (234, 236, 237),
+    "minecraft:dark_prismarine": (52, 90, 74),
+    "minecraft:yellow_terracotta": (186, 133, 35),
+    "minecraft:lime_terracotta": (103, 117, 52),
     # Loose planting. These are the map colour of the plant itself, not of the
     # block below it, because the renderer draws the cross shape rather than
     # tinting the ground -- so a tuft reads as a tuft against whatever it is
@@ -138,10 +166,15 @@ COLORS: dict[str, tuple[int, int, int]] = {
 # over once slabs and stairs arrive: smooth_quartz_slab is smooth_quartz.
 # A fence or a door is made of planks, not of the log it is named after, so wood
 # variants get a second candidate.
+# Two more candidates than the obvious one, each for a family whose whole block
+# is not named after its cut. `quartz_slab` is cut from `quartz_block`, and
+# `stone_brick_slab` from `stone_bricks` -- plural. Without them both came out
+# magenta while their parents sat in the table, which is the failure mode this
+# derivation exists to prevent, and both are ordinary paving on any grey deck.
 _DERIVED = {
-    "_slab": ("", "_planks"),
-    "_stairs": ("", "_planks"),
-    "_wall": ("", "_planks"),
+    "_slab": ("", "_block", "s", "_planks"),
+    "_stairs": ("", "_block", "s", "_planks"),
+    "_wall": ("", "_block", "s", "_planks"),
     "_fence": ("_planks", ""),
     "_fence_gate": ("_planks", ""),
     "_pane": ("",),
@@ -278,6 +311,69 @@ def why_not(rgb: tuple[int, int, int], count: int = 5) -> list[str]:
     out.append("  Take the closest in HUE even when it is darker: a colour of "
                "the right hue and the wrong value reads as the building, and a "
                "grey of the right value does not.")
+    return out
+
+
+# The measured band. On the GTA V map the pair carrying three fifths of all the
+# dithered surface sits at 19.6 RGB units apart; the runner-up recipe uses a pair
+# at 185 and reads as speckle rather than as an even tone, and a pair at 6
+# (`diorite` + `polished_diorite`) is a third thing again, invisible at any
+# distance. So the distance is the style parameter, and these are the edges of
+# the one that was measured rather than a tolerance around a preference.
+DITHER_NEAR = 8.0
+DITHER_FAR = 32.0
+
+
+def apart(a: str, b: str) -> float:
+    """Plain RGB distance between two blocks.
+
+    Deliberately not `nearest`'s metric. That one weights hue over lightness to
+    answer "what should this wall be made of", where this one answers "how far
+    apart are these two", and between two greys -- which is the whole of the
+    measured recipe -- the hue weighting collapses to nearly nothing and would
+    call a pair 60 units apart identical.
+    """
+    return math.dist(colour(a), colour(b))
+
+
+def pairs(block: str, near: float = DITHER_NEAR, far: float = DITHER_FAR,
+          count: int = 8) -> list[tuple[str, float]]:
+    """Blocks that would dither with this one, nearest first.
+
+    Proposes; does not choose. Colour distance is the only thing this can see,
+    and it is not the only thing that matters: `brown_concrete` and `jungle_log`
+    are twelve units apart and no roof is made of both. Two blocks belong in a
+    pair when they agree on material as well as on tone, and nothing in this
+    table knows what a block is made of -- so the recipe names the pair, the way
+    it names every other palette decision, and this prints the candidates it is
+    choosing between.
+    """
+    out = []
+    for other in COLORS:
+        if base(other) == base(block):
+            continue
+        if not is_cube(other) or transparency(other) > 0.05:
+            continue
+        far_off = apart(block, other)
+        if near <= far_off <= far:
+            out.append((other, round(far_off, 1)))
+    out.sort(key=lambda row: row[1])
+    return out[:count]
+
+
+def why_pair(block: str, count: int = 8) -> list[str]:
+    """`pairs`, as lines -- for a build script's comment or a review answer."""
+    found = pairs(block, count=count)
+    out = [f"  dither partners for {block} rgb{colour(block)}, "
+           f"{DITHER_NEAR:.0f}-{DITHER_FAR:.0f} RGB apart "
+           f"(the measured band is ~20):"]
+    for other, far_off in found:
+        out.append(f"    {far_off:5.1f}  {other:38s} rgb{colour(other)}")
+    if not found:
+        out.append("    nothing in the palette is that close; either widen the "
+                   "band on purpose or leave the surface plain.")
+    out.append("  Pick the one that is the same *material*, not just the same "
+               "distance: colour is all this table can see.")
     return out
 
 
