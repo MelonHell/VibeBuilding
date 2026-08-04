@@ -440,6 +440,60 @@ def storeys(
     return written
 
 
+def rack(
+    canvas: Canvas,
+    footprint: Mask,
+    posts: Mask,
+    base: int,
+    top: int,
+    post: str,
+    deck: str | None = None,
+    units: Mask | None = None,
+    unit: str | None = None,
+    unit_height: int = 2,
+) -> Mask:
+    """An open frame carrying equipment: legs on a grid, a platform, boxes on it.
+
+    Every superstructure this library could draw was a closed box -- `walls` and
+    a `slab` -- and a roof is full of things that are not. A run of air handlers
+    stands on a steel table: you see under it, you see the sky between the units,
+    and the silhouette is a comb rather than a lid. Built as one box it reads as
+    a windowless penthouse, and no row of the gate objects: a box at the height
+    of a rack grades the same section, casts the same skyline, and gives `level`
+    one fewer distinct height rather than one more. Only a render shows it, which
+    is why it survived a round of review on a building that had one.
+
+    `posts` are the leg positions, as a mask -- `Site.grid` lays them out in the
+    building's own frame, which is the only place the angle is allowed to live.
+    `units` are where equipment stands, if any; they sit **on** the platform, so
+    the caller gets a comb whether or not it fills every bay.
+
+    Returns everything it placed, for the schedule. Legs, platform and units go
+    back as one mask on purpose: a platform declared without its legs passes
+    while standing in mid-air, and `checks.floating` would be the only thing
+    left to notice.
+    """
+    if top <= base:
+        raise ValueError(f"a rack rises from {base} to {top}, which is nothing")
+    standing = posts & footprint
+    if not standing:
+        raise ValueError(
+            "a rack with no legs is a floating slab; `posts` did not land "
+            "inside the footprint, which usually means the pitch is wider than "
+            "the thing it is standing on")
+
+    canvas.fill(standing, base, top - 1, post)
+    placed = standing.copy()
+    if deck:
+        canvas.fill(footprint, top - 1, top, deck)
+        placed = placed | footprint
+    if units is not None and unit:
+        on = units & footprint
+        canvas.fill(on, top, top + max(1, unit_height), unit)
+        placed = placed | on
+    return placed
+
+
 def band(
     canvas: Canvas,
     footprint: Mask,

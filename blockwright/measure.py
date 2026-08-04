@@ -700,6 +700,87 @@ def column_signal(image, y0: int | None = None, y1: int | None = None) -> list[f
             for x in range(w - 1)]
 
 
+def rhythm_by_span(image, metres_per_pixel: float, spans, lo: float, hi: float,
+                   y0: int | None = None, y1: int | None = None,
+                   least: float = 3.0) -> list[dict]:
+    """The pier rhythm read separately over each stretch of one elevation.
+
+    The question `period(column_signal(image))` cannot answer, and the reason it
+    cannot is the shape of the answer rather than its accuracy: it returns one
+    number for a whole elevation, so a building with a balconied wing and a blank
+    one comes back with a single rhythm and no hint that half of it was outvoted.
+    That is not hypothetical. One building read 10.99, 8.48, 14.50 and 11.01 off
+    its four elevations, was recorded as "11.00 m, 2 of 4 agree", and was built
+    with loggias along all three of its wings -- one of which has none. The two
+    dissenting numbers were the blank wing, and they were in the file.
+
+    Four elevations are the wrong axis for this in the first place. They are the
+    capture's north, south, east and west; wings run along the building's own u,
+    and no one of the four is one wing. So the window is given here in metres
+    along the elevation, and the caller -- which knows where its wings start and
+    stop, because `wing_cuts` or `plan.decompose` already told it -- asks per
+    wing instead of per compass point.
+
+    `spans` are `(from, to)` in metres from the left edge of the image. A span
+    narrower than `least` times the longest period looked for gets a reading of
+    zero and a reason: autocorrelation over two repeats is not a measurement, and
+    a confident number from a span too short to hold one is worse than none.
+
+    Nothing here decides anything. It returns what each stretch read, and a
+    caller that finds them disagreeing has learned a fact about the building
+    rather than hit a fault in the measurement.
+    """
+    if metres_per_pixel <= 0:
+        raise ValueError("metres per pixel must be positive")
+    signal = column_signal(image, y0, y1)
+    width = len(signal)
+    out = []
+    for a, b in spans:
+        x0 = max(0, int(round(min(a, b) / metres_per_pixel)))
+        x1 = min(width, int(round(max(a, b) / metres_per_pixel)))
+        row = {"span": [round(min(a, b), 1), round(max(a, b), 1)],
+               "value": 0.0, "score": 0.0, "why": ""}
+        if (x1 - x0) * metres_per_pixel < least * hi:
+            row["why"] = (f"{(x1 - x0) * metres_per_pixel:.1f} m holds fewer "
+                          f"than {least:g} of the longest rhythm looked for "
+                          f"({hi:g} m), so there is nothing to correlate")
+            out.append(row)
+            continue
+        found = period(signal[x0:x1], metres_per_pixel, lo, hi)
+        row["value"] = round(found.value, 2)
+        row["score"] = round(found.score, 3)
+        if not found:
+            row["why"] = "no rhythm in the window"
+        out.append(row)
+    return out
+
+
+def apart(readings, tolerance: float = 0.12) -> list[list[int]]:
+    """Group readings that agree, largest group first.
+
+    Two agree within `tolerance` of the larger. Readings of zero -- a span that
+    could not be measured -- join no group and are reported as their own, so a
+    span nobody could read never counts as agreement.
+
+    Returned as indices, not values, because what the caller has to say is
+    *which* stretch disagreed, and the value alone cannot point at a wing.
+    """
+    groups: list[list[int]] = []
+    for i, value in enumerate(readings):
+        if value <= 0:
+            groups.append([i])
+            continue
+        for group in groups:
+            head = readings[group[0]]
+            if head > 0 and abs(value - head) <= tolerance * max(value, head):
+                group.append(i)
+                break
+        else:
+            groups.append([i])
+    groups.sort(key=lambda g: -len(g))
+    return groups
+
+
 def floor_lines(image, metres_per_pixel: float, x0: int | None = None,
                 x1: int | None = None, floor: float = 0.12,
                 separation: float = 1.5) -> list[float]:
@@ -717,7 +798,8 @@ def floor_lines(image, metres_per_pixel: float, x0: int | None = None,
 
 __all__ = [
     "Grid", "Period", "Profile", "Storeys",
-    "column_signal", "detrend", "edge_profile", "floor_lines", "histogram",
-    "median_filter", "peaks", "period", "presence", "row_signal",
-    "silhouette", "skyline", "staircase", "storey_height",
+    "apart", "column_signal", "detrend", "edge_profile", "floor_lines",
+    "histogram", "median_filter", "peaks", "period", "presence",
+    "rhythm_by_span", "row_signal", "silhouette", "skyline", "staircase",
+    "storey_height",
 ]

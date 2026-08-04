@@ -362,6 +362,58 @@ def twins(model, a: Mask, b: Mask, frame, axis: float, along: str = "u",
     }
 
 
+def facade_mix(model, mask: Mask, frame, u0: float, u1: float,
+               thickness: float = 1.0) -> dict:
+    """What one stretch of the outside wall is made of, air included.
+
+    The tally is over the wall **plane** and not over the wall's material, and
+    that distinction is the whole check. A loggia is a hole: the blocks that used
+    to be there are gone, so counting the blocks that remain and dividing by how
+    many remain gives a balconied wing and a blank one nearly the same answer --
+    both are almost entirely their wall block, because whatever was cut left the
+    sum as well as the count. Measured against the plane, the hole is the signal:
+    a carved wing reads as a fifth air and a blank one as none.
+
+    The plane is the footprint's outline ring, and each of its columns is read
+    from the ground to its own highest block, so open sky above a low stretch is
+    not counted as a facade full of air.
+    """
+    ring = mask.outline(thickness)
+    counts: dict[str, int] = {}
+    seen = 0
+    for x, z in ring.cells():
+        u, _ = frame.to_local(x + 0.5, z + 0.5)
+        if not (u0 <= u < u1):
+            continue
+        column = [base(model.get(x, y, z)) for y in range(model.height)]
+        top = -1
+        for y, block in enumerate(column):
+            if block != AIR:
+                top = y
+        if top < 0:
+            continue
+        for y in range(top + 1):
+            counts[column[y]] = counts.get(column[y], 0) + 1
+            seen += 1
+
+    return {"cells": seen,
+            "mix": {b: n / seen for b, n in counts.items()} if seen else {}}
+
+
+def mix_apart(a: dict, b: dict) -> float:
+    """How far apart two facade mixes are, 0 identical and 1 sharing nothing.
+
+    Total variation: half the sum of the differences, which is the share of one
+    wall you would have to rebuild to make it the other. Readable as a number
+    rather than only as an ordering, which matters because this is going into a
+    budget somebody has to defend.
+    """
+    keys = set(a) | set(b)
+    if not keys:
+        return 0.0
+    return 0.5 * sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in keys)
+
+
 def jaggedness(mask: Mask, frame, tolerance: float = 1.0) -> dict:
     """How much of a shape is the drawing's wobble rather than the building.
 

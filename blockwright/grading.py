@@ -200,6 +200,7 @@ class Grading:
         cut = self.divisions(g, model, sched)
         self.watertight(g, cut)
         self.evenness(g, model, read, sched)
+        mixes = self.facades(g, model, read)
         self.witnesses(g, derived)
         sections, reg = self.section(g, derived, read, reference, model, frame,
                                      parts, evidence)
@@ -217,6 +218,11 @@ class Grading:
                            sections=sections, findings=findings, frame=frame,
                            registration=reg, schedule=audit,
                            texture=texture.report(),
+                           facades={name: {"cells": found["cells"],
+                                           "mix": {b: round(s, 3) for b, s
+                                                   in sorted(found["mix"].items(),
+                                                             key=lambda kv: -kv[1])}}
+                                    for name, found in mixes.items()},
                            evidence=derived.get("evidence"))
 
         for line in (reg.lines() if reg is not None else []):
@@ -302,6 +308,76 @@ class Grading:
                   if len(found) != 1
                   else f"one ring of {found[0].count()} blocks")
         return cut
+
+    def facades(self, g, model, read):
+        """Whether the stretches of wall the reference draws differently are.
+
+        The hole `evenness` does not cover, and the two are easy to confuse.
+        `TWINS` asks "you said these parts are alike -- are they?" and compares
+        the build against itself. This asks the opposite question, and only the
+        reference can raise it: **is anything the build made alike actually
+        alike out there?** A building whose right-hand wing has no balconies is
+        built with balconies along all of it, and every row here passes. Three
+        wings of one footprint cast one silhouette. The section grades a skyline
+        and a facade has none. The schedule audit sees loggias declared and
+        loggias standing, in the right cells, in the right block. Nothing in the
+        pipeline is looking at the wall.
+
+        It happened, and the measurement had already said so: the run recorded
+        `texture bay: 11.00 m, 2 of 4 elevations agree`, the two that dissented
+        read 8.48 and 14.50, and they were the blank wing. Two of four is not a
+        weak reading of one rhythm; it is a firm reading of two.
+
+            FACADES        {name: (u0, u1)} -- stretches along the building
+            FACADES_DIFFER ((a, b), ...)    -- pairs the reference draws apart
+            FACADES_SAME   how close two mixes may be and still count as apart
+
+        Empty `FACADES` is a row and not a silence, for the reason `COUNTS` and
+        `TWINS` are: a question nobody asked and a question that passed print the
+        same nothing. `UNIFORM = True` says this building really is one facade
+        all the way round -- which is a claim about the reference, and the point
+        is that somebody had to go and look before writing it.
+        """
+        spans = self._("FACADES", {})
+        if not spans and not self._("UNIFORM", False):
+            g.ungraded(
+                "facades",
+                "FACADES is empty, so nothing checks that the parts of this "
+                "building the reference draws differently were built "
+                "differently. A wing built with the balconies its neighbour has "
+                "and the reference does not passes every other row here: same "
+                "silhouette, same skyline, same section, same schedule. Fill it "
+                "in, or set UNIFORM = True to say the reference really does "
+                "draw one facade all the way round.")
+            return {}
+
+        mask = read.mass if hasattr(read, "mass") else None
+        if mask is None or not spans:
+            return {}
+
+        mixes = {name: checks.facade_mix(model, mask, read.frame, u0, u1)
+                 for name, (u0, u1) in spans.items()}
+
+        budget = self._("FACADES_SAME", 0.10)
+        for a_name, b_name in self._("FACADES_DIFFER", ()):
+            a, b = mixes.get(a_name), mixes.get(b_name)
+            if a is None or b is None:
+                g.ungraded(f"{a_name} differs from {b_name}",
+                           "one of them is not in FACADES")
+                continue
+            if not a["cells"] or not b["cells"]:
+                g.ungraded(f"{a_name} differs from {b_name}",
+                           f"{a_name} has {a['cells']} facade cells and "
+                           f"{b_name} has {b['cells']}; one of the spans is "
+                           "off the building")
+                continue
+            far = checks.mix_apart(a["mix"], b["mix"])
+            g.add(f"{a_name} differs from {b_name}", far >= budget,
+                  f"the two walls are {far:.2f} apart by material "
+                  f"(0 is the same wall, 1 shares nothing); the reference draws "
+                  f"them apart, so anything under {budget:g} means the build "
+                  "made them the same")
+        return mixes
 
     def evenness(self, g, model, read, sched):
         """Whether the building agrees with itself.

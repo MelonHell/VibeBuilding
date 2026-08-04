@@ -262,6 +262,40 @@ class Site:
         step = (b - a) / count
         return [a + (i + 0.5) * step for i in range(count)]
 
+    def grid(self, within: Mask, pitch: float, phase: float = 0.5) -> Mask:
+        """Cells on a `pitch` grid in the building's own frame, inside `within`.
+
+        For the things that really are set out on a grid -- the posts under a
+        plant rack, the columns of a porte-cochere -- as opposed to planting,
+        which `build.scatter` deliberately keeps off one.
+
+        The grid is laid in `(u, v)` and rasterised by `Frame.region`, so the
+        angle is handled in the one place it is ever handled. A grid stepped in
+        world x and z instead would stand at the building's own angle to itself,
+        and a row of posts along a 52-degree wall would walk out of the wall.
+
+        One cell per intersection, and the nearest cell to it rather than every
+        cell the predicate catches: a band of `pitch`-modulo cells is a lattice
+        of stripes, which is the mistake `Mask.speckle` exists to end, and a post
+        is one block.
+        """
+        if pitch <= 0:
+            raise ValueError("a grid steps by a positive pitch")
+        out = Mask(self.width, self.length)
+        us = self.stations(self.u0, self.u1, pitch)
+        vs = self.stations(self.v0, self.v1, pitch)
+        if phase != 0.5:
+            shift = (phase - 0.5) * pitch
+            us = [u + shift for u in us]
+            vs = [v + shift for v in vs]
+        for u in us:
+            for v in vs:
+                x, z = self.at(u, v)
+                if 0 <= x < self.width and 0 <= z < self.length \
+                        and within.get(x, z):
+                    out.set(x, z)
+        return out
+
     def narrower_than_the_staircase(self, width: float, what: str) -> None:
         """Stop rather than draw something that will rasterise into corners."""
         if width < self.staircase:

@@ -202,6 +202,18 @@ def _texture_lines(what: str, found: dict, against: float | None) -> list[str]:
     if found["agreed"] < 2:
         out.append(f"  {'':{len(what)}}          one elevation only, so this is "
                    "a reading and not a measurement")
+    # A minority that disagrees is a finding, not noise, and it has to be said
+    # here because nothing downstream can say it. The gate grades a build
+    # against a section, and a wing built to the wrong rhythm keeps the same
+    # silhouette, the same skyline and the same section as one built right; the
+    # only trace it leaves anywhere is these two numbers.
+    for other in found.get("against") or ():
+        out.append(f"  {'':{len(what)}}          {other['side']} disagrees at "
+                   f"{other['value']:.2f} m (r={other['score']:+.2f}) -- if that "
+                   "elevation is a different part of the building, this is two "
+                   "rhythms and not one weak reading. Measure the parts "
+                   "separately with `measure.rhythm_by_span` before averaging "
+                   "them away.")
     if what == "storey" and measure.looks_like_tiling(found["value"]):
         out.append(f"  {'':{len(what)}}          and it lands on the "
                    f"{measure.TILE_SEAM} m tile seam, so the texture agrees "
@@ -751,12 +763,23 @@ class Survey:
         else:
             value = sum(max(r["score"], 0.0) * v
                         for r, v in group) / weight
+        # Which sides were outvoted, by name and with their figures. The count
+        # alone was here from the start and the names were not, and the gap
+        # between those two is a building that shipped wrong: a run recorded
+        # "bay 11.00 m, 2 of 4 elevations agree", the two that disagreed read
+        # 8.48 and 14.50, and they were the wing with no balconies on it. Two
+        # out of four is not a weak measurement of one rhythm -- it is a firm
+        # measurement of two, and only the names say which is which.
+        inside = {id(r) for r, _ in group}
+        against = [r for r in readings if id(r) not in inside]
         return {
             "value": round(value, 2),
             "agreed": len(group),
             "of": len(readings),
             "score": round(max(r["score"] for r, _ in group), 3),
             "readings": readings,
+            "against": [{"side": r["side"], "value": r["value"],
+                         "score": r["score"]} for r in against],
             "doubled": sorted(r["side"] for r, v in group
                               if abs(v - r["value"]) > 1e-9),
         }

@@ -50,6 +50,65 @@ MIN_CELLS = 12
 # How far above the deck a cell has to stand to be plant rather than roof.
 PLANT = 1.5
 
+# Above this share of touching cells, two levels of one lump are one surface the
+# capture split rather than two things standing on each other. A checkerboard
+# scores 1.0 by construction; two blobs meeting along a seam score their border
+# over their area, which for anything bigger than a few cells is well under a
+# third. The gap between those is wide, so the threshold is not delicate.
+WOVEN = 0.6
+
+
+def woven(a: Mask, b: Mask) -> float:
+    """How much two masks are threaded through each other, 0 to 1.
+
+    The question a bounding box cannot answer, and the reason one building
+    quietly built a rooftop plant deck as a single blind box.
+
+    Photogrammetry loses glass, so a glazed hall comes back with its cells split
+    between two heights in a check pattern over the *same* rectangle -- one
+    surface, reported as two levels. A machine room standing beside an open rack
+    of air handlers is also two levels, and its two are real. Both pairs overlap
+    in plan, so the rule that merged them on overlapping extents merged both, and
+    the second one is a box where the reference has a box and a frame.
+
+    Told apart by contact rather than by extent: the share of each mask's cells
+    that have a cell of the other orthogonally beside them, averaged over the two
+    directions. A checkerboard over one rectangle gives 1.0 -- every cell of each
+    is surrounded by the other. Two solid shapes meeting along an edge give their
+    shared border divided by their area, which falls as they get bigger. It is
+    the same measurement either way and it does not care which is on top.
+    """
+    if a.width != b.width or a.length != b.length:
+        raise ValueError("masks are on different grids")
+
+    def touching(one: Mask, other: Mask) -> float:
+        cells = one.cells()
+        if not cells:
+            return 0.0
+        met = 0
+        for x, z in cells:
+            if (other.get(x - 1, z) or other.get(x + 1, z)
+                    or other.get(x, z - 1) or other.get(x, z + 1)):
+                met += 1
+        return met / len(cells)
+
+    return (touching(a, b) + touching(b, a)) / 2
+
+
+def one_surface(tiers, threshold: float = WOVEN) -> bool:
+    """Whether these levels are one thing the capture split, or several things.
+
+    Every pair has to be woven for the answer to be yes. A lump of three levels
+    where two are a checkerboard and the third is a box standing on them is not
+    one surface, and averaging the three pairwise scores would call it one.
+    """
+    masks = [t.mask if isinstance(t, Terrace) else t for t in tiers]
+    if len(masks) < 2:
+        return False
+    return all(woven(masks[i], masks[j]) >= threshold
+               for i in range(len(masks))
+               for j in range(i + 1, len(masks)))
+
 
 class Terrace:
     """One measured level of a roof, and where it is."""
@@ -343,4 +402,5 @@ class Roof:
         return out
 
 
-__all__ = ["MIN_CELLS", "PLANT", "Roof", "STEP", "Terrace"]
+__all__ = ["MIN_CELLS", "PLANT", "Roof", "STEP", "Terrace", "WOVEN",
+           "one_surface", "woven"]
