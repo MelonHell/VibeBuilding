@@ -10,10 +10,20 @@ of somebody else's Los Santos in Minecraft, fifty million blocks of it, and the
 single most reproducible thing in it is not a material list: it is that the
 horizontal surfaces carry noise and the vertical ones do not. Neighbouring
 blocks on a flat roof differ half the time; on a facade, one time in six. Run
-the same two statistics over six of our finished builds and the facades come out
-at 0.10 to 0.22 -- the same building as theirs, near enough -- while the
-horizontals come out at 0.015 to 0.067, ten to thirty times flatter. Every deck,
-every terrace and every pavement we lay is one printed rectangle of one block.
+the same two statistics over our finished builds and the facades come out at
+0.08 to 0.27 -- the same building as theirs, near enough -- while the
+horizontals come out at 0.009 to 0.150, three to fifty times flatter. Every
+deck, every terrace and every pavement we lay is one printed rectangle of one
+block.
+
+Those horizontal figures are from the corrected reading and are not the ones
+quoted in the older documents. The first version counted every cell with air
+above it, which in a hollow tower is mostly the floor plate of each storey; the
+reference was measured on flat roofs, which have no inside. See `_sky`. The
+correction barely moved the corpus -- an unvaried inside diluted an unvaried
+outside -- but it was the difference between seeing an improvement and not: the
+first build to dither its roof and its pavement read 0.142 under the old count
+and 0.386 under this one.
 
 That is the whole finding, and it needed no opinion to reach. Which is the point
 of this module: style arguments are otherwise unwinnable, because the only
@@ -70,9 +80,12 @@ class Texture:
     A cell can be both, on a parapet, and is counted in both: it genuinely shows
     two faces to two different questions.
 
-    Only *visible* cells count. The fill inside a wall is not texture, and a
-    build that is hollow and a build that is solid would otherwise measure
-    differently for a reason nobody can see.
+    Only *visible* cells count -- and visible means reached from outside the
+    box, not merely next to air. The fill inside a wall is not texture, and
+    neither is the floor plate of the eleventh storey: it has air above it, it
+    is a horizontal surface by every local test, and nobody will ever see it.
+    The reference column was measured on flat roofs, so counting insides put the
+    two columns on different questions. See `_outdoors`.
     """
 
     __slots__ = ("horizontal", "vertical", "horizontal_pairs", "vertical_pairs",
@@ -123,29 +136,129 @@ class Texture:
         return out
 
 
+def _outdoors(solid: bytearray, width: int, height: int, length: int
+              ) -> bytearray:
+    """Which air cells are outside the building, by flood fill from the box.
+
+    "Visible" was read as "has air beside it", and air inside a building is
+    still air. So every floor plate of every storey counted as a horizontal
+    surface and every corridor wall counted as facade -- and in a hollow tower
+    the insides outnumber the outsides four to one. On one finished build 75421
+    of 94886 top-surface cells were above ground level, which is to say they
+    were floor plates no camera will ever be pointed at.
+
+    That mattered more than a skew. The reference these numbers stand beside was
+    measured on **flat roofs** -- 25 of them, in somebody else's Los Santos --
+    so it never had an inside to count, and the two columns were not measuring
+    the same thing at all. A build could dither every roof it has and watch the
+    number barely move, because the number was mostly floors.
+
+    Six-connected through air from every cell on the boundary of the box.
+
+    This is the weaker of the two tests here and it is used only for facades.
+    It cannot separate a corridor from a street in a building that has windows
+    cut in it, because a carved opening joins the two -- on one real build it
+    removed only 18 per cent of the surfaces, and the floor plates stayed. What
+    settles the horizontal question is `_sky`, below.
+    """
+    area = width * length
+    out = bytearray(len(solid))
+    stack = []
+    for y in range(height):
+        for z in range(length):
+            for x in range(width):
+                if x and x < width - 1 and z and z < length - 1 \
+                        and y and y < height - 1:
+                    continue
+                i = y * area + z * width + x
+                if not solid[i] and not out[i]:
+                    out[i] = 1
+                    stack.append(i)
+    while stack:
+        i = stack.pop()
+        y, rest = divmod(i, area)
+        z, x = divmod(rest, width)
+        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
+                           (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+            nx, ny, nz = x + dx, y + dy, z + dz
+            if not (0 <= nx < width and 0 <= ny < height and 0 <= nz < length):
+                continue
+            j = ny * area + nz * width + nx
+            if not solid[j] and not out[j]:
+                out[j] = 1
+                stack.append(j)
+    return out
+
+
+def _sky(solid: bytearray, width: int, height: int, length: int) -> list[int]:
+    """The highest solid cell in each column, or -1 -- the surface seen from above.
+
+    One per column, and that is the definition rather than an approximation of
+    one. The reference this module prints beside its own numbers was measured on
+    flat roofs, and a flat roof *is* the top of its column: nothing about it is
+    under anything. Counting every cell with air over it instead counted the
+    floor plate of every storey -- which has air over it, is horizontal by every
+    local test, and is inside the building.
+
+    What this misses is a surface with something over it: a balcony under the
+    balcony above, a deck under a canopy. That is a real loss and it is the right
+    trade. The alternative -- flood fill from outside -- cannot tell a corridor
+    from a street once windows are cut, which is every building here. A test that
+    is exactly right about roofs, decks, pavements and the ground, and silent
+    about soffits, beats a test that is vaguely right about everything.
+    """
+    area = width * length
+    highest = [-1] * area
+    for y in range(height):
+        base = y * area
+        for i in range(area):
+            if solid[base + i]:
+                highest[i] = y
+    return highest
+
+
 def texture(model) -> Texture:
     """Read a Canvas or a Schematic and count what varies where."""
     width, height, length = model.width, model.height, model.length
     get = model.get
+    area = width * length
 
-    def at(x, y, z):
-        if 0 <= x < width and 0 <= y < height and 0 <= z < length:
-            return blocklib.base(get(x, y, z))
-        return AIR
+    names: list[str] = [AIR] * (area * height)
+    solid = bytearray(area * height)
+    for y in range(height):
+        base = y * area
+        for z in range(length):
+            row = base + z * width
+            for x in range(width):
+                block = blocklib.base(get(x, y, z))
+                names[row + x] = block
+                if block != AIR:
+                    solid[row + x] = 1
+
+    outside = _outdoors(solid, width, height, length)
+    sky = _sky(solid, width, height, length)
+
+    def open_at(x, y, z) -> bool:
+        """Is the cell here air that reaches the sky? Off the grid counts."""
+        if not (0 <= x < width and 0 <= y < height and 0 <= z < length):
+            return True
+        return bool(outside[y * area + z * width + x])
 
     top: dict[tuple[int, int, int], str] = {}
     side: dict[tuple[int, int, int], str] = {}
     counts: dict[str, int] = {}
     for y in range(height):
+        base = y * area
         for z in range(length):
+            row = base + z * width
             for x in range(width):
-                block = at(x, y, z)
+                block = names[row + x]
                 if block == AIR:
                     continue
                 counts[block] = counts.get(block, 0) + 1
-                if at(x, y + 1, z) == AIR:
+                if sky[z * width + x] == y:
                     top[(x, y, z)] = block
-                if any(at(x + dx, y, z + dz) == AIR for dx, _, dz in _SIDES):
+                if any(open_at(x + dx, y, z + dz) for dx, _, dz in _SIDES):
                     side[(x, y, z)] = block
 
     # Along the two ground axes for a horizontal surface, and up as well as
