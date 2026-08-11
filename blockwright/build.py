@@ -714,6 +714,187 @@ class Facade:
         return out
 
 
+# -- relief -----------------------------------------------------------------
+#
+# The block dictionary was taught to the renderer first and to the builds never.
+# `blocks.boxes` knows what volume a slab, a stair and a pane really occupy,
+# `blocks.connects`/`joins` know what a rail joins to, `Canvas.finalize` sets the
+# connection states, `Facade.facing_of` says which way a wall cell looks out, and
+# `tools/facade_sheet.py` has demonstrated a cornice built out of all four since
+# the day it was written. Not one building imports any of it.
+#
+# What that costs is measured. `style.texture` over the finished corpus reports
+# stairs at 0.000 against a reference of 0.005 and slabs at 0.000 to 0.019
+# against 0.080: whole families of block that the reference city uses and these
+# builds do not use at all. And it shows up the other way round too -- one
+# building's balcony rail is a full cube of stained glass, which is precisely the
+# fault the renderer was taught `boxes` to stop showing, rebuilt in the schematic
+# where no renderer can help.
+#
+# These three take the demonstration and make it callable. Everything here still
+# obeys the rule the rest of the file obeys: masks stay boolean, the angle stays
+# in `Frame.region`, and what varies is which block string a cell gets.
+
+
+def balustrade(
+    canvas: Canvas,
+    edge: Mask,
+    y: int,
+    block: str,
+    height: int = 1,
+    cap: str | None = None,
+) -> int:
+    """A rail you can see through, and a refusal when you cannot.
+
+    The refusal is the substance. A parapet and a balustrade look alike in a
+    plan and read as opposites from the ground: one is a wall with a top on it,
+    the other is a line you see the building through. Written with a full cube
+    -- `black_stained_glass`, `white_concrete` -- the balcony line of a tower
+    becomes a solid band at every level, the depth of the balcony disappears,
+    and the whole facade flattens into stripes. That happened, in a build that
+    passed its gate, and it is why this raises instead of writing.
+
+    Panes, bars and fences are also the blocks that need `Canvas.finalize`:
+    WorldEdit pastes without block updates, so a pane written in its default
+    state arrives as a post rather than as a run of railing. Nothing here sets
+    those states, because `finalize` sets all of them at once from the finished
+    canvas -- a neighbour that has not been written yet cannot be joined to.
+
+    `cap` is the hand rail: a slab laid on top, which is what stops a run of
+    panes reading as a fence around a paddock. It is optional because a glass
+    balustrade in a modern tower genuinely has none.
+    """
+    if blocklib.is_cube(block):
+        raise ValueError(
+            f"{block} is a full cube, so a balustrade of it is a parapet -- "
+            "use a pane, a fence or bars, or call `walls` and mean it")
+    written = canvas.fill(edge, y, y + height, block)
+    if cap:
+        written += slab(canvas, edge, y + height, cap)
+    return written
+
+
+def cornice(
+    canvas: Canvas,
+    footprint: Mask,
+    y: int,
+    block: str,
+    project: float = 0.0,
+    thickness: float = 1.0,
+    half: str = "bottom",
+    face: "Facade | None" = None,
+    where: Mask | None = None,
+) -> int:
+    """One course of stairs shedding outward along the top of a wall.
+
+    The shadow line a building gets for one course of blocks, and the cheapest
+    relief there is: a wall that ends flush reads as a printed rectangle from
+    any distance, and the same wall with a course stepping out at the top reads
+    as a building.
+
+    Two things here are easy to get backwards, and both survive a render.
+
+    A stair's `facing` names the side its **full-height part** stands on, not
+    the way it sheds. Written the obvious way round the course comes out
+    chamfered on the inside -- a parapet with a bevel nobody can see -- and it
+    looks purposeful enough to pass a review. So the facing is
+    `blocklib.opposite` of the way the wall looks out.
+
+    And the direction has to come from the mask the course actually sits on. A
+    projecting cornice stands on cells that are outside the footprint, where the
+    original facade has no answer, so the `Facade` is built on the dilated shape
+    when `project` is asked for. Pass `face` to reuse one that already matches.
+
+    `project` is in metres like every other distance here. Zero keeps the course
+    flush with the wall below, which is the eaves of a flat roof; anything more
+    oversails, which is a cornice proper.
+
+    `where` narrows the ring. A strip -- a balcony band, a canopy, a walkway --
+    has two edges, and only the outer one is a cornice: run the course round the
+    whole outline of a band and its inner edge chamfers into the wall behind it,
+    which is a shadow line pointing the wrong way. The caller usually has that
+    mask already, because it needed it to build the strip.
+    """
+    if half not in ("bottom", "top"):
+        raise ValueError(f"a cornice course is half bottom or top, not {half!r}")
+    body = footprint.dilate(project) if project else footprint
+    if face is None:
+        face = Facade(body)
+    ring = body.outline(thickness)
+    if where is not None:
+        ring = ring & where
+
+    def stair(x: int, _y: int, z: int) -> str | None:
+        out = face.facing_of(x, z)
+        if out is None:
+            return None
+        return blocklib.with_state(block, half=half,
+                                   facing=blocklib.opposite(out))
+
+    return canvas.fill_fn(ring, y, y + 1, stair)
+
+
+def kerb(
+    canvas: Canvas,
+    paving: Mask,
+    y: int,
+    block: str,
+    thickness: float = 1.0,
+) -> int:
+    """A slab edge standing half a block proud of a paved area.
+
+    What separates a footway from a road, a terrace from a lawn, a plaza from
+    the grass it is cut into. Without one, two paved areas of different colour
+    meet along a line that reads as a change of paint; with one, the higher of
+    the two is visibly a kerb up.
+
+    Half a block is the whole point and the reason this refuses a cube: a full
+    course of kerb is a wall a metre high, which around a plaza is a parapet
+    nobody would build. `slab` puts a bottom slab in the cell above the paving,
+    so the step is 0.5 m and the surface stays walkable.
+
+    `y` is the level the paving occupies, so the kerb goes in `y + 1`.
+    """
+    if not blocklib.base(block).endswith("_slab"):
+        raise ValueError(
+            f"{block} is not a slab, and a kerb of full blocks is a parapet")
+    return slab(canvas, paving.outline(thickness), y + 1, block)
+
+
+def pave(
+    canvas: Canvas,
+    area: Mask,
+    y: int,
+    a: str,
+    b: str | None = None,
+    share: float = 0.5,
+    seed: int = 0,
+    edge: str | None = None,
+) -> int:
+    """A ground surface as a surface: two blocks on a coin, and an edge.
+
+    `dither` has existed since the GTA V measurement and is called about once
+    per building -- one deck, one terrace -- while the pavement, the car park,
+    the plaza and the roof field stay single-block fills. The measurement says
+    what that costs: horizontal surfaces in this corpus read 0.015 to 0.067 on
+    the neighbour-differs statistic where the reference city reads 0.50.
+
+    This is the same coin with the two things a ground surface always wants
+    bundled in, so that the cheap way to lay paving is also the right one. `b`
+    is the dither partner -- `blocks.pairs` prints candidates -- and omitting it
+    lays a plain field, which is honest for a surface that really is one
+    material. `edge` is the kerb slab.
+
+    Still one course. `dither` refuses to be pointed at a wall by the shape of
+    its signature, and so does this.
+    """
+    written = (dither(canvas, area, y, a, b, share=share, seed=seed)
+               if b else canvas.fill(area, y, y + 1, a))
+    if edge:
+        written += kerb(canvas, area, y, edge)
+    return written
+
+
 # -- planting ---------------------------------------------------------------
 #
 # Not architecture, and here anyway. Five buildings each wrote their own palm
@@ -832,6 +1013,152 @@ def palm(
 
     # The bud, so the trunk does not end in daylight.
     canvas.fill(stem, top + crown - 1, top + crown, frond)
+    return placed
+
+
+# -- street furniture -------------------------------------------------------
+#
+# The things a review keeps asking for and no build has anything to draw with.
+# Across the corpus's review ledgers the open findings that are neither a
+# measurement nor a missing position are the same short list every time --
+# railings, planters, steps, lamp standards -- and each building either writes
+# its own or leaves it open. One wrote its lamp standards by hand; the rest left
+# the plaza as a paved rectangle with trees on it.
+#
+# None of these needs a photograph to place. A planter goes on the edge of the
+# paving, a lamp goes on the walk, a flight of steps goes where two levels meet
+# -- all of that is in the geometry the build already holds. It was never an
+# epistemology problem, only a missing primitive.
+
+
+def lamp(
+    canvas: Canvas,
+    at: tuple[int, int],
+    *,
+    base: int,
+    height: int,
+    post: str,
+    head: str | None = None,
+) -> Mask:
+    """One standard: a post with a head on it.
+
+    Returns both together for the reason `palm` does -- a head declared without
+    its post passes the schedule while floating, and `checks.floating` would be
+    the only thing left to notice.
+
+    `head` is optional because a bollard is a lamp without one, and at a block
+    to the metre the difference between the two is exactly this argument.
+    """
+    if height < 1:
+        raise ValueError("a standard is at least one course tall")
+    x, z = at
+    if not (0 <= x < canvas.width and 0 <= z < canvas.length):
+        return Mask(canvas.width, canvas.length)
+
+    stem = Mask(canvas.width, canvas.length)
+    stem.set(x, z)
+    canvas.fill(stem, base, base + height, post)
+    if head:
+        canvas.fill(stem, base + height, base + height + 1, head)
+    return stem
+
+
+def planter(
+    canvas: Canvas,
+    bed: Mask,
+    y: int,
+    wall: str,
+    soil: str,
+    plant: str | None = None,
+    pitch: float = 3.0,
+    seed: int = 0,
+) -> Mask:
+    """A raised bed: a kerb round it, soil inside, something growing in it.
+
+    What turns a paved rectangle into a landscaped one, and the cheapest thing
+    on a plaza that reads as designed. Every review of a build with an open
+    forecourt has asked for these.
+
+    The soil goes **inside** the ring rather than under it, which is the whole
+    shape of the thing: laid over the same cells the wall stands in, the bed has
+    no edge and reads as a patch of different-coloured ground. `outline` keeps
+    the ring watertight at any angle, which matters here for the same reason it
+    matters on a wall -- a bed with a diagonal pinhole in its kerb is a bed with
+    a leak in it.
+
+    Do not pass `grass_block` as `soil` on a bed that stands proud of the paving
+    unless the build also puts it in `SOFT` -- and then read the note in
+    `docs/backlog.md` first, because `grass_block` in `SOFT` is what turned a
+    beach into an island of loose sand on one build. `dirt` and `coarse_dirt`
+    have no such argument attached to them.
+    """
+    ring = bed.outline(1.0)
+    inside = bed - ring
+    canvas.fill(ring, y, y + 1, wall)
+    if inside:
+        canvas.fill(inside, y, y + 1, soil)
+        if plant:
+            spots = Mask(canvas.width, canvas.length)
+            for x, z in scatter(inside, pitch, seed):
+                spots.set(x, z)
+            canvas.fill(spots, y + 1, y + 2, plant)
+            return bed | spots
+    return bed.copy()
+
+
+def steps(
+    canvas: Canvas,
+    platform: Mask,
+    y: int,
+    block: str,
+    count: int = 1,
+    tread: float = 1.0,
+    riser: str | None = None,
+    floor: int = 0,
+    where: Mask | None = None,
+) -> Mask:
+    """A flight stepping down and out from the edge of a raised platform.
+
+    Terraces, podia and plazas in this corpus all end in a vertical face however
+    tall they are, because a wall was the only thing there was to end them with.
+    A metre of that is a kerb and reads fine; three metres of it is a retaining
+    wall, and a review said so in those words about the one a camera stood in
+    front of.
+
+    Each course is a ring one tread further out and one level lower, and the
+    tread itself is `cornice` -- the same stairs turned outward by the same
+    rule. A flight built any other way is a second place for the facing to be
+    got backwards.
+
+    `riser` is what holds the flight up, and leaving it None is almost always
+    wrong. The rings lie *outside* the platform, over whatever the ground is,
+    so a flight of bare treads is a stack of steps with daylight under them:
+    `checks.floating` catches it, but only after a build and a gate. Given a
+    riser each ring is filled from `floor` to its own tread, and the flight
+    comes out as the stepped mass it should have been.
+
+    `where` narrows the flight to one side. A terrace does not usually step down
+    on all four -- three of them are the building, the pool and the street.
+
+    Returns everything placed, so the whole flight can be declared as one part:
+    a tread declared without its riser passes while hanging in the air.
+    """
+    if count < 1:
+        raise ValueError("a flight has at least one step")
+    placed = Mask(canvas.width, canvas.length)
+    for n in range(count):
+        band = (platform.dilate(tread * (n + 1))
+                - platform.dilate(tread * n))
+        if where is not None:
+            band = band & where
+        if not band:
+            continue
+        level = y - 1 - n
+        if riser and level > floor:
+            canvas.fill(band, floor, level, riser)
+        cornice(canvas, platform, level, block,
+                project=tread * (n + 1), thickness=tread, where=band)
+        placed = placed | band
     return placed
 
 
