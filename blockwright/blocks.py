@@ -73,10 +73,8 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "minecraft:cyan_terracotta": (86, 91, 91),
     "minecraft:light_blue_terracotta": (113, 108, 137),
     "minecraft:tuff": (108, 109, 102),
-    "minecraft:deepslate": (77, 77, 80),
     "minecraft:copper_block": (192, 107, 79),
     "minecraft:waxed_copper_block": (192, 107, 79),
-    "minecraft:weathered_copper": (108, 153, 128),
     "minecraft:green_stained_glass": (84, 109, 27),
     "minecraft:lime_stained_glass": (128, 199, 31),
     "minecraft:cyan_stained_glass": (76, 127, 153),
@@ -86,7 +84,6 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "minecraft:mud": (60, 55, 60),
     "minecraft:packed_mud": (142, 106, 79),
     "minecraft:mud_bricks": (137, 103, 78),
-    "minecraft:orange_concrete": (224, 97, 0),
     "minecraft:stone": (125, 125, 125),
     "minecraft:water": (60, 90, 200),
     "minecraft:smooth_quartz": (236, 233, 226),
@@ -106,6 +103,13 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "minecraft:polished_deepslate": (72, 72, 75),
     "minecraft:cobbled_deepslate": (78, 76, 82),
     "minecraft:oxidized_copper": (82, 162, 132),
+    # Listed twice, at (108, 153, 128) and here, and the two disagreed by ten
+    # units of blue. This one is kept because it is the one that was already
+    # winning -- a dict literal keeps the last of a repeated key -- so removing
+    # the other is a de-duplication and not a silent recolouring of whatever has
+    # already been built with it. Which of the two actually reads the texture is
+    # still unsettled, and settling it is a job for a reader that measures the
+    # client jar rather than for a judgement here.
     "minecraft:weathered_copper": (109, 154, 118),
     "minecraft:moss_block": (89, 109, 45),
     "minecraft:grass_block": (95, 141, 60),
@@ -113,6 +117,15 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "minecraft:oak_leaves": (60, 120, 36),
     "minecraft:jungle_log": (86, 67, 30),
     "minecraft:oak_log": (108, 87, 51),
+    # Pale trunks, named as missing by a review rather than guessed at: a royal
+    # palm's stem is grey-white, the table held these two dark logs and nothing
+    # lighter, and the finding was closed as "named rather than faked" because
+    # the build had nothing to plant. Birch is the pale one in vanilla, and
+    # stripped birch is paler and has no dashes on it, which at a block to the
+    # metre is the difference between a trunk and a birch tree.
+    "minecraft:birch_log": (192, 175, 121),
+    "minecraft:stripped_birch_log": (196, 174, 122),
+    "minecraft:stripped_oak_log": (177, 144, 86),
     "minecraft:terracotta": (152, 94, 67),
     "minecraft:polished_andesite": (132, 134, 132),
     "minecraft:oak_planks": (162, 130, 78),
