@@ -26,8 +26,15 @@ in a sentence and it gets built -- but it must not be reported the same way as a
 build set out on a survey. The tier says which of the two happened, and the gate
 reads it before deciding whether "pass" is a thing it is entitled to print.
 
-The rule the whole pipeline turns on is that **a build is graded against an input
-it was never given**. `witnesses_for` is that rule made checkable.
+The rule the whole pipeline turns on is that **a build's resemblance to the real
+thing is graded against an input it was never given**. `witnesses_for` is that
+rule made checkable.
+
+It is about resemblance and only about resemblance. Whether the build *conforms
+to its own plan* is a separate question with a separate witness -- the plan --
+and checking it is verification rather than tautology; `docs/sources.md`,
+"Сходство и соответствие", is where the two are told apart. A row that answers
+the second and reads as though it answered the first is the failure to avoid.
 """
 
 from __future__ import annotations

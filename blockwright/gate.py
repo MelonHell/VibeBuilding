@@ -1,10 +1,19 @@
 """Grading a build against the reference it was never given.
 
-Scoring a build against the map it was drawn from is a tautology: the build is
-the map, extruded, so of course they agree. The Google Earth mesh is the
-independent witness, because it is read for numbers -- how tall, how far along,
-where does it step -- and never for geometry. A section cut through both is the
-one comparison in this pipeline that can come back wrong.
+Scoring a build's *resemblance to the real building* against the map it was
+drawn from is a tautology: the build is the map, extruded, so of course they
+agree, and an upside-down building would score the same. The Google Earth mesh
+is the independent witness, because it is read for numbers -- how tall, how far
+along, where does it step -- and never for geometry. A section cut through both
+is the one comparison in this pipeline that can come back wrong about the
+building.
+
+Scoring *conformance* against the map is a different question and is not a
+tautology: whether the machinery between `layout.png` and the schematic kept the
+shape it was given is an ordinary verification, and `COUNTS`, `RINGS` and
+`<part> is built square` in `grading` are it. The rule is not "never compare
+against the map" -- it is that a row must say which of the two it answered. See
+`docs/sources.md`, "Сходство и соответствие".
 
 Everything here was a per-building script first. Terra's gate ran to 592 lines
 and about sixty of them were about Terra; the rest was apparatus -- registration,
@@ -893,7 +902,8 @@ def build_bin(reg, station: int) -> int:
 
 
 def one_station_off(why: str, name: str = "one station off",
-                    drop: float = 4.0):
+                    drop: float | None = None,
+                    tolerance: float = TOLERANCE):
     """A station the reference disagrees with **both** its neighbours about.
 
     Two failures of the method look identical in the numbers and neither is the
@@ -914,7 +924,17 @@ def one_station_off(why: str, name: str = "one station off",
     here and not in a building's own gate. What it deliberately does not cover
     is a run: three stations in a row out of tolerance is a shape a building can
     have, and the section should say so.
+
+    `drop` defaults to twice the section's tolerance rather than to a typed
+    figure. It was 4.0 m for as long as every building graded at 2.0, which made
+    the relationship invisible: a building that tightens its section to a metre
+    inherited an exemption written for a section twice as loose, and one that
+    widened to three inherited one that fires on ordinary noise. The pair of
+    them is the same decision written once.
     """
+    if drop is None:
+        drop = 2.0 * tolerance
+
     def make(band: Band) -> Exemption:
         tops = band.mesh_top
         if not tops:
@@ -936,6 +956,115 @@ def one_station_off(why: str, name: str = "one station off",
                 continue
             if (abs(mine - here) > drop
                     and min(abs(mine - before), abs(mine - after)) <= drop):
+                covered.add(k)
+        return Exemption(name, why, covered)
+    return make
+
+
+def on_a_step(why: str = "", name: str = "on a step in the reference",
+              reach: int = 2, drop: float | None = None,
+              tolerance: float = TOLERANCE):
+    """Stations sitting on a step in the reference's own reading.
+
+    The other half of `one_station_off`, and the same arithmetic seen from the
+    other end. That one covers a station the reference is alone about; this
+    covers the *seam* between two flat runs the reference is perfectly sure
+    about -- a roof at two levels, the edge of a plant house, a parapet that
+    steps.
+
+    The cause is not photogrammetry. The section bins the reference in the
+    reference's own metres and the build in the build's, and the affine between
+    them carries a scale of a per cent or so and an origin a metre or two off,
+    so a station's window on one side is about a metre out of step with the same
+    station's window on the other. On a flat run that costs nothing: both
+    windows read the same plane. Across a three-metre step it costs the whole
+    step, in whichever direction the offset happens to fall, and the number the
+    row prints is the offset rather than the build.
+
+    Measured off the reference alone, so it cannot be tuned by what the build
+    did: a station within `reach` of a place where the reference's own reading
+    jumps by more than `drop` is on a step. It covers nothing on a flat run,
+    however wrong the build is there -- which is the point. The roof levels
+    themselves, the parapet and every box standing on the roof are still graded
+    at every station between the steps.
+
+    `reach` is two stations and not one because that is the size of the offset:
+    about a metre of registration residual on top of a one-metre station, so a
+    step can reach the station next but one. Wider starts covering flat runs,
+    which is where this row does its work.
+
+    Written twice in one building's own gate before it moved here, and it was
+    never that building's: any building whose roof steps by more than the
+    tolerance has it, and every one of them would otherwise reach for a wider
+    tolerance instead -- which excuses the flat runs too, silently.
+    """
+    if drop is None:
+        drop = tolerance
+    why = why or (
+        f"the reference's own reading steps by more than {drop:.0f} m between "
+        "this station and one beside it. The two sources bin this building "
+        "about a metre out of step with each other, so across a step of that "
+        "size the row reads the offset rather than the build. Every station on "
+        "a flat run is graded")
+
+    def make(band: Band) -> Exemption:
+        tops = band.mesh_top
+        if not tops:
+            return Exemption(name, "no mesh material in this window", set())
+        steps = {k for k in tops
+                 if any(abs(tops[k] - tops[j]) > drop
+                        for j in (k - 1, k + 1) if j in tops)}
+        covered = {k for k in tops
+                   if any(j in steps for j in range(k - reach, k + reach + 1))}
+        return Exemption(name, why, covered)
+    return make
+
+
+def ribbed(why: str = "", name: str = "the capture's own ribbing",
+           same: float | None = None, tolerance: float = TOLERANCE):
+    """A station the reference dips at that both its neighbours agree about.
+
+    `one_station_off` is this shape at twice the tolerance and its docstring
+    makes the argument: a station the reference argues with both its neighbours
+    about, where the two neighbours agree with each other, is a property of the
+    method rather than of the building. Nothing has a one-metre-wide notch in
+    it.
+
+    The same shape turns up smaller, and then that check will not see it. A
+    photogrammetric surface over a flat equipment roof saws: one capture reads
+    52.5, 50.7, 52.5, 50.6, 52.5 on consecutive stations -- a 1.9 m saw with a
+    one-metre period, under the four metres `one_station_off` asks for and over
+    the two the section grades at. The build lays a flat top, correctly, and
+    comes out half a metre under the tall rows and two metres over the dips.
+
+    Deliberately narrower than `one_station_off`: the two neighbours have to
+    agree with each other to within `same`, the station has to be a *dip* rather
+    than a spike, and one station is covered at a time. Two dips in a row is a
+    shape and stays graded.
+
+    `same` defaults to a bit over half the tolerance -- under the amplitude of
+    the saw and well under a course of any building's storey.
+    """
+    if same is None:
+        same = 0.6 * tolerance
+    why = why or (
+        "the reference reads this station lower than the two beside it and "
+        f"those two agree with each other to {same:.1f} m. That is the ribbing "
+        "of a photogrammetric surface over a flat roof rather than a notch in "
+        "the building -- nothing is one station wide. Two such stations in a "
+        "row would be a shape and are not covered")
+
+    def make(band: Band) -> Exemption:
+        tops = band.mesh_top
+        if not tops:
+            return Exemption(name, "no mesh material in this window", set())
+        covered = set()
+        for k, here in tops.items():
+            before, after = tops.get(k - 1), tops.get(k + 1)
+            if before is None or after is None:
+                continue
+            if (abs(before - after) <= same
+                    and here < min(before, after) - same):
                 covered.add(k)
         return Exemption(name, why, covered)
     return make
@@ -1186,7 +1315,8 @@ def section(name: str, u0: float, u1: float, *, mesh: Cloud, build: Cloud,
 
 __all__ = [
     "Band", "Check", "Cloud", "Exemption", "Gate", "Plan", "Registration",
-    "Section", "Station", "extent", "next_lot", "section",
+    "Section", "Station", "capture_hole", "extent", "next_lot", "on_a_step",
+    "one_station_off", "ribbed", "section", "station_of", "build_bin",
     "taller_than_the_mesh",
     "CLUTTER", "EDGE_CELLS", "REGISTER_AT", "SCALE_AGREEMENT", "SCALE_TRUE",
     "SEAM", "TOLERANCE", "TRIM",

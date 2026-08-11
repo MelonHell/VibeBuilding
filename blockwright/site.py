@@ -48,6 +48,16 @@ class Site:
     # each become a hole in the wall ring built from it. Half a block takes them
     # out and leaves every real opening alone.
     #
+    # **It rounds every convex corner, and that is not a side effect worth
+    # discovering in a render.** A closing is a dilation followed by an erosion,
+    # both Euclidean, and a Euclidean dilation is a disc: it puts material into
+    # the quarter-disc outside a corner and the erosion cannot take it back,
+    # because there is nothing outside the corner to erode against. The pad does
+    # the same thing again. So a part the map drew square comes out of
+    # `footprint` with about `pad + CLOSE` metres taken off each of its corners,
+    # before anything anybody wrote is involved -- and no row of the gate looks
+    # at a corner. `squared` is the answer where the part really is a rectangle.
+    #
     # Set it to 0.0 in a building whose parts are boxes and discs: nothing was
     # traced there, so there are no notches, and closing only rounds the corners
     # off shapes the map drew square.
@@ -120,6 +130,19 @@ class Site:
         # their corners. Measured rather than typed -- see
         # `narrower_than_the_staircase`.
         self.staircase = derived["frame"]["staircase"]
+
+        # The drawn building's own extent in its own frame. Four numbers every
+        # building was computing for itself with the same one-line comprehension,
+        # and one of them -- `grid` -- was already reading them off `self`
+        # without anything here ever setting them.
+        self.u0 = min(p.u0 for p in self.parts.values())
+        self.u1 = max(p.u1 for p in self.parts.values())
+        self.v0 = min(p.v0 for p in self.parts.values())
+        self.v1 = max(p.v1 for p in self.parts.values())
+
+        # Filled by `across` on first use: how far the drawn mass reaches across
+        # the plot at each station along it.
+        self._reach: dict[int, tuple[float, float]] | None = None
 
     # -- what `derive` had to have written ---------------------------------
 
@@ -329,6 +352,16 @@ class Site:
         A disc is drawn as a disc either way: `plan.Part` fits a circle to it and
         reports its residual, so the centre and the radius are measurements and
         the clean figure is the honest way to draw them.
+
+        **This rounds every convex corner by about `pad + CLOSE`, whatever the
+        map drew.** Both operations are Euclidean and a Euclidean dilation is a
+        disc, so the corner is bitten by a quarter-disc that the erosion has
+        nothing to push back against -- see `CLOSE`. On top of that a traced
+        corner usually arrives chamfered already, because that is how a hand
+        draws one. Neither shows up in any row of the gate: a rounded corner
+        casts the same silhouette, grades the same at every station, and encloses
+        the same area to within a few cells. Use `squared` for a part that really
+        is a rectangle.
         """
         p = self.parts[name]
         if p.kind == "disc" and self.ROUND:
@@ -344,12 +377,48 @@ class Site:
             out = out.straighten(self.frame, self.STRAIGHT)
         return out
 
+    def squared(self, name: str, keep: float | None = None,
+                trim: float = 0.02, edge: str = "both") -> Mask:
+        """One part rebuilt as the rectangle it is, from its own measurements.
+
+        The middle idiom between `footprint` and `box`, on the other axis from
+        `straighten`. Straightening asks "is this edge one line or a stack of
+        little ones"; this asks "is this corner a right angle", and nothing else
+        in the pipeline does -- a chamfer four cells deep survives any
+        straightening tolerance worth using, because it is further off the chord
+        than drawing noise ever is, and `Site.footprint` then rounds it further
+        with its own pad and closing.
+
+        Every number comes off the part's own mask -- see `Mask.squared` for the
+        quantiles and for what `keep` protects. The pad is applied here, so a
+        part squared and a part footprinted stand at the same face.
+
+        Right where the building's corner is a right angle, which is most parts
+        of most buildings. Wrong wherever the drawn shape carries a measurement:
+        a bowed slab, a rake somebody drew on purpose, anything the map traced
+        off a curve. Those keep `footprint`, and `keep` is how a part that is a
+        rectangle with one corner cut back gets both.
+        """
+        p = self.parts[name]
+        if p.kind == "disc" and self.ROUND:
+            return self.disc(p.centre[0], p.centre[1], p.radius + self.pad)
+        box = p.mask.squared(self.frame, trim=trim, keep=keep, edge=edge)
+        if box is None:
+            return self.footprint(name)
+        u0, u1, v0, v1 = box
+        return self.rect(u0 - self.pad, u1 + self.pad,
+                         v0 - self.pad, v1 + self.pad)
+
     def box(self, name: str) -> Mask:
         """One part as the rectangle its extent describes, opened by the pad.
 
         Right where the part really is rectangular and the drawn edge is noise;
         wrong wherever the plan's own shape carries a measurement -- see
         `footprint`.
+
+        The bounding extent, unlike `squared`, which fits the rectangle to
+        trimmed quantiles and can leave a deliberate rake alone. A single stray
+        cell of tracing whisker moves this and does not move that.
         """
         p = self.parts[name]
         if p.kind == "disc" and self.ROUND:
@@ -363,6 +432,50 @@ class Site:
         for name in names:
             out = out | (self.box(name) if boxed else self.footprint(name))
         return out
+
+    # -- the ground around it ----------------------------------------------
+
+    def across(self, u: float) -> tuple[float, float]:
+        """How far the drawn mass reaches across the plot at this station.
+
+        The two v of the building's own faces at station `u`, clamped past
+        either end so a cell out beyond the ends still belongs to a side rather
+        than to neither.
+        """
+        if self._reach is None:
+            reach: dict[int, tuple[float, float]] = {}
+            for x, z in self.mass.cells():
+                u_, v = self.frame.to_local(x + 0.5, z + 0.5)
+                lo, hi = reach.get(int(u_), (1e9, -1e9))
+                reach[int(u_)] = (min(lo, v), max(hi, v))
+            self._reach = reach
+        if not self._reach:
+            return (self.v0, self.v1)
+        key = int(u)
+        hit = self._reach.get(key)
+        if hit is not None:
+            return hit
+        near = min(self._reach, key=lambda s: abs(s - key))
+        return self._reach[near]
+
+    def side(self, far: bool) -> Mask:
+        """Everything on one side of the building, by its own middle line.
+
+        A block with ground on both sides has two different grounds -- a street
+        one way and a beach the other, a car park one way and a garden the other
+        -- and the map usually draws neither, so the only thing that can tell
+        them apart is the building standing between them. `far` picks the high-v
+        side.
+
+        **Split on the middle of the building's own depth, not on its two
+        faces.** Cut on the faces, the wedge off each end of the block -- between
+        the street front and the wing tips -- belongs to neither side, and
+        whatever is laid last wins it: on one building that put beach sand along
+        the length of the avenue. The middle line has no such gap, because every
+        station is on exactly one side of it.
+        """
+        return self.region(
+            lambda u, v: (v > sum(self.across(u)) / 2) == bool(far))
 
     def flipped(self, axis_u: float) -> "Site":
         """This site, drawing everything mirrored across `u = axis_u`.

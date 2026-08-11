@@ -586,6 +586,149 @@ def presence(mesh, frame, u0: float, u1: float, v0: float, v1: float,
     return len(hit) / total
 
 
+# -- the ground around a building -------------------------------------------
+#
+# Every check and every probe above this line is about the building. Three
+# buildings so far have also needed the ground it stands on -- a pool deck over
+# a garage, a road, a beach, a car park a metre down from the entrance -- and
+# every one of them wrote the same forty lines into its own `probes/derive.py`
+# because the library had nothing to offer.
+#
+# It is a measurement of *height*, which is what `docs/sources.md` allows a
+# capture to be read for. A plot at two levels is two surfaces, and where each
+# of them is is simply where its own level is: the boundary between them is a
+# step of three metres rather than an edge somebody traced.
+
+# The cell the ground is read on, in metres.
+#
+# Three, and not the build's own metre. At one metre the answer is a chequer:
+# photogrammetry lays a metre of paving with far fewer than one vertex per
+# square metre, so most cells hold no reading of the surface at all and take
+# whatever else passed through them. Three is coarse enough that every cell
+# holds a handful of vertices and fine enough that a step from a road up to a
+# deck stays one cell wide.
+GROUND_CELL = 3.0
+
+# Which vertex in a cell is its ground: a low quantile rather than the minimum.
+# The minimum is the skirt of unclosed polygons a Google Earth export hangs
+# under its paving; the median is whatever is standing on the paving.
+GROUND_QUANTILE = 0.2
+
+# How few vertices a cell may hold and still be read. Under four, a quantile is
+# the minimum by another name.
+GROUND_LEAST = 4
+
+
+class Ground:
+    """What the reference stands at, cell by cell, over one plot.
+
+    A height map and nothing else. What each surface *is* -- road, deck, beach,
+    lawn -- is not in here and cannot be: two surfaces a metre apart in height
+    and on opposite sides of the building read identically, and only the
+    building between them tells them apart. `Site.side` is that split.
+    """
+
+    __slots__ = ("cells", "cell", "quantile", "floor", "under")
+
+    def __init__(self, cells, cell, quantile, floor, under):
+        self.cells = cells          # (a, b) cell -> height over the datum
+        self.cell = cell
+        self.quantile = quantile
+        self.floor = floor
+        self.under = under
+
+    def at(self, u: float, v: float) -> float | None:
+        """What the ground stands at here, in metres over the datum."""
+        return self.cells.get((int(u // self.cell), int(v // self.cell)))
+
+    def band(self, low: float, high: float | None = None) -> list[float]:
+        """Every cell reading between two levels, sorted."""
+        return sorted(h for h in self.cells.values()
+                      if h >= low and (high is None or h < high))
+
+    def level(self, low: float, high: float | None = None,
+              share: float = 0.5) -> float | None:
+        """One number for a surface: a quantile of the cells inside its band.
+
+        The quantile matters and is worth choosing rather than taking the
+        middle. A paved deck that steps down over its last ten metres is not one
+        plane, and the middle of its readings is halfway down that step; what a
+        build lays its paving at is the level of the paving proper, which is a
+        three-quarter point.
+        """
+        found = self.band(low, high)
+        if not found:
+            return None
+        return found[max(0, min(len(found) - 1, int(share * (len(found) - 1))))]
+
+    def report(self) -> dict:
+        return {
+            "cell": self.cell,
+            "cells": [[a, b, round(h, 2)] for (a, b), h in sorted(self.cells.items())],
+            "note": f"the {self.quantile:.0%} quantile of what the reference "
+                    f"holds between {self.floor} and {self.under} m of the "
+                    f"datum, per {self.cell:.0f} m cell, median-smoothed over "
+                    "each cell's nine neighbours",
+        }
+
+    @classmethod
+    def loads(cls, found: dict) -> "Ground":
+        """The same map back out of `derived.json`."""
+        return cls({(a, b): h for a, b, h in found["cells"]},
+                   float(found["cell"]), GROUND_QUANTILE, 0.0, 0.0)
+
+
+def ground(mesh, frame, datum: float, floor: float, under: float,
+           cell: float = GROUND_CELL, quantile: float = GROUND_QUANTILE,
+           least: int = GROUND_LEAST, to_local=None) -> Ground:
+    """The ground the reference holds, as a smoothed map of heights.
+
+    `floor` and `under` are the band a *ground* vertex may be in, relative to
+    the datum, and both are the building's own decision because both are about
+    that capture.
+
+    The floor is the part that matters and the part that is always forgotten. A
+    Google Earth export hangs a skirt of unclosed polygons under its paving,
+    outside whatever clip box was cut; left in, the lowest thing in every cell
+    is a skirt vertex some metres under the road and every surface reads low.
+    The ceiling drops the palms, the sea wall's coping and the building itself.
+
+    Read off the *whole* export rather than the building clip, normally: the
+    clip that makes a section honest cuts the grounds away by construction. Pass
+    the site mesh, not the clipped one.
+
+    `to_local` converts a point in the reference's frame into the plan's, for a
+    survey that registered the two -- the map is indexed in the plan's metres so
+    that a build can look a cell up by the coordinates it draws in. Without it
+    the cells are in the reference's own frame and a build has to register them
+    itself, which is a second answer to a question that already has one.
+    """
+    bag: dict[tuple[int, int], list[float]] = {}
+    for i in range(len(mesh)):
+        h = mesh.y[i] - datum
+        if not (floor <= h <= under):
+            continue
+        u, v = frame.to_local(mesh.x[i], mesh.z[i])
+        if to_local is not None:
+            u, v = to_local(u, v)
+        bag.setdefault((int(u // cell), int(v // cell)), []).append(h)
+
+    coarse = {key: sorted(vals)[int(quantile * (len(vals) - 1))]
+              for key, vals in bag.items() if len(vals) >= least}
+
+    # Median-smoothed over each cell's nine neighbours, for the same reason the
+    # quantile is low rather than minimum: one cell that caught a parked car or
+    # the lip of a planter is a hole in an otherwise flat surface, and a hole in
+    # a height map becomes a hole in whatever is laid from it.
+    smooth: dict[tuple[int, int], float] = {}
+    for (a, b) in coarse:
+        near = sorted(coarse[(a + da, b + db)]
+                      for da in (-1, 0, 1) for db in (-1, 0, 1)
+                      if (a + da, b + db) in coarse)
+        smooth[(a, b)] = near[len(near) // 2]
+    return Ground(smooth, cell, quantile, floor, under)
+
+
 # -- masks -----------------------------------------------------------------
 
 
@@ -797,9 +940,9 @@ def floor_lines(image, metres_per_pixel: float, x0: int | None = None,
 
 
 __all__ = [
-    "Grid", "Period", "Profile", "Storeys",
+    "Grid", "Ground", "Period", "Profile", "Storeys",
     "apart", "column_signal", "detrend", "edge_profile", "floor_lines",
-    "histogram", "median_filter", "peaks", "period", "presence",
+    "ground", "histogram", "median_filter", "peaks", "period", "presence",
     "rhythm_by_span", "row_signal", "silhouette", "skyline", "staircase",
     "storey_height",
 ]

@@ -560,6 +560,92 @@ class Mask:
                 stack.append(start)
         return None if best is None else best[1:]
 
+    def squared(self, frame, trim: float = 0.02, keep: float | None = None,
+                edge: str = "both", reach: tuple[float, float] | None = None
+                ) -> tuple[float, float, float, float] | None:
+        """The rectangle this shape actually is, as (u0, u1, v0, v1) in `frame`.
+
+        The fourth idiom, and the one three buildings wrote by hand. `footprint`
+        keeps every wobble, `box` takes the bounding extent, `straighten` keeps
+        the corners and drops the noise between them -- and none of them helps
+        with the case that keeps coming up: **a part that is a rectangle, drawn
+        by somebody with a mouse.** There the traced edge has a chamfer at each
+        corner over four or five cells, a long edge in two steps, and half a
+        metre more rounding put on by `Site.footprint`'s own closing, which is a
+        Euclidean dilation and therefore a disc. A building's corner is a right
+        angle. Straightening keeps the chamfer, because a chamfer four cells
+        deep is further off the chord than any tolerance worth using; boxing
+        squares off the raked end the mapper drew on purpose, three parts away.
+
+        So: measure the extent robustly and draw the rectangle. Both edges of
+        each axis are a trimmed quantile rather than the extreme, because a
+        traced part carries a few cells of whisker and one of them sets a
+        bounding box. Returned as numbers and not as a mask, so the caller can
+        overrule one edge with something it measured elsewhere -- a court's own
+        bottom, a neighbour's face -- which is what every hand-written copy of
+        this did.
+
+        `keep` is what stops it from squaring off a deliberate rake. A part is
+        cut into whole-metre stations along u, and a station whose own reach
+        falls more than `keep` metres short of the fitted rectangle is not part
+        of that rectangle: it is the corner the mapper cut back, and on a real
+        capture that cut-back corner is there too. The run is then re-taken from
+        the stations that are left and the rest of the shape is the caller's --
+        union the rectangle back over the drawn mask and the rake survives.
+        `edge` says which side to ask about: "low", "high", or "both", for a
+        part whose other flank is somebody else's business. `reach` overrules
+        the fitted (v0, v1) with numbers the caller measured better -- a wing's
+        own tip off the drawn mass, a court's bottom -- which matters where this
+        mask holds more than the part: a quantile taken over a wing *and* the
+        slab it joins is a quantile of the pair, and the wing's tip is not in
+        it.
+
+        `None` for an empty mask. Every number returned is an outer edge, half a
+        cell out from the centres it was measured on -- the same half cell
+        `_offset_ring` pushes a straightened outline back by, and for the same
+        reason: a contour read off cell centres describes a shape one cell
+        smaller than the one that was drawn.
+        """
+        cells = self.cells()
+        if not cells:
+            return None
+        local = [frame.to_local(x + 0.5, z + 0.5) for x, z in cells]
+
+        def span(values: list[float]) -> tuple[float, float]:
+            values = sorted(values)
+            last = len(values) - 1
+            return values[int(trim * last)], values[int((1.0 - trim) * last)]
+
+        u0, u1 = span([u for u, _ in local])
+        v0, v1 = span([v for _, v in local])
+        u0, u1, v0, v1 = u0 - 0.5, u1 + 0.5, v0 - 0.5, v1 + 0.5
+        if reach is not None:
+            v0, v1 = float(reach[0]), float(reach[1])
+
+        if keep is None:
+            return (u0, u1, v0, v1)
+
+        low: dict[int, float] = {}
+        high: dict[int, float] = {}
+        for u, v in local:
+            k = int(math.floor(u))
+            if v < low.get(k, 1e18):
+                low[k] = v
+            if v > high.get(k, -1e18):
+                high[k] = v
+
+        def reaches(k: int) -> bool:
+            if edge in ("both", "low") and low[k] - 0.5 > v0 + keep:
+                return False
+            if edge in ("both", "high") and high[k] + 0.5 < v1 - keep:
+                return False
+            return True
+
+        square = sorted(k for k in low if reaches(k))
+        if not square:
+            return None
+        return (float(square[0]), float(square[-1] + 1), v0, v1)
+
     def contour(self) -> list[tuple[int, int]]:
         """The outer boundary of this mask, in order, walking clockwise.
 

@@ -283,6 +283,15 @@ class Outside:
     the middle. So the direction is chosen -- `azimuth` around the building and
     `pitch` above the horizon, the same convention `render.View.orbit` uses -- and
     the distance is solved for.
+
+    **`azimuth` is not a compass bearing.** It turns around the building's own
+    long axis: 0 stands off the far end past the +u extreme, 90 out beyond the
+    +v flank. On a crop whose building sits thirty degrees off the map's north
+    -- which is most of them, because a street grid is not a compass -- naming a
+    camera `east` or `beach` off the azimuth is naming it off the wrong angle,
+    and the mistake survives every check except looking at the render. `Review.holds`
+    prints which declared parts each camera has in shot, which settles it from
+    the geometry before anything is rendered.
     """
 
     name: str
@@ -471,6 +480,104 @@ class Review:
                 reading=entry.reading,
             ))
         return tuple(out)
+
+    def check_cameras(self, model, frame, shots) -> None:
+        """Refuse a camera standing inside the building.
+
+        A perspective shot is given as fractions of the frame so that it lands
+        in the same place in two models, and a fraction is easy to get wrong by
+        a tenth. A tenth of a building is a wall: on one round a camera meant to
+        look out from under an arcade stood inside one of its piers, and the
+        render is a brown rectangle filling the frame. Nothing failed. The image
+        went to the reviewer with a viewpoint description saying what it was
+        supposed to show, and the findings that came back were about a building
+        nobody could see.
+
+        Cheap to test exactly, because the thing to test against is the
+        schematic itself: if the block at the eye is not air, the camera is
+        inside the building. A camera in a court, under a canopy or in a loggia
+        is air and passes, which is right -- those are the shots worth having.
+        """
+        from .schem import AIR
+
+        inside = []
+        for shot in shots:
+            u, v, height = place(frame, shot.eye)
+            x, z = frame.to_world(u, v)
+            x, y, z = int(x), int(height), int(z)
+            if not (0 <= x < model.width and 0 <= z < model.length
+                    and 0 <= y < model.height):
+                continue
+            block = model.get(x, y, z)
+            if block and block != AIR:
+                inside.append((shot.name, block, (x, y, z)))
+        if inside:
+            raise SystemExit(
+                "these cameras stand inside the build, and each of them renders "
+                "the inside of a block filling the frame:\n"
+                + "\n".join(f"  {name}: {block} at ({x}, {y}, {z})"
+                            for name, block, (x, y, z) in inside)
+                + "\nMove the eye out, or raise it above the part it is in. A "
+                "shot from inside a court or under a canopy stands in air and "
+                "is not caught by this.")
+
+    def holds(self, frame, shots, groups) -> None:
+        """Print which side of the building each camera stands on, and what is
+        nearest it.
+
+        A camera's name is written by whoever placed it and is checked by
+        nothing. `Outside.azimuth` turns around the **building's own long axis**
+        -- the same convention `render.View.orbit` uses -- and on a crop whose
+        building stands 33 degrees off the map's north, 90 is the street and 270
+        is the beach. Three cameras in one round were named for the wrong side
+        of the building, and every one of them was found by looking at a render
+        afterwards, which costs minutes and a person.
+
+        This is the same fact taken off the geometry, in a line each, before
+        anything renders: where the eye stands in the frame's own fractions,
+        which flank or end that is, and the declared parts nearest to it. A
+        camera called `beach` whose eye is beyond the flank the deck is not on
+        is wrong, and the line says so without an image.
+
+        Deliberately not "what is inside the film". Every exterior camera is
+        solved to fit the whole building, so every one of them holds every part
+        and the answer is 100 per cent six times over, which distinguishes
+        nothing. What separates one exterior camera from another is which side
+        of the building it is on.
+        """
+        if not groups:
+            return
+        print("[review] where each camera stands, from the geometry:")
+        for shot in shots:
+            fu, fv, height = shot.eye
+            eye = place(frame, shot.eye)
+            where = []
+            if fv < 0.0:
+                where.append("off the -v flank")
+            elif fv > 1.0:
+                where.append("off the +v flank")
+            if fu < 0.0:
+                where.append("past the -u end")
+            elif fu > 1.0:
+                where.append("past the +u end")
+            if not where:
+                where.append("over the plan itself")
+
+            near = []
+            for name, mask in groups:
+                cells = mask.cells()
+                if not cells:
+                    continue
+                step = max(1, len(cells) // 400)
+                best = min(
+                    (eye[0] - u) ** 2 + (eye[1] - v) ** 2
+                    for u, v in (frame.to_local(x + 0.5, z + 0.5)
+                                 for x, z in cells[::step]))
+                near.append((best ** 0.5, name))
+            near.sort()
+            names = ", ".join(f"{name} {far:.0f} m" for far, name in near[:4])
+            print(f"           {shot.name}: eye at u {fu:+.2f}, v {fv:+.2f}, "
+                  f"{height:.0f} m up -- {', '.join(where)}; nearest {names}")
 
     def clear(self) -> None:
         """Empty the review folder, keeping the findings.
@@ -867,6 +974,12 @@ class Review:
             from .schedule import Schedule
             groups = [(name, held.mask) for name, held
                       in Schedule.load(self.paths.SCHEDULE).built.items()]
+        # Both before the renders, because both are about whether the renders
+        # are worth making: one refuses a camera that would fill the frame with
+        # the inside of a wall, the other says which side of the building each
+        # camera is actually on.
+        self.check_cameras(model, frame, shots)
+        self.holds(frame, shots, groups)
         self.render_build(model, frame, shots, groups)
 
         reference = sources.survey(self.paths).reference

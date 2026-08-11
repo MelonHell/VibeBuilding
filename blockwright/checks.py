@@ -467,6 +467,159 @@ def _simplify_count(mask: Mask, frame, tolerance: float):
     return _simplify_ring(local, tolerance)
 
 
+def mix_matrix(mixes: dict) -> list[tuple[str, str, float]]:
+    """Every pair of facade stretches and how far apart they are, closest first.
+
+    `facade_mix` answers one stretch and `mix_apart` answers one pair; this is
+    the table, and the table is what says the thing neither of them can. A gate
+    row can only ask what somebody thought to ask it -- "these two should
+    differ" -- and the failure that actually ships is the opposite one: two
+    stretches the build made identical without anybody noticing they are, and so
+    without anybody going to look at whether the reference agrees.
+
+    Closest first because that end is the interesting one. Two stretches at 0.01
+    are the same wall by construction, and either the building really is uniform
+    there or a wing has just been given its neighbour's balconies.
+    """
+    names = list(mixes)
+    out = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            one, two = mixes[a], mixes[b]
+            if not one.get("cells") or not two.get("cells"):
+                continue
+            out.append((a, b, mix_apart(one["mix"], two["mix"])))
+    out.sort(key=lambda row: row[2])
+    return out
+
+
+def corners(mask: Mask, frame, tolerance: float = 1.0,
+            square: float = 20.0) -> dict:
+    """How many of a shape's corners are right angles, and what the rest are.
+
+    The question no other check here asks, and the one a person asks first
+    standing in front of a render: **is that corner square?** Every other number
+    in this file is blind to it. A rounded corner casts the same silhouette,
+    grades the same at every station of the section, encloses the area it should
+    to within a few cells, and is as straight as the map along both of the edges
+    that meet at it -- `jaggedness` measures a shape against its own
+    straightened reading, and a chamfer four cells deep survives any tolerance
+    worth using, because it is further off the chord than drawing noise ever is.
+
+    It matters because the pipeline puts the defect in by itself. `Site.footprint`
+    closes a traced mask and pads it, both Euclidean, and a Euclidean dilation is
+    a disc: every convex corner comes back bitten by a quarter-disc of about
+    `pad + CLOSE`. Add the chamfer a hand draws and a building whose plan is
+    three rectangles arrives with twelve rounded corners, silently.
+
+    Measured on the simplified outline -- the same reading `jaggedness` and
+    `Mask.straighten` use, so the three agree about what a vertex is -- as the
+    turn at each vertex. A turn within `square` degrees of a right angle counts
+    as one. `square` is deliberately loose: at one block to the metre a right
+    angle traced across a diagonal frame comes back a few degrees off however
+    well it was drawn, and the difference being looked for is between 90 and 45,
+    not between 90 and 87.
+    """
+    rings = mask._rings(frame, tolerance)
+    turns: list[float] = []
+    for ring in rings:
+        n = len(ring)
+        if n < 3:
+            continue
+        for i in range(n):
+            before, here, after = ring[i - 1], ring[i], ring[(i + 1) % n]
+            one = math.atan2(here[1] - before[1], here[0] - before[0])
+            two = math.atan2(after[1] - here[1], after[0] - here[0])
+            turn = math.degrees(two - one)
+            while turn > 180.0:
+                turn -= 360.0
+            while turn < -180.0:
+                turn += 360.0
+            turns.append(turn)
+    right = sum(1 for t in turns if abs(abs(t) - 90.0) <= square)
+    return {
+        "vertices": len(turns),
+        "right": right,
+        "share": right / len(turns) if turns else 0.0,
+        "turns": sorted(round(t, 1) for t in turns),
+    }
+
+
+def rectangular(mask: Mask, frame, trim: float = 0.02,
+                around: Mask | None = None) -> dict:
+    """How much of a shape is the rectangle fitted to it.
+
+    For a surface somebody declared rectangular: a poured slab, a deck over a
+    garage, a court, a car park. The reading it is built from is never a
+    rectangle -- a height map of paving read off photogrammetry has a ragged
+    edge, a bite where the pool is, and a scatter of missing cells under the
+    trees -- and every one of those is the reading rather than the thing.
+
+    `around` is what stands in it: the building's own footprint, usually. A
+    ground is a rectangle with the building bitten out of it and comparing it
+    against a whole rectangle would condemn every one of them, so the shape it
+    is held to is the fitted rectangle *less* whatever was standing there.
+
+    `share` is the overlap between the two, so 1.0 is a rectangle and anything
+    much under it is a shape that is not one. Which of the two readings is right
+    is the caller's business: this says how far apart they are.
+    """
+    from .mask import iou
+
+    box = mask.squared(frame, trim=trim)
+    if box is None:
+        return {"share": 0.0, "box": None, "cells": 0, "box_cells": 0}
+    u0, u1, v0, v1 = box
+    drawn = frame.rect(mask.width, mask.length, u0, u1, v0, v1)
+    if around is not None:
+        drawn = drawn - around
+    return {
+        "share": iou(mask, drawn),
+        "box": [round(n, 1) for n in box],
+        "cells": mask.count(),
+        "box_cells": drawn.count(),
+    }
+
+
+def surface(mask: Mask, frame, reading, low: float,
+            high: float | None = None) -> dict:
+    """A ground the build laid, against the ground the reference reads there.
+
+    Two numbers and not a shape, which is the whole design. The clip that makes
+    a section honest cuts the grounds away by construction, so nothing in this
+    pipeline grades a deck, a road or a beach at all -- they can be any shape
+    at all and every row stays green. A capture is no authority on their shape
+    either (`docs/sources.md`), so asking about one would be asking the wrong
+    witness. What a capture *is* an authority on is height, and a height band
+    gives an area and an extent: how much of the plot stands at deck level, and
+    how far it reaches. Those two are enough to catch a deck built at half its
+    size or running the length of the block.
+
+    `reading` is a `measure.Ground`. The bands are the building's, because which
+    level is a deck and which is a road is a fact about that plot.
+    """
+    cell = reading.cell
+    area = cell * cell
+    read_cells = [(a, b) for (a, b), h in reading.cells.items()
+                  if h >= low and (high is None or h < high)]
+    built = [frame.to_local(x + 0.5, z + 0.5) for x, z in mask.cells()]
+
+    def extent(values):
+        return (min(values), max(values)) if values else (0.0, 0.0)
+
+    read_u = extent([a * cell + cell / 2 for a, _ in read_cells])
+    read_v = extent([b * cell + cell / 2 for _, b in read_cells])
+    return {
+        "built_area": float(len(built)),
+        "read_area": len(read_cells) * area,
+        "built_u": [round(n, 1) for n in extent([u for u, _ in built])],
+        "built_v": [round(n, 1) for n in extent([v for _, v in built])],
+        "read_u": [round(n, 1) for n in read_u],
+        "read_v": [round(n, 1) for n in read_v],
+        "read_cells": len(read_cells),
+    }
+
+
 def level_runs(model, mask: Mask, y0: int = 0, y1: int | None = None) -> dict:
     """How many different heights a surface that should be one height has.
 
