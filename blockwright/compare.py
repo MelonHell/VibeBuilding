@@ -94,6 +94,52 @@ def photo(path, label: str = "photo") -> Panel:
     return Panel(_open(path), None, label)
 
 
+# Both, drawn only, built only. Chosen so the two faults read at a glance and in
+# opposite directions: warm where the build did not reach the plan, cool where
+# it went past it, and quiet grey where the two agree -- which is most of the
+# picture on a build that is right.
+AGREE = (150, 154, 160)
+MISSING = (214, 108, 92)
+BEYOND = (86, 140, 196)
+
+
+def overlay(drawn, built, path, scale: int = 2,
+            off: tuple[int, int, int] = (28, 30, 34)):
+    """Two masks on one picture: agreed, drawn-only, built-only.
+
+    For the conformance question -- did the build stand where its own plan says
+    -- where two panels side by side are the wrong picture. A number says four
+    per cent of the plan is unbuilt and says nothing about *which* four per
+    cent, and the difference between "a cell all round the edge" and "the whole
+    of the north arm" is the difference between rounding and a defect. Laid over
+    each other, the shape of the disagreement is the answer.
+
+    Both masks have to be on the same grid, which they are: the plan's parts and
+    the build's layers are rasterised through the same frame onto the same
+    canvas.
+    """
+    from PIL import Image
+
+    if (drawn.width, drawn.length) != (built.width, built.length):
+        raise ValueError("the plan and the build are on different grids")
+    image = Image.new("RGB", (drawn.width, drawn.length))
+    px = image.load()
+    for z in range(drawn.length):
+        base = z * drawn.width
+        for x in range(drawn.width):
+            a, b = drawn.bits[base + x], built.bits[base + x]
+            px[x, z] = (AGREE if a and b else
+                        MISSING if a else
+                        BEYOND if b else off)
+    if scale != 1:
+        image = image.resize((drawn.width * scale, drawn.length * scale),
+                             Image.NEAREST)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+    return path
+
+
 def _fit(panel: Panel, scale: float, height: int):
     """Resize a panel to the sheet's metres per pixel, or to its height."""
     from PIL import Image

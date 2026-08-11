@@ -201,6 +201,7 @@ class Grading:
         cut = self.divisions(g, model, sched)
         self.watertight(g, cut)
         self.evenness(g, model, read, sched)
+        self.plan_shape(g, model, read)
         self.corners(g, model, read)
         mixes, matrix = self.facades(g, model, read, derived)
         self.elevations(g, derived)
@@ -685,6 +686,162 @@ class Grading:
                   "bitten where the pool is, and every one of those is the "
                   "reading rather than the thing")
 
+    def plates(self, model, read, names):
+        """The floor plate of each named plan part: (level, cover, spill).
+
+        A plate is a level that is full over the part and empty *outside the
+        building*. Both halves are needed and the second is easy to get wrong.
+        Coverage alone picks the terrain, which is laid over the whole plot and
+        therefore covers every part perfectly -- and clipped to the drawn mask,
+        a cut through the ground comes back as an exact copy of the map, so a
+        row read off it can never fail. Asking instead whether the ground
+        *round the part* is full would reject the terrain and also reject every
+        storey of a part that has neighbours, which is most of them. So the
+        ring is round the whole drawn building, taken once: empty sky at every
+        storey, solid ground at the courses the plot is laid on.
+
+        Searched rather than taken from a table. A building is hollow, so a cut
+        between two floors returns the wall ring, and a ring is a fifth of its
+        own rectangle however square it is. `LEVELS` is no help -- it is chosen
+        for counting components, and on one building its lowest entry sits
+        between the ground and the first slab.
+
+        The **lowest** plate that qualifies, not the best-scoring one. A part
+        running the height of a tower has a plate at every storey and they are
+        not the same shape: the top one is a roof with plant on it and a setback
+        under it. Its own first floor is where its plan shape is.
+
+        Returns the qualifying plates and, separately, the best cut found for
+        every part, so a caller can say what it looked at when nothing
+        qualified.
+        """
+        least = self._("CORNERS_COVER", 0.80)
+        # How much of the plot round the building may stand at a course before
+        # that course is the terrain rather than a floor. A quarter and not a
+        # half: a row that reads the map against the map cannot fail, which is a
+        # worse outcome than an ungraded row.
+        clear = self._("CORNERS_CLEAR", 0.25)
+        reach = 2.0
+
+        u0 = min(p.u0 for p in read.named.values())
+        u1 = max(p.u1 for p in read.named.values())
+        v0 = min(p.v0 for p in read.named.values())
+        v1 = max(p.v1 for p in read.named.values())
+        mass = getattr(read, "mass", None)
+        if mass is None:
+            mass = Mask.union([p.mask for p in read.named.values()])
+        ring = (read.frame.rect(model.width, model.length,
+                                u0 - 8.0, u1 + 8.0, v0 - 8.0, v1 + 8.0)
+                - mass.dilate(reach))
+        ring_cells = max(1, ring.count())
+
+        step = max(1, model.height // 24)
+        plates: dict[str, tuple[int, float, float]] = {}
+        best: dict[str, tuple[int, float, float]] = {}
+        for y in range(1, model.height, step):
+            layer = solid(model, y)
+            spill = (layer & ring).count() / ring_cells
+            for name in names:
+                mask = read.named[name].mask
+                cover = (layer & mask).count() / max(1, mask.count())
+                seen = best.get(name)
+                if seen is None or cover - spill > seen[1] - seen[2]:
+                    best[name] = (y, cover, spill)
+                if name not in plates and cover >= least and spill <= clear:
+                    plates[name] = (y, cover, spill)
+        return plates, best
+
+    def plan_shape(self, g, model, read):
+        """Whether the build stands where its own plan says, part by part.
+
+        **Conformance, not resemblance.** The plan is an input, so a green row
+        here says nothing about whether the building looks like the real one --
+        `docs/sources.md`, "Сходство и соответствие". What it says is that the
+        machinery between `layout.png` and the schematic kept the shape it was
+        handed, which is an ordinary verification and not a tautology: the
+        palette, the decomposition, the frame fit, the tracing, the pad, the
+        closing, the straightening and the whole recipe sit between those two
+        files, and when one of them distorts the plan it does so silently.
+
+        Nothing did this before. `corners` asks a sharper question of a smaller
+        set -- only the parts the map drew as rectangles -- and on two buildings
+        of seven that set is empty and the row grades nothing at all. `COUNTS`
+        counts components and cannot see a shape. The comparison sheets pair the
+        build against the *capture*, never against the plan. So a wing built
+        eight metres short of its own drawing, or a court the recipe filled in,
+        had nothing anywhere to fail against.
+
+        Two numbers per part, because the two directions are fixed in different
+        files -- see `checks.conformance`. `missing` is graded by default:
+        the plan says material stands there and it does not. `outside` is
+        printed by default and graded only where a building sets
+        `PLAN_OUTSIDE`, because a balcony, a cornice, a canopy and a deck all
+        legitimately overhang a plan the map drew as walls, and a default
+        threshold on that would be a number nobody measured.
+
+        Also draws the answer: `out/compare/plan-vs-build.png` lays the drawn
+        plan and the build's own plates over each other in three colours. Four
+        per cent unbuilt says nothing about *which* four per cent, and the
+        difference between a cell all round the edge and the whole of one arm
+        is the difference between rounding and a defect.
+        """
+        allowed = self._("PLAN_MISSING", 0.12)
+        beyond = self._("PLAN_OUTSIDE", None)
+        mass = getattr(read, "mass", None)
+        if mass is None:
+            mass = Mask.union([p.mask for p in read.named.values()])
+
+        plates, best = self.plates(model, read, read.named)
+        # The picture is drawn against the whole **mass** and not against the
+        # union of the parts, so that it says the same thing the numbers do.
+        # `plan.decompose` subtracts the mapper's drawn line to find the parts,
+        # so a cell on that line belongs to no part -- and against the union it
+        # came out as "the build went outside the plan", a cool stripe down the
+        # middle of a slab that is nothing of the sort.
+        drawn_all = Mask(model.width, model.length)
+        built_all = Mask(model.width, model.length)
+        for name, part in read.named.items():
+            found = plates.get(name)
+            if found is None:
+                at, cover, spill = best.get(name, (0, 0.0, 1.0))
+                g.ungraded(
+                    f"{name} stands where the plan says",
+                    f"no floor plate of this build stands over it clear of the "
+                    f"ground: the best cut is {at} m, covering {cover:.0%} of "
+                    f"it with {spill:.0%} of the plot round the building filled "
+                    "as well. Nothing here can be compared against the drawing")
+                continue
+            at = found[0]
+            layer = solid(model, at)
+            near = layer & part.mask.dilate(6.0)
+            shape = checks.conformance(part.mask, near, within=mass)
+            drawn_all = drawn_all | part.mask | (mass & part.mask.dilate(2.0))
+            built_all = built_all | near
+            ok = shape["missing"] <= allowed
+            if beyond is not None:
+                ok = ok and shape["outside"] <= beyond
+            g.add(f"{name} stands where the plan says", ok,
+                  f"{shape['missing']:.0%} of the drawn part has nothing on it "
+                  f"at {at} m (allowed {allowed:.0%}), and material equal to "
+                  f"{shape['outside']:.0%} of it stands outside the whole "
+                  "drawn plan"
+                  + (f" (allowed {beyond:.0%})" if beyond is not None
+                     else ", which is printed rather than graded -- a balcony, "
+                          "a cornice and a canopy all overhang a plan drawn as "
+                          "walls; set PLAN_OUTSIDE to hold this building to a "
+                          "figure")
+                  + ". Against the plan and not the reference: this says the "
+                    "machinery kept the shape it was given")
+
+        if drawn_all.count():
+            from . import compare
+
+            path = Path(self.paths.OUT) / "compare" / "plan-vs-build.png"
+            compare.overlay(drawn_all, built_all, path)
+            print(f"[gate] {path}: grey where the plan and the build agree, "
+                  "warm where the plan drew material the build did not stand "
+                  "on, cool where the build went outside the plan")
+
     def corners(self, g, model, read):
         """Whether the parts the map drew square were built square.
 
@@ -741,13 +898,6 @@ class Grading:
         square = self._("SQUARE_SAME", 0.90)
         budget = self._("CORNERS_LOST", 0.05)
         least = self._("CORNERS_COVER", 0.80)
-        # How much of the plot round the building may stand at a course before
-        # that course is the terrain rather than a floor. A quarter and not a
-        # half: clipped to the drawn mask, a cut through the ground comes back
-        # as an exact copy of the map, and a row that reads the map against the
-        # map cannot fail. That is a worse outcome than an ungraded row.
-        clear = self._("CORNERS_CLEAR", 0.25)
-        reach = 2.0
         wanted = {name: found for name, found in
                   ((name, checks.rectangular(part.mask, read.frame))
                    for name, part in read.named.items())
@@ -760,50 +910,7 @@ class Grading:
                 "this row can hold the build to.")
             return
 
-        # A plate is a level that is full over the part and empty *outside the
-        # building*. Both halves are needed and the second one is easy to get
-        # wrong. Coverage alone picks the terrain, which is laid over the whole
-        # plot, covers every part perfectly, and is clipped to the drawn mask
-        # here -- so it comes back as an exact copy of the map and the row can
-        # never fail. Asking instead whether the ground *round the part* is full
-        # rejects the terrain and rejects every storey of a part with
-        # neighbours, which is most of them.
-        #
-        # So the ring is round the whole drawn building, once: empty sky at
-        # every storey, solid ground at the courses the plot is laid on.
-        u0 = min(p.u0 for p in read.named.values())
-        u1 = max(p.u1 for p in read.named.values())
-        v0 = min(p.v0 for p in read.named.values())
-        v1 = max(p.v1 for p in read.named.values())
-        mass = getattr(read, "mass", None)
-        if mass is None:
-            mass = Mask.union([p.mask for p in read.named.values()])
-        ring = (read.frame.rect(model.width, model.length,
-                                u0 - 8.0, u1 + 8.0, v0 - 8.0, v1 + 8.0)
-                - mass.dilate(reach))
-        ring_cells = max(1, ring.count())
-
-        # The **lowest** plate that qualifies, not the best one. A part that
-        # runs the height of a tower has a plate at every storey and they are
-        # not the same shape: the top one is a roof with plant standing on it
-        # and a setback under it. Its own first floor is where its plan shape
-        # is, and taking the best-scoring level anywhere instead grades whatever
-        # happened to be tidiest.
-        step = max(1, model.height // 24)
-        plates: dict[str, tuple[int, float, float]] = {}
-        best: dict[str, tuple[int, float, float]] = {}
-        for y in range(1, model.height, step):
-            layer = solid(model, y)
-            spill = (layer & ring).count() / ring_cells
-            for name in wanted:
-                mask = read.named[name].mask
-                cover = (layer & mask).count() / max(1, mask.count())
-                seen = best.get(name)
-                if seen is None or cover - spill > seen[1] - seen[2]:
-                    best[name] = (y, cover, spill)
-                if name not in plates and cover >= least and spill <= clear:
-                    plates[name] = (y, cover, spill)
-
+        plates, best = self.plates(model, read, wanted)
         for name, drawn in wanted.items():
             at, cover, spill = plates.get(name) or best.get(name, (0, 0.0, 1.0))
             if name not in plates:

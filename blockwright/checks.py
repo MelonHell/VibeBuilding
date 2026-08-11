@@ -493,6 +493,47 @@ def mix_matrix(mixes: dict) -> list[tuple[str, str, float]]:
     return out
 
 
+def conformance(drawn: Mask, built: Mask, within: Mask | None = None) -> dict:
+    """How far the build stands from the plan it was drawn from.
+
+    **Conformance and not resemblance**, and the two must not be read as one --
+    `docs/sources.md`, "Сходство и соответствие". The plan is an input, so
+    nothing here bears on whether the building looks like the real one; what it
+    says is whether the machinery between the drawing and the schematic kept the
+    shape it was handed. That is an ordinary verification, and between those two
+    files sit the palette, the decomposition, the frame fit, the tracing, the
+    pad, the closing, the straightening and the whole of the recipe.
+
+    Two numbers, because the two directions fail for different reasons and get
+    fixed in different files:
+
+    `missing` -- the share of the drawn part the build did not stand on. A
+    footprint that was closed, padded and straightened into something smaller
+    than the map drew; a wing the recipe forgot; a court built closed. Always
+    worth grading: the plan says material is there.
+
+    `outside` -- the share, in units of the drawn part's own area, of build
+    material standing beyond `within` (the whole drawn plan, normally, so a
+    neighbouring part does not count as an escape). Legitimately non-zero on
+    most buildings -- a balcony, a cornice, a canopy and a deck all overhang a
+    plan the map drew as walls -- so it is a number to print and to threshold
+    per building rather than a fault by itself.
+    """
+    from .mask import iou
+
+    want = drawn.count()
+    if not want:
+        return {"missing": 0.0, "outside": 0.0, "iou": 1.0, "cells": 0}
+    inside = (built & drawn).count()
+    beyond = built - (within if within is not None else drawn)
+    return {
+        "missing": 1.0 - inside / want,
+        "outside": beyond.count() / want,
+        "iou": iou(drawn, built & drawn) if inside else 0.0,
+        "cells": want,
+    }
+
+
 def corners(mask: Mask, frame, tolerance: float = 1.0,
             square: float = 20.0) -> dict:
     """How many of a shape's corners are right angles, and what the rest are.
