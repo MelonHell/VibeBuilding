@@ -403,6 +403,52 @@ class Mask:
         """
         return self.dilate(radius).erode(radius)
 
+    def open(self, radius: float) -> "Mask":
+        """Shrunk then grown: spurs narrower than twice `radius` are cut off.
+
+        The other half of the pair, and the one that answers a drawn edge. A
+        closing fills notches; an opening removes spikes. A traced map edge has
+        both, and a shape that has been through neither shows every one of them
+        at a block to the metre.
+
+        Use it on anything whose thin parts are noise rather than architecture:
+        the tail a flood fill leaves where two surfaces touch, the single-cell
+        whisker a decomposition leaves at a corner. Do not use it on a building
+        that has a genuinely thin part -- a colonnade, a bridge, a fin -- because
+        it cannot tell that part from a whisker. `frame.staircase` is the width
+        below which nothing can be drawn continuously anyway, and it is the
+        floor for any radius chosen here.
+        """
+        return self.erode(radius).dilate(radius)
+
+    def round(self, radius: float) -> "Mask":
+        """Both corners taken off: notches filled, then spikes cut.
+
+        A closing followed by an opening. Concave corners come back at `radius`,
+        convex ones come back at `radius`, and a straight edge comes back
+        straight -- which is the whole reason to run both rather than one.
+        Running only a closing leaves the spikes and reads as a blob with teeth;
+        running only an opening leaves the notches and reads as a comb.
+
+        This is a **drawing** operation and it moves the outline. It is not a
+        way to recover an outline, and it is not the tool for a shape whose own
+        wobble carries a measurement -- for a drawn edge that should be straight,
+        `straighten` keeps the corners the building has and drops only the noise
+        between them, which is almost always what was wanted. Reach for a
+        rounding when the corners themselves should be soft: a pool, a pond, a
+        lawn, a bed of planting, the head of a plaza.
+
+        Order matters and was measured rather than reasoned. Opening first: a
+        closing thickens the root of a spike before the opening can reach it, so
+        a six-cell whisker on a test block survives a closing-then-opening at
+        three cells and does not survive an opening-then-closing at all. The
+        notch fills either way, but not at the same radius: the opening widens
+        a notch slightly before the closing sees it, so a radius only just over
+        half the notch stops bridging it. Ask for a little more than the
+        arithmetic suggests.
+        """
+        return self.open(radius).close(radius)
+
     def outline(self, thickness: float = 1.0) -> "Mask":
         """The inward ring of the given thickness -- a watertight wall.
 
@@ -454,6 +500,31 @@ class Mask:
             if part.count() >= min_cells:
                 out.append(part)
         out.sort(key=lambda m: -m.count())
+        return out
+
+    def holes(self) -> "Mask":
+        """The clear cells this shape encloses -- courts, light wells, a pool.
+
+        Background reached from outside the grid is not a hole, so a shape open
+        to the edge of the canvas has none. The search is eight-connected while
+        `components` is four-connected by default, and that pairing is the point
+        rather than an inconsistency: a wall drawn at fifty degrees is a
+        staircase, and background allowed only cardinal steps would call the
+        diagonal gap between two of its cells an enclosed hole. Eight-connected
+        background asks the same question `Mask.rim` answers -- does water get
+        out -- so the two agree about what a wall is.
+        """
+        outside = ~self
+        out = self.empty_like()
+        w, h = self.width, self.length
+        for part in outside.components(diagonal=True):
+            bounds = part.bounds()
+            if bounds is None:
+                continue
+            x0, z0, x1, z1 = bounds
+            if x0 == 0 or z0 == 0 or x1 == w - 1 or z1 == h - 1:
+                continue  # touches the border, so it is the outside
+            out = out | part
         return out
 
     def largest_rect(self) -> tuple[int, int, int, int] | None:
@@ -568,27 +639,116 @@ class Mask:
         A couple of degrees away from the reference costs nothing. A sawtooth
         costs the whole edge.
         """
-        ring = self.contour()
-        if len(ring) < 4:
+        rings = self._rings(frame, tolerance)
+        if not rings:
             return self.copy()
+        return frame.region(self.width, self.length,
+                            lambda u, v: _fills(rings, u, v))
 
-        local = [frame.to_local(x + 0.5, z + 0.5) for x, z in ring]
-        kept = _simplify_ring(local, tolerance)
-        if len(kept) < 3:
+    def _rings(self, frame, tolerance: float) -> list[list[tuple[float, float]]]:
+        """Every boundary of this shape as a simplified polygon in `frame`.
+
+        One ring per connected piece, plus one per hole. Reading only
+        `contour()` -- the outermost ring of the *first* piece -- was enough
+        while this was one part of one plan, and is wrong the moment either
+        thing is true: a building whose two wings arrive in one mask keeps only
+        the wing that rasterises first, and a building with a court has its
+        court filled in. Both would be silent. A court that closes over is not
+        a failure anybody would trace back to a straightening.
+
+        The rings are combined by the even-odd rule (see `_fills`), which is
+        what makes holes work without any of the callers knowing about them: a
+        cell inside a piece and inside its court is crossed twice.
+
+        A piece too small to trace -- three cells or fewer -- contributes no
+        ring and is dropped. Anything that small is below `frame.staircase` and
+        cannot be drawn as a continuous thing at this scale anyway; keeping it
+        would be keeping the whisker these operations exist to remove.
+        """
+        rings = []
+        for piece in list(self.components()) + list(self.holes().components()):
+            ring = piece.contour()
+            if len(ring) < 4:
+                continue
+            local = [frame.to_local(x + 0.5, z + 0.5) for x, z in ring]
+            kept = _simplify_ring(local, tolerance)
+            if len(kept) >= 3:
+                rings.append(_offset_ring(kept, 0.5))
+        return rings
+
+    @staticmethod
+    def _reflect(rings, axis: float, along: str):
+        if along == "u":
+            return [[(2.0 * axis - u, v) for u, v in r] for r in rings]
+        return [[(u, 2.0 * axis - v) for u, v in r] for r in rings]
+
+    def mirrored(self, frame, axis: float, along: str = "u",
+                 tolerance: float = 1.0) -> "Mask":
+        """This shape reflected across `axis`, re-rasterised, not copied.
+
+        The reflection happens to the **outline**, in the building's own frame,
+        and the mirror image is then rasterised from scratch -- the same
+        argument `Frame.flipped` makes at length, applied to a mask that already
+        exists rather than to a shape about to be drawn. Mirroring the cells
+        instead is a resampling: at fifty degrees to the world grid a reflection
+        is an isometry of the plane and not of the cell lattice, so a forward
+        splat leaves pinholes and a backward sample re-rasterises every edge.
+
+        Prefer `Frame.flipped` when the second half has not been drawn yet.
+        This is for the other case: a half that arrived from a measurement --
+        map decomposition, roof steps -- and has to be matched.
+        """
+        if along not in ("u", "v"):
+            raise ValueError(f"a mask is mirrored along u or v, not {along!r}")
+        rings = self._rings(frame, tolerance)
+        if not rings:
             return self.copy()
+        flipped = self._reflect(rings, axis, along)
+        return frame.region(self.width, self.length,
+                            lambda u, v: _fills(flipped, u, v))
 
-        # Point in polygon, on the cell centre, which is the same question
-        # `Frame.region` asks of every other shape in this library.
-        def inside(u: float, v: float) -> bool:
-            hit = False
-            j = len(kept) - 1
-            for i, (ui, vi) in enumerate(kept):
-                uj, vj = kept[j]
-                if (vi > v) != (vj > v) and \
-                        u < (uj - ui) * (v - vi) / (vj - vi) + ui:
-                    hit = not hit
-                j = i
-            return hit
+    def symmetrise(self, frame, axis: float, along: str = "u",
+                   tolerance: float = 1.0, keep: str = "union") -> "Mask":
+        """This shape made symmetric about `axis`, in one rasterisation.
+
+        `checks.twins` measures whether two halves match and says by how much.
+        Nothing until now made them match. A pair of wings measured off a
+        drawing differs by a cell or two along every edge for no reason anybody
+        would defend, and at a block to the metre that difference is the first
+        thing a photograph of the pair shows up.
+
+        Both the outline and its reflection are built as polygons and asked
+        together, so the result is rasterised **once**, at the building's angle,
+        through `Frame.region` -- the union or the intersection of two shapes,
+        not the union of two staircases. Overlaying two separately rasterised
+        masks would leave a one-cell fringe wherever the two staircases disagree,
+        which is the sawtooth this is here to remove.
+
+        `keep` is "union" to take the larger reading of every edge and
+        "intersection" to take the smaller. Union is the default because a wing
+        measured short is the usual failure -- a flood fill stopped at a shadow,
+        a decomposition that lost a corner to a drawn line.
+
+        This is a **decision**, not a measurement: it overrides one half of the
+        reference with the other. Declare it where it is set, name the axis, and
+        let `checks.twins` report what it cost.
+        """
+        if keep not in ("union", "intersection"):
+            raise ValueError(
+                f"symmetry keeps the union or the intersection, not {keep!r}")
+        if along not in ("u", "v"):
+            raise ValueError(f"a mask is mirrored along u or v, not {along!r}")
+        rings = self._rings(frame, tolerance)
+        if not rings:
+            return self.copy()
+        flipped = self._reflect(rings, axis, along)
+
+        if keep == "union":
+            def inside(u: float, v: float) -> bool:
+                return _fills(rings, u, v) or _fills(flipped, u, v)
+        else:
+            def inside(u: float, v: float) -> bool:
+                return _fills(rings, u, v) and _fills(flipped, u, v)
 
         return frame.region(self.width, self.length, inside)
 
@@ -613,6 +773,107 @@ class Mask:
             )
         image.save(path)
         return image
+
+
+def _in_polygon(ring: list[tuple[float, float]], u: float, v: float) -> bool:
+    """Even-odd point in polygon, asked of a cell centre.
+
+    The same question `Frame.region` asks of every other shape in this library,
+    so a polygon rasterised through here lands where an inequality would.
+    Winding is not consulted, which is what lets a reflected ring -- traced
+    clockwise, mirrored to counter-clockwise -- be tested unchanged.
+    """
+    hit = False
+    j = len(ring) - 1
+    for i, (ui, vi) in enumerate(ring):
+        uj, vj = ring[j]
+        if (vi > v) != (vj > v) and \
+                u < (uj - ui) * (v - vi) / (vj - vi) + ui:
+            hit = not hit
+        j = i
+    return hit
+
+
+def _offset_ring(ring: list[tuple[float, float]],
+                 distance: float) -> list[tuple[float, float]]:
+    """The same ring pushed `distance` outward, away from its own interior.
+
+    Every ring in this file is traced through the **centres** of the boundary
+    cells, so the polygon it describes is inset from the shape's real edge by up
+    to half a cell. Rasterising it back gives a shape systematically smaller
+    than the one that went in: on a plain rectangle at 52 degrees the loss is
+    six per cent of the area, spread evenly round the perimeter where nobody
+    would read it as a defect.
+
+    That mattered less while `Mask.straighten` was opt-in and unused. It matters
+    now in two places at once. Straightening runs on every part of every
+    building, so the shrink would be a standing tax on the whole corpus; and
+    `checks.jaggedness` is defined as the disagreement between a shape and its
+    straightened reading, so the same half cell was being reported as six per
+    cent of drawing noise on shapes that had none.
+
+    Outward is defined by the ring's own winding rather than by an argument,
+    which is what lets a hole be offset by the same call: a hole traced as a
+    piece of its own grows away from its own middle, which is the direction that
+    keeps the court the size it was.
+
+    The corner treatment is a mitre, capped. Two edges meeting at a sharp angle
+    would put the mitred vertex arbitrarily far out, so the extension is limited
+    to three times the offset and the corner comes back slightly cut. At half a
+    cell the cut is invisible; without the cap a hairpin in a traced contour
+    would throw a spike across the building.
+    """
+    n = len(ring)
+    if n < 3 or distance == 0.0:
+        return list(ring)
+
+    twice_area = 0.0
+    for i, (u, v) in enumerate(ring):
+        pu, pv = ring[i - 1]
+        twice_area += pu * v - u * pv
+    turn = 1.0 if twice_area > 0.0 else -1.0
+
+    def normal(a, b):
+        du, dv = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(du, dv)
+        if length == 0.0:
+            return None
+        return (turn * dv / length, -turn * du / length)
+
+    out = []
+    for i, here in enumerate(ring):
+        before = normal(ring[i - 1], here)
+        after = normal(here, ring[(i + 1) % n])
+        if before is None and after is None:
+            out.append(here)
+            continue
+        if before is None:
+            before = after
+        if after is None:
+            after = before
+        bu, bv = before[0] + after[0], before[1] + after[1]
+        length = math.hypot(bu, bv)
+        if length < 1e-9:      # a spike doubling back on itself
+            out.append(here)
+            continue
+        bu, bv = bu / length, bv / length
+        reach = distance / max(0.34, bu * before[0] + bv * before[1])
+        out.append((here[0] + bu * reach, here[1] + bv * reach))
+    return out
+
+
+def _fills(rings: list[list[tuple[float, float]]], u: float, v: float) -> bool:
+    """Even-odd across a whole set of rings: is this cell centre in the shape?
+
+    Pieces never overlap, so a cell in one piece is crossed once. A cell in a
+    piece *and* in that piece's court is crossed twice and comes out clear,
+    which is how holes survive an operation that only ever knew about outlines.
+    """
+    hit = False
+    for ring in rings:
+        if _in_polygon(ring, u, v):
+            hit = not hit
+    return hit
 
 
 def _simplify(points: list[tuple[float, float]],

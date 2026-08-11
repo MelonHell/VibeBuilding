@@ -69,11 +69,21 @@ class Site:
     # purpose. This keeps the corners and drops the rest -- see
     # `Mask.straighten`.
     #
-    # A metre is the useful setting: it is the scale of a hand-drawn edge's
-    # wander and half the scale of anything deliberate. `checks.jaggedness` is
-    # the number that says whether a part needed it, and the gate asks every
-    # run.
-    STRAIGHT: float | None = None
+    # **On by default, at a metre.** That is the scale of a hand-drawn edge's
+    # wander and half the scale of anything deliberate, so a rake, a bow and a
+    # curve all survive it while a sawtooth does not. It defaulted to None for
+    # the first nine buildings and not one of them turned it on, which is the
+    # same way `flatmap.parcel` went: a facility nobody reaches for is a
+    # facility that does not exist. A straightening costs at most a metre
+    # against a reference the section grades at two, so the trade is free where
+    # it is graded at all, and the thing it buys -- an edge that reads as one
+    # straight line instead of a stack of little ones -- is the first thing
+    # anybody notices beside a photograph.
+    #
+    # Set it to None on a part whose own wobble is a measurement: a shoreline,
+    # a creek edge, a lawn that really does wander. `checks.jaggedness` is the
+    # number that says what it moved, and the gate asks every run.
+    STRAIGHT: float | None = 1.0
 
     def __init__(self, derived: dict, read, pad: float = 0.5):
         self.d = derived
