@@ -184,6 +184,11 @@ def authoring_errors() -> list[tuple[str, str]]:
          lambda: Schedule(MANIFEST).declare("nope", good, 0, 1)),
         ("empty y range",
          lambda: Schedule(MANIFEST).declare("tower", good, 3, 3)),
+        # A part positioned by judgement that will not say against what. The
+        # whole value of `placed` is the sentence naming the anchor it was
+        # counted from; blank, it is the pipeline guessing with a field set.
+        ("placed by nothing",
+         lambda: Item("a", "", "photo-01.jpg", placed="   ")),
     ):
         try:
             thunk()
@@ -209,6 +214,23 @@ def main(argv: list[str]) -> int:
     print(f"undeclared: {undeclared}")
     if undeclared != EXPECTED_UNDECLARED:
         print(f"  WRONG: expected {EXPECTED_UNDECLARED}")
+        faults += 1
+
+    # A placed part has to survive the sidecar. The note is the only record of
+    # why that part stands where it does, and the gate that prints it is a
+    # different process from the build that wrote it -- dropped in transit, the
+    # part quietly becomes one that nobody ever said was positioned by
+    # judgement, which is the state this field exists to end.
+    note = "the third arch from the north corner, counted on the measured bay"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "placed.json"
+        Schedule([Item("fins", "entrance fins", "90-photo-06", placed=note),
+                  Item("deck", "the deck", "90-photo-01")]).save(path)
+        back = Schedule.load(path)
+    print(f"placed: {[i.name for i in back.placed]}")
+    if [i.name for i in back.placed] != ["fins"] \
+            or back.placed[0].placed != note:
+        print("  WRONG: the placement note did not survive save and load")
         faults += 1
 
     got = list(reloaded.audit(canvas.to_schematic()))
@@ -238,7 +260,7 @@ def main(argv: list[str]) -> int:
     if faults:
         print(f"{faults} fault(s): the schedule is not grading what it claims to")
         return 1
-    print("the schedule sees all six failure modes and rejects all five "
+    print("the schedule sees all six failure modes and rejects all six "
           "authoring errors")
     return 0
 

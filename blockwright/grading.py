@@ -197,6 +197,7 @@ class Grading:
         g.extend(audit)
 
         findings = self.soundness(g, model)
+        self.placement(g, sched)
         cut = self.divisions(g, model, sched)
         self.watertight(g, cut)
         self.evenness(g, model, read, sched)
@@ -266,6 +267,34 @@ class Grading:
         g.budget("free ends", len(findings.ends), self._("FREE_ENDS"),
                  "blocks with one neighbour or none" + whose("FREE_ENDS"))
         return findings
+
+    def placement(self, g, sched):
+        """Which parts stand where a photograph said, rather than where a
+        measurement put them.
+
+        This row never fails and it never passes quietly either. A part with a
+        `placed` note exists because a photograph shows it and stands where it
+        stands because somebody counted arches -- so its position was argued
+        for, not checked, and `ungraded` is the honest verdict for exactly that.
+        The alternative the corpus has been living with is worse: the part is
+        left out, the render is missing the most recognisable thing about the
+        building, and nothing anywhere says why.
+
+        With nothing placed the row passes and says so. That is a real answer
+        rather than a silence -- unlike `COUNTS`, an empty list here means "every
+        part in this building was positioned by something measured", which is
+        the better state and worth reading.
+        """
+        placed = sched.placed
+        if not placed:
+            g.add("placement", True,
+                  "every part is positioned by something measured")
+            return
+        g.ungraded(
+            "placement",
+            f"{len(placed)} part(s) stand where a photograph says, counted "
+            "against a measured anchor rather than measured: "
+            + "; ".join(f"{i.name} -- {i.placed}" for i in placed))
 
     def divisions(self, g, model, sched):
         """Counts of components inside each declared part, at several heights.

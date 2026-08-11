@@ -69,6 +69,30 @@ def _unpack(text: str, width: int, length: int) -> Mask:
 class Item:
     """One line of the schedule: a part the building is supposed to have.
 
+    `placed` is for the part a photograph proves exists and nothing measures the
+    position of: the stepped corner of a bowl, the glazed wall behind an
+    outfield, a lift core somewhere along a street. The pipeline's rule is that
+    a photograph is authoritative for material and rhythm and never for a
+    dimension, and that rule is right; the failure it leaves behind is that such
+    a part is simply never built, and "not built" and "not there" then look the
+    same in every render.
+
+    So the position is written as a **count against something measured** -- "the
+    third arch from the corner", "behind sections 34 to 38", "the two bays east
+    of the seam" -- and never as a distance. That distinction is the whole of it.
+    A photograph cannot say 37 metres, and it can say *third*: counting is
+    exactly what a photograph is good for, which is why `docs/sources.md` already
+    scores it 2 for parts. A part positioned by index stays true when the map is
+    redrawn or the capture is re-clipped, and a part positioned by a number
+    somebody read off a picture goes quietly wrong the first time either moves.
+
+    The build resolves the index against its own measured anchors -- the bays
+    `Frame.bays` sets out, the spans `measure.apart` grouped, the stations the
+    section cuts -- so the arithmetic is code and not a comment. What this field
+    carries is the sentence a reader needs, and the gate prints it: a build with
+    placed parts finishes `ungraded` on that row, because the position was
+    argued for rather than checked.
+
     `blocks` names what this part is made of, and it is the difference between
     a check and a formality. Without it a declaration is satisfied by anything
     non-air standing in its mask -- and a window bay declared over the wall it
@@ -80,17 +104,22 @@ class Item:
     covers `minecraft:oak_fence[north=true]`.
     """
 
-    __slots__ = ("name", "what", "source", "near", "reach", "blocks")
+    __slots__ = ("name", "what", "source", "near", "reach", "blocks", "placed")
 
     def __init__(self, name: str, what: str, source: str,
                  near: str | tuple[str, ...] = (), reach: float = REACH,
-                 blocks: str | tuple[str, ...] = ()):
+                 blocks: str | tuple[str, ...] = (), placed: str = ""):
         self.name = name
         self.what = what
         self.source = source
         self.near = (near,) if isinstance(near, str) else tuple(near)
         self.reach = reach
         self.blocks = (blocks,) if isinstance(blocks, str) else tuple(blocks)
+        if placed and not placed.strip():
+            raise ValueError(
+                f"{name!r} is placed by judgement and says nothing about how; "
+                "name the anchor it was counted against")
+        self.placed = placed.strip()
 
     def __repr__(self) -> str:
         near = f", near {'+'.join(self.near)}" if self.near else ""
@@ -182,13 +211,24 @@ class Schedule:
         """Manifest entries this build never claimed. Empty is the goal."""
         return [i.name for i in self.items if i.name not in self.built]
 
+    @property
+    def placed(self) -> list[Item]:
+        """Parts whose position was argued for rather than measured.
+
+        Empty is not the goal here, and that is the difference between this and
+        `undeclared`. A building with nothing placed either has nothing that
+        only a photograph shows, or it left all of that unbuilt -- and the
+        second is where the corpus has been sitting.
+        """
+        return [i for i in self.items if i.placed]
+
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps({
             "width": self.width,
             "length": self.length,
             "items": [{"name": i.name, "what": i.what, "source": i.source,
                        "near": list(i.near), "reach": i.reach,
-                       "blocks": list(i.blocks)}
+                       "blocks": list(i.blocks), "placed": i.placed}
                       for i in self.items],
             "built": {name: {"y0": d.y0, "y1": d.y1,
                              "cells": d.mask.count(), "mask": _pack(d.mask)}
@@ -200,7 +240,8 @@ class Schedule:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
         out = cls(Item(i["name"], i["what"], i["source"],
                        tuple(i["near"]), i["reach"],
-                       tuple(i.get("blocks", ()))) for i in doc["items"])
+                       tuple(i.get("blocks", ())),
+                       i.get("placed", "")) for i in doc["items"])
         out.width, out.length = doc["width"], doc["length"]
         for name, d in doc["built"].items():
             out.built[name] = Declaration(
