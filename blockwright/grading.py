@@ -738,8 +738,8 @@ class Grading:
                 - mass.dilate(self.slack(read)))
         return ring, max(1, ring.count())
 
-    def plates(self, model, read, figures, windows=None):
-        """The floor plate of each named figure: (level, cover, spill).
+    def plates(self, model, read, figures, windows=None, aloft: float = 0.0):
+        """The floor plate of each named figure: (level, cover, spill, aloft).
 
         `figures` is `{name: Mask}` -- a plan part, a run measured along the
         building, a footprint a manifest part declared. Masks and not names,
@@ -756,6 +756,27 @@ class Grading:
         storey of a part that has neighbours, which is most of them. So the
         ring is round the whole drawn building, taken once: empty sky at every
         storey, solid ground at the courses the plot is laid on.
+
+        **The ring is a building-wide answer to a question asked of one part,
+        and on a low building that is not enough.** A villa that lays its paving
+        at the same height as its own ground floor fills a fifth of the ring
+        there and passes a test set at a quarter, so the plate chosen for it is
+        the terrain -- and a rectangle read off the terrain is the map, so the
+        row cannot fail. `aloft` is the same question asked where it belongs:
+        how much of the covered figure has **air directly under it**. Measured
+        across the corpus the two populations do not overlap and are not close:
+        a course of ground reads 0.00, 0.02, 0.06, and a real floor plate reads
+        0.60 to 0.93. Zero, the default, turns the test off.
+
+        Only `corners` asks for it, and that is a measurement rather than
+        caution. What that row grades is the *share of its own rectangle* the
+        build stands, which the terrain satisfies exactly and by construction.
+        `plan_shape` grades the largest piece the build is missing, which the
+        terrain does not satisfy -- a ground course is where a ground-laid part
+        genuinely lives, and on one building reading it is what found an apron
+        seventeen per cent off its own drawing. Requiring air under the plate
+        there would have taken the plate away from seven parts across the
+        corpus, that apron among them.
 
         Searched rather than taken from a table. A building is hollow, so a cut
         between two floors returns the wall ring, and a ring is a fifth of its
@@ -797,21 +818,29 @@ class Grading:
         for low, high in windows.values():
             levels.update(range(max(1, int(low)),
                                 min(model.height, int(high)), step))
-        plates: dict[str, tuple[int, float, float]] = {}
-        best: dict[str, tuple[int, float, float]] = {}
+        plates: dict[str, tuple[int, float, float, float]] = {}
+        best: dict[str, tuple[int, float, float, float]] = {}
         for y in sorted(levels):
             layer = solid(model, y)
+            # A second read of the model per level, so it is done only for a
+            # caller that asked. `levels` starts at 1, so there is always a
+            # course below.
+            under = solid(model, y - 1) if aloft else None
             spill = (layer & ring).count() / ring_cells
             for name, mask in figures.items():
                 low, high = windows.get(name, (0, model.height))
                 if not low <= y < high:
                     continue
-                cover = (layer & mask).count() / max(1, mask.count())
+                cells = max(1, mask.count())
+                over = layer & mask
+                cover = over.count() / cells
+                free = (over - under).count() / cells if under is not None else 1.0
                 seen = best.get(name)
                 if seen is None or cover - spill > seen[1] - seen[2]:
-                    best[name] = (y, cover, spill)
-                if name not in plates and cover >= least and spill <= clear:
-                    plates[name] = (y, cover, spill)
+                    best[name] = (y, cover, spill, free)
+                if (name not in plates and cover >= least and spill <= clear
+                        and free >= aloft):
+                    plates[name] = (y, cover, spill, free)
         return plates, best
 
     def plan_shape(self, g, model, read):
@@ -880,7 +909,7 @@ class Grading:
         for name, part in read.named.items():
             found = plates.get(name)
             if found is None:
-                at, cover, spill = best.get(name, (0, 0.0, 1.0))
+                at, cover, spill, _ = best.get(name, (0, 0.0, 1.0, 0.0))
                 g.ungraded(
                     f"{name} stands where the plan says",
                     f"no floor plate of this build stands over it clear of the "
@@ -993,7 +1022,7 @@ class Grading:
         """
         if not plates:
             return
-        at = min(y for y, _, _ in plates.values())
+        at = min(found[0] for found in plates.values())
         built = self.plate_of(model, read, mass, at)
         if not built.count():
             return
@@ -1157,6 +1186,24 @@ class Grading:
         `jaggedness` compares a shape against its own straightened reading, and
         a chamfer survives that at any tolerance worth using.
 
+        **Graded in metres off the corner and not in share of the box**, which
+        is a correction. A pad and a closing take a quarter-disc of a metre and
+        a half off a convex corner; four of those are seven square metres, and
+        on a part of twelve hundred cells that is six tenths of one per cent
+        against a budget of five. The share was thirty times too coarse to see
+        the defect the row exists for, while being fully sensitive to things the
+        plan never had: one villa lost eight per cent of its share to a facade
+        rhythm of two-cell recesses -- ninety of its ninety-six missing cells
+        further than four metres from any corner -- and failed for it twice.
+        `checks.corner_reach` asks the question the row is named after instead:
+        how far from each corner of the drawn box the material starts. Both
+        readings are taken against the *drawn* box, so a corner the mapper
+        rounded himself subtracts out and only what the machinery took is left.
+        Across the corpus that difference is 0.00 m on nine graded figures of
+        ten and 0.73 m on the tenth, against a `CORNERS_BITE` of one metre --
+        a block. The share is still printed, because it is the number that says
+        how much of the part is there at all.
+
         Two things it cannot do, and both matter because a green row here is
         easy to over-read:
 
@@ -1197,9 +1244,22 @@ class Grading:
         the plate that covers most of the drawn figure wins; a figure that has
         no such plate is ungraded rather than failed, because the row could not
         find the thing it was going to measure.
+
+        **And the plate has to have air under it**, which is the part that was
+        missing. The ring round the building is a building-wide answer, and a
+        villa one storey high that paves its terrace at the height of its own
+        ground floor fills a fifth of that ring -- under the quarter allowed --
+        so the plate chosen for it was the terrain. A rectangle read off the
+        terrain is the map, the map is what the figure was drawn from, and the
+        row came back 100% square on every run because it could not come back
+        anything else. Two buildings of seven were in that state, and a third
+        graded one of a pair of roof tracks off the stands twenty metres under
+        it. Asking how much of the covered figure stands over air separates the
+        two cleanly: 0.00, 0.02 and 0.06 for a course of ground against 0.60 to
+        0.93 for a floor plate, with nothing anywhere near `CORNERS_ALOFT`.
         """
         square = self._("SQUARE_SAME", 0.90)
-        budget = self._("CORNERS_LOST", 0.05)
+        bite = self._("CORNERS_BITE", 1.0)
         least = self._("CORNERS_COVER", 0.80)
         offered = self.figures(model, read, derived or {}, sched)
         wanted = {}
@@ -1217,23 +1277,40 @@ class Grading:
                 "corner this row can hold the build to.")
             return
 
+        # A plate this row reads has to have air under it -- see `plates`.
+        # Without that the villa and the hotel both graded their own terrain,
+        # which is the map, against the map: 100% covered, 100% square, green
+        # on every run and unable to be anything else.
+        alofted = self._("CORNERS_ALOFT", 0.50)
         plates, best = self.plates(
             model, read, {n: f[0] for n, f in wanted.items()},
-            {n: f[2] for n, f in wanted.items() if f[2] is not None})
+            {n: f[2] for n, f in wanted.items() if f[2] is not None},
+            aloft=alofted)
         for name, (mask, whose, _, drawn) in wanted.items():
-            at, cover, spill = plates.get(name) or best.get(name, (0, 0.0, 1.0))
+            at, cover, spill, free = (plates.get(name)
+                                      or best.get(name, (0, 0.0, 1.0, 0.0)))
             if name not in plates:
-                # Two different nothings, and saying which is the difference
+                # Three different nothings, and saying which is the difference
                 # between a gap and an expected silence. A figure that covers
                 # itself and the plot around it is a ground, and a ground has
                 # no floor plate by construction -- `RECTANGULAR` is where its
-                # shape is graded. A figure nothing covers is a wall, a rail or
-                # a set of panels, which has no floor either.
-                why = ("this is a surface laid over the plot -- a ground has no "
-                       "floor plate to read, and its shape is RECTANGULAR's row"
-                       if spill > self._("CORNERS_CLEAR", 0.25)
-                       else f"under {least:.0%} covered the row is looking at a "
-                            "wall, a rail or a ring rather than a floor")
+                # shape is graded. A figure that is covered but has material
+                # under all of it is the same ground seen from inside, on a
+                # building too low for the ring to notice. A figure nothing
+                # covers is a wall, a rail or a set of panels, which has no
+                # floor either.
+                if spill > self._("CORNERS_CLEAR", 0.25):
+                    why = ("this is a surface laid over the plot -- a ground "
+                           "has no floor plate to read, and its shape is "
+                           "RECTANGULAR's row")
+                elif cover >= least:
+                    why = (f"only {free:.0%} of that stands over air, under "
+                           f"{alofted:.0%} -- the cut is the ground the figure "
+                           "is laid on, and a rectangle read off the ground is "
+                           "the map graded against itself")
+                else:
+                    why = (f"under {least:.0%} covered the row is looking at a "
+                           "wall, a rail or a ring rather than a floor")
                 g.ungraded(
                     f"{name} is built square",
                     f"no floor plate of this build stands over it clear of the "
@@ -1251,18 +1328,29 @@ class Grading:
             mine = solid(model, at) & mask
             built = checks.rectangular(mine, read.frame)
             angles = checks.corners(mine, read.frame)
+            # Both readings against the *drawn* box, so a corner the mapper
+            # rounded himself is subtracted out and only what the machinery
+            # took is left. A box refitted to the build travels with the
+            # defect and would report nothing.
+            was = checks.corner_reach(mask, read.frame, drawn["box"])
+            now = checks.corner_reach(mine, read.frame, drawn["box"])
+            lost = max(b - a for a, b in zip(was["reach"], now["reach"]))
             g.add(f"{name} is built square",
-                  built["share"] >= drawn["share"] - budget,
-                  f"{whose}, drawn {drawn['share']:.0%} of its own rectangle; "
-                  f"the build stands {built['share']:.0%} of one on its "
-                  f"plate at {at} m, on {angles['right']} right angle(s) of "
-                  f"{angles['vertices']}; allowed to lose {budget:.0%}. Against "
-                  "the plan and not against the reference: this says the "
-                  "machinery kept the shape it was given, and says nothing "
-                  "about whether the shape is the building's -- a corner the "
-                  "map itself drew round passes here. A pad and a closing are "
-                  "both discs and both bite a convex corner; `Site.squared` "
-                  "draws the rectangle instead")
+                  lost <= bite,
+                  f"{whose}, on its plate at {at} m ({free:.0%} of it over "
+                  f"air): the corners of its own box stand {now['reach']} m "
+                  f"from material, drawn {was['reach']} m, so the worst lost "
+                  f"{lost:.2f} m of {bite:.2f}. It fills {built['share']:.0%} "
+                  f"of that box against {drawn['share']:.0%} drawn, on "
+                  f"{angles['right']} right angle(s) of {angles['vertices']} "
+                  "-- printed and not graded: four bitten corners are six "
+                  "tenths of a per cent of a part this size, and a facade "
+                  "rhythm the plan never had is eight. Against the plan and "
+                  "not against the reference: this says the machinery kept "
+                  "the shape it was given, and says nothing about whether the "
+                  "shape is the building's. A pad and a closing are both discs "
+                  "and both bite a convex corner; `Site.squared` draws the "
+                  "rectangle instead")
 
     def evenness(self, g, model, read, sched):
         """Whether the building agrees with itself.

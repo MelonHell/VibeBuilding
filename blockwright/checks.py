@@ -645,6 +645,45 @@ def rectangular(mask: Mask, frame, trim: float = 0.02,
     }
 
 
+def corner_reach(mask: Mask, frame, box) -> dict:
+    """How far from each corner of a box the shape inside it actually starts.
+
+    `rectangular` cannot answer this and the arithmetic says why. A pad and a
+    closing take a quarter-disc of about a metre and a half off a convex
+    corner; four of those are seven square metres, and on a part of twelve
+    hundred cells that is six tenths of one per cent against a budget of five.
+    The share is *thirty times too coarse to see the defect the row exists
+    for*, while being fully sensitive to things the plan never had -- a facade
+    rhythm of two-cell recesses cost one building eight per cent of its share
+    and no corner at all.
+
+    So the corner is measured where it is: the distance from each corner of the
+    box to the nearest cell the shape holds, in metres. A square corner reads
+    about half a cell, a corner bitten by a disc of `pad + CLOSE` reads that
+    much and a half again, and the two do not overlap.
+
+    `box` is `(u0, u1, v0, v1)` in frame coordinates, as `rectangular` returns
+    it. Pass the *drawn* box for both readings when comparing a build against
+    its plan: the question is whether the corner is still where the plan put
+    it, and a box refitted to the build moves with the defect.
+    """
+    u0, u1, v0, v1 = box
+    wanted = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+    reach = [float("inf")] * 4
+    for x, z in mask.cells():
+        u = frame.u_of(x + 0.5, z + 0.5)
+        v = frame.v_of(x + 0.5, z + 0.5)
+        for i, (cu, cv) in enumerate(wanted):
+            d = math.hypot(u - cu, v - cv)
+            if d < reach[i]:
+                reach[i] = d
+    return {
+        "reach": [round(d, 2) for d in reach],
+        "worst": max(reach) if reach else float("inf"),
+        "corners": [(round(u, 1), round(v, 1)) for u, v in wanted],
+    }
+
+
 def surface(mask: Mask, frame, reading, low: float,
             high: float | None = None) -> dict:
     """A ground the build laid, against the ground the reference reads there.
