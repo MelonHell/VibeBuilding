@@ -230,6 +230,7 @@ class Grading:
         self.corners(g, model, read, derived, sched)
         mixes, matrix = self.facades(g, model, read, derived)
         self.elevations(g, derived)
+        self.plateaus(g, derived)
         self.grounds(g, derived, read, sched)
         self.witnesses(g, derived)
         sections, reg = self.section(g, derived, read, reference, model, frame,
@@ -621,6 +622,97 @@ class Grading:
                 "can see, because two wings of one footprint have the same "
                 "silhouette, skyline, section and schedule. Fill in FACADES, or "
                 "set UNIFORM to the reason there is only one.")
+
+    def plateaus(self, g, derived):
+        """Whether the height each part hands downstream describes the part.
+
+        `skyline_of` reads one number per part and every row below uses it:
+        `Site.tops` builds to it, the section grades against it, the silhouette
+        is cut at it. It is a median, and a median is only a height when the
+        readings it came from are one plateau.
+
+        They often are not, and the way they fail is a neighbour. A tower that
+        overhangs the link between two towers stands over the link's footprint,
+        so the link's stations read the tower; the part is two storeys and the
+        number handed on is twenty-eight metres. That happened, and the sheet
+        printed `low 5.2, median 27.6, high 29.8` -- twenty-four metres of
+        spread on a flat roof, visible at a glance and in no row at all. On the
+        same building a wing came back with eighteen per cent of its stations at
+        its own median, which is the case `skyline_of`'s own docstring warns
+        about: two levels, and the median between them, wrong at both ends.
+
+        The share is the measurement and the spread is not. A parapet, a plant
+        enclosure and a lift overrun all widen `low..high` on a roof that is
+        genuinely one height; only the share of stations *at* the median tells
+        those apart from a second building standing on the part. `PLATEAU` is
+        where the line sits -- one storey, the smallest step that is another
+        floor rather than roof furniture.
+
+        Read as a share of *stations*, and a station is the highest thing over
+        a line across the part, so a little tall material goes a long way: the
+        link above reads 7.6 m as a median over its cells and 27.6 m as a
+        median over its stations, because most lines across it clip something
+        of the tower. That is the honest reading for this question -- the
+        height handed downstream is the station reading, and it is the station
+        reading that is wrong.
+
+        Never a failure. This is evidence about the reference and the plan
+        together -- the capture is what it is, and which cells belong to which
+        part is the plan's business -- so the build cannot be at fault for it
+        and cannot fix it either. It closes the way `UNIFORM` closes: the
+        building says what the second level is, in `PLATEAUS`, keyed by part.
+        The measurement is printed on every run regardless, so the answer stays
+        checkable against the number it explains.
+        """
+        skyline = derived.get("skyline") or {}
+        said = self._("PLATEAUS", {}) or {}
+        # One row for a stale sheet and not one per part. A survey written
+        # before this measurement kept the range and threw the shape away, and
+        # the buildings in that state are the ones whose `derive` currently
+        # refuses on the datum -- they cannot act on the row, so saying it once
+        # is the whole of what it can usefully say.
+        stale = [name for name, p in skyline.items()
+                 if ".." not in name and p.get("stations") and "share" not in p]
+        if stale:
+            g.ungraded(
+                "parts are one height",
+                f"{len(stale)} part(s) were read by a survey that predates "
+                f"this measurement -- {', '.join(stale)}. It recorded the "
+                "range over each part and not the share of it at the median, "
+                "and only the share can tell a parapet from a neighbour "
+                "standing on the roof. Re-run probes/derive.py.")
+        for name, p in skyline.items():
+            # The gaps between parts are keyed `near..far` and report whatever
+            # stands over a court. A court reading at two levels is the court
+            # doing its job, not a part with a neighbour on it.
+            if ".." in name or p.get("declared") or not p.get("stations"):
+                continue
+            row = f"{name} is one height"
+            if "share" not in p:
+                continue
+            share = p["share"]
+            if not p.get("elsewhere"):
+                g.add(row, True,
+                      f"{share:.0%} of {p['stations']} station(s) stand within "
+                      f"{p['band']:.1f} m of {p['median']:.1f} m; the range is "
+                      f"{p['low']:.1f} to {p['high']:.1f} m, which is a parapet "
+                      "and plant on one roof")
+                continue
+            told = f"{p['elsewhere']} of {p['stations']} station(s) stand " \
+                   f"{p['apart']:+.1f} m from the median of {p['median']:.1f} " \
+                   f"m, leaving {share:.0%} of the part at the height " \
+                   "everything downstream builds to"
+            if name in said:
+                g.add(row, True, f"{told}. {said[name]}")
+                continue
+            g.ungraded(
+                row,
+                f"{told}. That is another level of building over this "
+                "footprint, not roof furniture -- a neighbour overhanging it, "
+                "a part the plan drew as one piece that steps, or a capture "
+                "that fused the two. Whichever it is, the single height read "
+                "here is wrong for one of the two levels. Split the part in "
+                "the plan, or set PLATEAUS[name] to what the second level is.")
 
     def grounds(self, g, derived, read, sched):
         """The ground this building stands on, which nothing else grades.

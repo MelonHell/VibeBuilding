@@ -58,6 +58,11 @@ DEFAULTS = {
     "NOTCH_RANGE_HI": 25.0,
     "PROFILE_BIN": 0.5,
     "PROFILE_TRIM": 8.0,
+    # How far a station may stand from a part's median before it is a second
+    # level of building rather than the roof furniture on one. Three metres: a
+    # parapet, a plant enclosure and a lift overrun are all under a storey, and
+    # a storey is the smallest step that is another floor. See `skyline_of`.
+    "PLATEAU": 3.0,
     "MESH_FLOOR": 6.0,
     "REGISTER_FLOOR": 6.0,
     "SECTION_CELL": 1.0,
@@ -1059,14 +1064,37 @@ class Survey:
             if height > tops[name].get(station, -1e9):
                 tops[name][station] = height
 
+        # A part is one height only when its stations say so, and `low .. median
+        # .. high` cannot tell "a parapet and a lift overrun" from "a tower
+        # standing on this roof". Both read as a spread; only the *share* at the
+        # median separates them. On one hotel the two-storey link between the
+        # towers reported 5.2 .. 27.6 .. 29.8, which is the flat roof at one end
+        # of the range and the neighbour at the other, and the number handed
+        # downstream was the neighbour's. Nothing caught it: the median is the
+        # height the whole build stands on, and every row below reads it from
+        # here.
+        band = float(self.t.PLATEAU)
+
         def plateau(reading: dict[int, float]) -> dict:
             got = sorted(reading.values())
             if not got:
                 return {"stations": 0}
-            return {"stations": len(got),
-                    "low": round(got[0], 1),
-                    "median": round(got[len(got) // 2], 1),
-                    "high": round(got[-1], 1)}
+            median = got[len(got) // 2]
+            near = [h for h in got if abs(h - median) <= band]
+            far = [h for h in got if abs(h - median) > band]
+            out = {"stations": len(got),
+                   "low": round(got[0], 1),
+                   "median": round(median, 1),
+                   "high": round(got[-1], 1),
+                   "band": band,
+                   "share": round(len(near) / len(got), 3)}
+            if far:
+                # The other level, named rather than averaged into the spread:
+                # the question a reader asks next is "how far away, and how much
+                # of the part", and a range answers neither.
+                out["apart"] = round(sorted(far)[len(far) // 2] - median, 1)
+                out["elsewhere"] = len(far)
+            return out
 
         for name in read.order:
             out["skyline"][name] = plateau(tops[name])
@@ -1533,8 +1561,13 @@ class Survey:
                 lines.append(f"  {name:15s} {p['median']:5.1f} m declared from "
                              f"{p['source']}")
             elif p["stations"]:
-                lines.append(f"  {name:15s} {p['low']:5.1f} .. {p['median']:5.1f} "
-                             f".. {p['high']:5.1f} m over {p['stations']} stations")
+                line = (f"  {name:15s} {p['low']:5.1f} .. {p['median']:5.1f} "
+                        f".. {p['high']:5.1f} m over {p['stations']} stations")
+                if p.get("elsewhere"):
+                    line += (f"; only {p['share']:.0%} of it is at that median, "
+                             f"{p['elsewhere']} station(s) stand {p['apart']:+.1f} m "
+                             "away -- something else is over this part")
+                lines.append(line)
             else:
                 lines.append(f"  {name:15s} nothing over it in the reference")
         for name, d in out.get("discs", {}).items():
