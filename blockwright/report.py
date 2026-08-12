@@ -119,6 +119,77 @@ def defects(gate, sections=(), finished=None, findings=None,
     return out
 
 
+def moved(old: dict | None, new: dict, section_step: float = 0.5,
+          plan_step: float = 0.005) -> list[str]:
+    """What changed since the last run of this gate, in a handful of numbers.
+
+    A round of fixing is a sequence of edits, and the question after each of
+    them is not "does it pass" -- it usually did not before and does not now --
+    but "did that make it better or worse". Nothing answered it. One building
+    was fixed three times and broken twice on the way, and both regressions
+    were silent: the row that moved was not the row being worked on, the console
+    prints two hundred lines, and a number that got worse looks exactly like a
+    number that was always that bad.
+
+    So the report reads the report it is about to overwrite. Only movement is
+    printed, never state, and nothing here fails a run: this is the sentence
+    "plan overlap 0.982 -> 0.968", which is the whole of what was missing.
+
+    Thresholds are there because photogrammetry and rasterisation both wobble
+    in the last digit, and a delta that reports every run as changed is a delta
+    nobody reads.
+    """
+    if not old:
+        return []
+    out: list[str] = []
+
+    if old.get("verdict") != new.get("verdict"):
+        out.append(f"verdict {old.get('verdict')} -> {new.get('verdict')}")
+
+    was = {c["name"]: c["ok"] for c in old.get("checks", [])}
+    now = {c["name"]: c["ok"] for c in new.get("checks", [])}
+    word = {True: "pass", False: "FAIL", None: "ungraded"}
+    for name, state in now.items():
+        if name not in was:
+            if state is not True:
+                out.append(f"new row {name}: {word[state]}")
+        elif was[name] != state:
+            out.append(f"{name}: {word[was[name]]} -> {word[state]}")
+    for name in was:
+        if name not in now:
+            out.append(f"row gone: {name}")
+
+    before = {s["name"]: s for s in old.get("sections", [])}
+    for s in new.get("sections", []):
+        older = before.get(s["name"])
+        if older is None:
+            continue
+        if abs(older.get("worst", 0.0) - s.get("worst", 0.0)) >= section_step:
+            out.append(f"{s['name']} worst station "
+                       f"{older['worst']:.1f} -> {s['worst']:.1f} m")
+        if older.get("misses") != s.get("misses"):
+            out.append(f"{s['name']} stations out "
+                       f"{older.get('misses')} -> {s.get('misses')}")
+
+    was_plan = old.get("plan") or {}
+    for name, found in (new.get("plan") or {}).items():
+        older = was_plan.get(name)
+        if older is None:
+            continue
+        if abs(older.get("iou", 0.0) - found.get("iou", 0.0)) >= plan_step:
+            out.append(f"{name} plan overlap {older['iou']:.3f} -> "
+                       f"{found['iou']:.3f}")
+        for side in ("worst_missing", "worst_outside"):
+            if older.get(side) != found.get(side):
+                out.append(f"{name} {side.replace('_', ' ')} "
+                           f"{older.get(side)} -> {found.get(side)} cell(s)")
+
+    if len(old.get("defects", [])) != len(new.get("defects", [])):
+        out.append(f"defects {len(old.get('defects', []))} -> "
+                   f"{len(new.get('defects', []))}")
+    return out
+
+
 def write(path, building: str, gate, sections=(), finished=None,
           findings=None, frame=None, registration=None, schedule=(),
           **extra) -> dict:
@@ -168,7 +239,16 @@ def write(path, building: str, gate, sections=(), finished=None,
         }
     doc.update(extra)
 
+    # Read before writing, or the comparison is against the run being written.
     path = Path(path)
+    was = None
+    if path.exists():
+        try:
+            was = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            was = None
+    doc["moved"] = moved(was, doc)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     return doc
@@ -184,7 +264,14 @@ def lines(doc: dict, limit: int = 12) -> list[str]:
                    f"{entry['where']}: {entry['detail']}")
     if len(doc["defects"]) > limit:
         out.append(f"  ... and {len(doc['defects']) - limit} more")
+    # Last, because it is what a reader in the middle of a round of fixing
+    # actually came for, and the last lines are the ones still on the screen.
+    if doc.get("moved"):
+        out.append(f"moved since the last run ({len(doc['moved'])}):")
+        out.extend("  " + line for line in doc["moved"])
+    elif "moved" in doc:
+        out.append("nothing moved since the last run")
     return out
 
 
-__all__ = ["Defect", "defects", "lines", "write"]
+__all__ = ["Defect", "defects", "lines", "moved", "write"]

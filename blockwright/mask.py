@@ -21,6 +21,7 @@ import math
 from pathlib import Path
 
 from . import fast
+from .measure import staircase
 
 INF = 1e12
 
@@ -72,6 +73,91 @@ def _edt_1d(f: list[float], out: list[float]) -> None:
             k += 1
         d = q - v[k]
         out[q] = d * d + f[v[k]]
+
+
+class Edge:
+    """One face of a shape, as the line its own stations fitted.
+
+    The fifth idiom for reading a drawn part, and the one the other four keep
+    almost being. `Site.footprint` keeps every wobble; `box` and `squared` hand
+    back a rectangle, which is the right answer only where all four faces run
+    along u or v; `straighten` keeps whatever corners the trace had, chamfers
+    and all. None of them can say **"this face is a straight line, here is its
+    equation, and here is how well it fits"** -- and that sentence is what a
+    raked end, a splayed wing or a plot boundary needs, because what carries the
+    measurement there is the *direction* of the face, which no extent records.
+
+    The equation is `a*u + b*v = c` in the building's frame, with `(a, b)` a
+    unit normal pointing **out** of the shape. So `side` is a signed distance in
+    metres, negative inside, and a part is the place where every one of its
+    faces reads negative -- which is how a build draws it: `half_planes` turns a
+    list of these into the predicate `Frame.region` wants, and the corners come
+    out of the intersections rather than out of the trace, straight by
+    construction.
+
+    Nothing about the fit is hidden. `spread` is the RMS distance of the
+    stations from the line, `worst` the furthest single one, `share` is how many
+    of the stations the face spans held a point that survived, and `absent` and
+    `outliers` say which way the rest went. A bowed face, a face read across a
+    neighbour and a face that is really two come back with numbers that say so;
+    whether to draw one anyway is the caller's business, and `Mask.edges` never
+    decides it silently.
+
+    `spread` and `worst` are both here because a bow shows only in the second.
+    An arc's stations all sit on one side of its chord, so a fifteen-metre face
+    across a sixteen-metre radius misses by two metres in the middle and still
+    averages well under one; read on the RMS alone a disc is a good heptagon.
+    """
+
+    __slots__ = ("a", "b", "c", "ends", "run", "span", "kept", "absent",
+                 "outliers", "spread", "worst", "share")
+
+    def __init__(self, a: float, b: float, c: float, ends, run: float,
+                 span: int, kept: int, absent: int, outliers: int,
+                 spread: float, worst: float, share: float):
+        self.a, self.b, self.c = a, b, c
+        self.ends = ends            # the two points the fitted line runs between
+        self.run = run              # length of that run, in metres
+        self.span = span            # stations the face covers, end to end
+        self.kept = kept            # stations that held a point and were fitted
+        self.absent = absent        # stations with nothing on them at all
+        self.outliers = outliers    # stations thrown out before the final fit
+        self.spread = spread        # RMS of the kept stations off the line, m
+        self.worst = worst          # furthest kept station off the line, m
+        self.share = share          # kept / span
+
+    def side(self, u: float, v: float) -> float:
+        """Signed distance from this face, in metres. Negative is inside."""
+        return self.a * u + self.b * v - self.c
+
+    def holds(self, u: float, v: float, pad: float = 0.0) -> bool:
+        """Whether (u, v) is on the inside of this face, `pad` metres out."""
+        return self.side(u, v) <= pad
+
+    def moved(self, distance: float) -> "Edge":
+        """The same line pushed `distance` metres outward."""
+        return Edge(self.a, self.b, self.c + distance, self.ends, self.run,
+                    self.span, self.kept, self.absent, self.outliers,
+                    self.spread, self.worst, self.share)
+
+    @property
+    def angle(self) -> float:
+        """Bearing of the face within the frame, in degrees, folded to [0, 180)."""
+        return math.degrees(math.atan2(-self.a, self.b)) % 180.0
+
+    def meets(self, other: "Edge") -> tuple[float, float] | None:
+        """Where this face's line crosses another's. `None` if they are parallel."""
+        det = self.a * other.b - other.a * self.b
+        if abs(det) < 1e-9:
+            return None
+        return ((self.c * other.b - other.c * self.b) / det,
+                (self.a * other.c - other.a * self.c) / det)
+
+    def __repr__(self) -> str:
+        (u0, v0), (u1, v1) = self.ends
+        return (f"<edge ({u0:.1f}, {v0:.1f})..({u1:.1f}, {v1:.1f}) "
+                f"at {self.angle:.1f} deg, {self.kept}/{self.span} stations, "
+                f"spread {self.spread:.2f} m, worst {self.worst:.2f} m>")
 
 
 class Mask:
@@ -689,6 +775,155 @@ class Mask:
             here = step
         return contour
 
+    def edges(self, frame, tolerance: float = 1.0, least: int = 3,
+              station: float | None = None) -> list["Edge"]:
+        """This shape's outline read as a list of straight faces -- see `Edge`.
+
+        The measurement `squared` is a special case of. A part that is a
+        rectangle has four faces along u and v and a fitted extent describes it;
+        a part with a raked end, a splayed wing, a slab following a plot
+        boundary has a face whose *direction* is the measurement, and no extent
+        holds a direction. Every building that needed one wrote it by hand off a
+        pair of extreme points, and a pair of extreme points is exactly the
+        reading a single cell of tracing whisker moves -- one of them put a five
+        metre wedge down the side of a slab that is straight on the map.
+
+        Read off the outer ring of the largest piece, in the frame, in four
+        steps, and the order matters:
+
+        1. **Break.** Douglas-Peucker at `tolerance` says where the corners are.
+           Its vertices are only candidates: it cuts at whatever is furthest
+           from a chord, so a gentle bow becomes two faces and a chamfered
+           corner becomes three.
+        2. **Fit, station by station.** Each run is cut into stations of
+           `station` metres along its own chord and each station contributes the
+           **median** of the points on it, so the rasterised staircase is a
+           wobble about the line rather than a set of points pulling on it. A
+           station the shape is not on contributes nothing, and it is dropped
+           **before** the fit rather than being read as zero -- the difference
+           between a face that stops early and a face that dives to the origin.
+           The line is then re-fitted once without the stations more than
+           `tolerance` off it, which is what keeps a neighbour's corner, caught
+           in the same run, from tilting the whole face.
+
+           `station` defaults to this frame's staircase, `|cos| + |sin|`, and
+           metres would be the wrong unit for it. A boundary is traced through
+           cells, so along a diagonal edge it steps corner to corner and lands
+           1.41 m further on; cut into one-metre stations, a *perfect* edge
+           leaves a quarter of them empty and reports itself three-quarters
+           present. At the staircase the bins are exactly the period the
+           rasteriser works at, every station of a whole edge holds a point, and
+           `share` goes back to meaning what it says: how much of this face the
+           shape was actually on.
+        3. **Merge, by fit and not by angle.** Adjacent runs are merged
+           best-first while the merged line still fits within `tolerance`. This
+           is what decides a corner: two runs that were one gentle bow come back
+           together, a real corner never does because merging across it throws
+           the spread up. It settles the chamfered corner the same way and for
+           the same reason -- the short skew run joins whichever neighbour it
+           actually lies along, chosen by spread, **never** by which of the two
+           is steeper. Steepness is a property of the drawing's noise as much as
+           of the building; the fit is a property of the building.
+        4. **Drop the short.** A run still under `least` stations is not a face:
+           it is the corner a hand cut back, or the quarter-disc `Site.footprint`
+           bit out. It is not fitted and it is not extended -- three points on a
+           traced corner will fit a line beautifully and point anywhere at all.
+           It is dropped, and the faces on either side of it meet where their
+           own lines cross.
+
+        So corners are intersections of measured lines, which is the whole
+        point: a corner that comes out of a trace is as good as the trace, and a
+        corner that comes out of two twenty-metre faces is as good as forty
+        metres of edge.
+
+        The outer ring of one piece and no holes: a court has no faces of its
+        own that a build would draw this way, and a second piece is a second
+        part. Empty when the shape is too small or too round to leave three
+        faces standing, and a caller that gets fewer than three has no polygon
+        and should say so rather than draw what is left.
+        """
+        if station is None:
+            station = staircase(frame)
+        pieces = self.components()
+        if not pieces:
+            return []
+        ring = pieces[0].contour()
+        if len(ring) < 4:
+            return []
+        raw = [frame.to_local(x + 0.5, z + 0.5) for x, z in ring]
+        breaks = _keep_ring(raw, tolerance)
+        if len(breaks) < 3:
+            return []
+
+        n = len(raw)
+        runs = []
+        for i, start in enumerate(breaks):
+            stop = breaks[(i + 1) % len(breaks)]
+            span, j = [], start
+            while True:
+                span.append(raw[j])
+                if j == stop:
+                    break
+                j = (j + 1) % n
+            runs.append(span)
+
+        faces = [[span, _fit_face(span, tolerance, station)] for span in runs]
+        faces = [f for f in faces if f[1] is not None]
+        faces = _merge_faces(faces, tolerance, station)
+        faces = [f for f in faces if f[1]["span"] >= least]
+        if len(faces) < 3:
+            return []
+
+        # The ring's own winding, so "outward" is a fact about the shape rather
+        # than an argument -- the same reading `_offset_ring` takes.
+        twice_area = 0.0
+        for i, (u, v) in enumerate(raw):
+            pu, pv = raw[i - 1]
+            twice_area += pu * v - u * pv
+        turn = 1.0 if twice_area > 0.0 else -1.0
+        return [_edge_of(fit, turn) for _, fit in faces]
+
+    def faceted(self, frame, tolerance: float = 1.0, least: int = 3,
+                pad: float = 0.0, edges: list["Edge"] | None = None,
+                station: float | None = None) -> "Mask | None":
+        """This shape redrawn as the polygon of its own fitted faces.
+
+        `edges` measures; this draws. The faces are read, their neighbours are
+        crossed to give the corners, and the polygon is rasterised once through
+        `Frame.region` -- so the result is a clean staircase of straight edges
+        meeting at corners that are straight by construction, at the building's
+        own angle, whatever the trace did.
+
+        Between `straighten` and `squared` and better than either wherever a
+        part is a polygon that is not a rectangle. Straightening keeps a
+        chamfered corner because a four-cell chamfer is further off the chord
+        than any usable tolerance; squaring throws away the rake that the
+        chamfer is a corner of. This keeps the rake, as a line fitted to every
+        station of it, and squares the corner.
+
+        `pad` opens the shape outward by that many metres, the way
+        `Site.footprint`'s pad does, and unlike a dilation it does it by moving
+        each face out along its own normal -- so a padded corner stays a corner
+        instead of coming back as a quarter-disc. Half a cell is added on top,
+        for the reason `_offset_ring` gives at length: every ring in this file is
+        read through cell centres and describes a shape one cell small.
+
+        `None`, and not a fallback, when fewer than three faces survive or the
+        corners will not close. A shape too round or too small to have faces has
+        no polygon, and quietly handing back the drawn mask would put an unpadded
+        part into a build that asked for a padded one.
+        """
+        faces = (self.edges(frame, tolerance, least, station)
+                 if edges is None else edges)
+        if len(faces) < 3:
+            return None
+        ring = _corner_ring(faces, tolerance)
+        if len(ring) < 3:
+            return None
+        ring = _offset_ring(ring, 0.5 + pad)
+        return frame.region(self.width, self.length,
+                            lambda u, v: _in_polygon(ring, u, v))
+
     # -- output -----------------------------------------------------------
 
     def straighten(self, frame, tolerance: float = 1.0) -> "Mask":
@@ -962,16 +1197,238 @@ def _fills(rings: list[list[tuple[float, float]]], u: float, v: float) -> bool:
     return hit
 
 
-def _simplify(points: list[tuple[float, float]],
-              tolerance: float) -> list[tuple[float, float]]:
+def _least_squares(rows: list[tuple[float, float]]) -> tuple[float, float]:
+    """Slope and intercept of `offset against distance along`, by least squares."""
+    n = len(rows)
+    mean_t = sum(t for t, _ in rows) / n
+    mean_o = sum(o for _, o in rows) / n
+    stt = sum((t - mean_t) ** 2 for t, _ in rows)
+    sto = sum((t - mean_t) * (o - mean_o) for t, o in rows)
+    slope = sto / stt if stt > 1e-9 else 0.0
+    return slope, mean_o - slope * mean_t
+
+
+def _fit_face(points: list[tuple[float, float]], tolerance: float,
+              station: float, trim: bool = True) -> dict | None:
+    """The line a run of contour points describes -- see `Mask.edges`, step 2.
+
+    Everything happens in the chord's own axes: distance along the run against
+    offset from it. Fitting v against u instead would make a face parallel to v
+    a division by zero and a face near one a fit ruled by its worst-conditioned
+    station, and a building's faces run whichever way the street does.
+
+    `trim` is the one re-fit without the stations that missed. `_merge_faces`
+    turns it off: a merge has to be justified by every station of both runs, and
+    a fit allowed to discard a sixth of them will justify joining two faces
+    across the corner between them.
+    """
+    if len(points) < 2:
+        return None
+    au, av = points[0]
+    bu, bv = points[-1]
+    du, dv = bu - au, bv - av
+    run = math.hypot(du, dv)
+    if run < 1e-9:
+        return None
+    du, dv = du / run, dv / run
+
+    bins: dict[int, list[float]] = {}
+    for u, v in points:
+        along = (u - au) * du + (v - av) * dv
+        bins.setdefault(int(along // station), []).append(
+            (u - au) * -dv + (v - av) * du)
+    lo, hi = min(bins), max(bins)
+    span = hi - lo + 1
+
+    # One row per station, and the median of what is on it rather than the mean:
+    # a rasterised edge is a staircase, so a station holds a short vertical run
+    # of cells whose middle is the line and whose ends are the tread. A station
+    # the shape is not on contributes no row at all, which is the whole of what
+    # "dropped before the fit" means -- read as a zero it would pull the line
+    # down to the origin, and read after the fit it would already have done it.
+    rows = []
+    for k in range(lo, hi + 1):
+        offsets = bins.get(k)
+        if not offsets:
+            continue
+        offsets.sort()
+        rows.append(((k + 0.5) * station, offsets[len(offsets) // 2]))
+    if len(rows) < 2:
+        return None
+
+    slope, base = _least_squares(rows)
+    outliers = 0
+    scale = math.hypot(1.0, slope)
+    kept = [r for r in rows
+            if abs(r[1] - slope * r[0] - base) / scale <= tolerance]
+    # One re-fit and no more, and only while most of the run survives it. What
+    # it removes is a neighbour's corner caught in the same run, which drags a
+    # twenty-metre face by a degree or two; what it must not do is walk a face
+    # down to its straightest few stations and report a spread of nothing.
+    #
+    # Without the floor this is not a rounding error, it is the whole primitive
+    # inverted: a run traced round a right angle keeps the three stations
+    # nearest whichever line the first pass landed on, comes back with a spread
+    # of 0.0, and the merge pass then reads a corner as the best fit on the
+    # building and joins across it. A rectangle came back as a triangle.
+    floor = max(3, int(0.6 * len(rows)))
+    if trim and len(kept) >= floor and len(kept) != len(rows):
+        outliers = len(rows) - len(kept)
+        rows = kept
+        slope, base = _least_squares(rows)
+        scale = math.hypot(1.0, slope)
+    off = [abs(o - slope * t - base) / scale for t, o in rows]
+    return {
+        "point": (au, av), "axis": (du, dv), "m": slope, "q": base,
+        "reach": (rows[0][0], rows[-1][0]),
+        "run": run, "span": span, "kept": len(rows),
+        "absent": span - len(bins), "outliers": outliers,
+        "spread": math.sqrt(sum(d * d for d in off) / len(off)),
+        "worst": max(off),
+        "share": len(rows) / span,
+    }
+
+
+def _merge_faces(faces: list, tolerance: float, station: float) -> list:
+    """Join adjacent runs while the joined line still fits -- best fit first.
+
+    Best-first and not in ring order, because the merge that fits best is the
+    one that was never a corner, and taking it first stops a long face from
+    swallowing a short skew one on its way past. This is `Mask.edges` step 3,
+    and it is the only place a corner is decided: nothing here looks at the
+    angle between two runs, which is what a chamfer makes shallow and a traced
+    right angle makes noisy.
+
+    The candidate is judged on an untrimmed fit -- every station of both runs
+    counted -- and only the winner is kept as the trimmed one. A trimmed fit
+    asked whether two runs *can* be made to look like one line, and the answer
+    across a right angle is yes: throw away the shorter limb and the longer one
+    fits perfectly. The untrimmed fit asks whether they *are* one line, which is
+    the question a corner has to answer.
+
+    And it is judged on the *worst* station rather than on the RMS, which is
+    what `tolerance` means everywhere else in this file and is the difference
+    between reading a disc and merging one. A bow is systematic: every station
+    sits on one side of the chord, so a fifteen-metre chord across a sixteen-
+    metre radius misses by two metres in the middle and still averages under
+    one. Judged on the RMS a thirty-metre disc came back as a heptagon whose
+    every side was a metre outside the shape it was drawn from.
+    """
+    while len(faces) > 3:
+        best = None
+        for i in range(len(faces)):
+            j = (i + 1) % len(faces)
+            joined = faces[i][0][:-1] + faces[j][0]
+            fit = _fit_face(joined, tolerance, station, trim=False)
+            if fit is None or fit["worst"] > tolerance:
+                continue
+            if best is None or fit["spread"] < best[0]:
+                best = (fit["spread"], i, j, joined)
+        if best is None:
+            return faces
+        _, i, j, joined = best
+        faces[i] = [joined, _fit_face(joined, tolerance, station)]
+        faces.pop(j)
+    return faces
+
+
+def _edge_of(fit: dict, turn: float) -> Edge:
+    """One fitted run as an `Edge`, with its normal pointing out of the shape.
+
+    Outward is taken from the ring's own winding, the same reading
+    `_offset_ring` makes, so no caller has to know which way the frame turns.
+    """
+    au, av = fit["point"]
+    du, dv = fit["axis"]
+    slope, base = fit["m"], fit["q"]
+    nu, nv = -dv, du
+    lu, lv = du + slope * nu, dv + slope * nv
+    length = math.hypot(lu, lv)
+    lu, lv = lu / length, lv / length
+    a, b = turn * lv, -turn * lu
+    c = a * (au + base * nu) + b * (av + base * nv)
+    ends = tuple((au + t * du + (slope * t + base) * nu,
+                  av + t * dv + (slope * t + base) * nv)
+                 for t in fit["reach"])
+    run = math.hypot(ends[1][0] - ends[0][0], ends[1][1] - ends[0][1])
+    return Edge(a, b, c, ends, run, fit["span"], fit["kept"], fit["absent"],
+                fit["outliers"], fit["spread"], fit["worst"], fit["share"])
+
+
+def _corner_ring(edges: list[Edge], tolerance: float
+                 ) -> list[tuple[float, float]]:
+    """The polygon a list of faces encloses: every corner where two of them cross.
+
+    `Mask.edges` step 4 finished. A corner read off a trace is as good as the
+    trace; a corner where two twenty-metre faces cross is as good as forty
+    metres of edge, and is a right angle exactly when the building's is.
+    """
+    out: list[tuple[float, float]] = []
+    n = len(edges)
+    for i, here in enumerate(edges):
+        after = edges[(i + 1) % n]
+        gap = math.hypot(after.ends[0][0] - here.ends[1][0],
+                         after.ends[0][1] - here.ends[1][1])
+        cross = here.meets(after)
+        limit = max(4.0 * tolerance, 3.0 * gap)
+        if cross is not None and all(
+                math.hypot(cross[0] - end[0], cross[1] - end[1]) <= limit
+                for end in (here.ends[1], after.ends[0])):
+            out.append(cross)
+            continue
+        # Two faces that will not cross anywhere near the corner they are meant
+        # to make: near-parallel, or with something dropped between them that
+        # was longer than a chamfer. Keep both ends and leave the step. A
+        # corner put in the wrong place is a spike across the building, which is
+        # a great deal worse than the notch this was drawn to remove.
+        out.append(here.ends[1])
+        out.append(after.ends[0])
+    return out
+
+
+def half_planes(edges: list[Edge], pad: float = 0.0):
+    """These faces as the predicate `Frame.region` wants: inside all of them.
+
+    The build side of `Mask.edges`, and the form to write when a part is convex
+    -- a slab, a wing, a deck cut off by a plot boundary. Each face is an
+    inequality, the part is where all of them hold, and the corners are wherever
+    the inequalities happen to cross, so a build never names a corner at all.
+
+    Two things it does not do. It is **convex** by construction, so an L or an E
+    drawn this way comes back filled in at the notch; `Mask.faceted` walks the
+    corners instead and holds any polygon. And it adds no half cell of its own:
+    every ring in this file is read through cell centres and describes a shape
+    one cell small, so a caller drawing a part at its measured face wants
+    `pad=0.5` and one drawing it at a padded face wants `0.5 + pad` -- which is
+    what `Site.faceted` passes.
+
+    Written as a closure over the numbers rather than over the edges, because
+    `Frame.region` asks it once per cell of the canvas.
+    """
+    lines = [(e.a, e.b, e.c + pad) for e in edges]
+
+    def inside(u: float, v: float) -> bool:
+        return all(a * u + b * v <= c for a, b, c in lines)
+
+    return inside
+
+
+def _keep_run(points: list[tuple[float, float]],
+              tolerance: float) -> list[int]:
     """Douglas-Peucker on an open run: keep the ends and whatever is furthest.
 
     Iterative rather than recursive. A traced contour of a large building runs
     to a few thousand points, and the noisy case -- a staircase, where almost
     nothing can be dropped -- is exactly the one that recurses deepest.
+
+    Indices rather than points, because `Mask.edges` needs the run of the
+    original contour that lies *between* two kept vertices, and a contour can
+    visit the same coordinate twice: a one-cell neck is traced down one side and
+    back up the other, so finding a vertex by its value finds the wrong end of
+    the shape.
     """
     if len(points) < 3:
-        return list(points)
+        return list(range(len(points)))
     keep = [False] * len(points)
     keep[0] = keep[-1] = True
     stack = [(0, len(points) - 1)]
@@ -994,12 +1451,17 @@ def _simplify(points: list[tuple[float, float]],
             keep[at] = True
             stack.append((lo, at))
             stack.append((at, hi))
-    return [p for p, on in zip(points, keep) if on]
+    return [i for i, on in enumerate(keep) if on]
 
 
-def _simplify_ring(points: list[tuple[float, float]],
-                   tolerance: float) -> list[tuple[float, float]]:
-    """The same, on a closed loop.
+def _simplify(points: list[tuple[float, float]],
+              tolerance: float) -> list[tuple[float, float]]:
+    return [points[i] for i in _keep_run(points, tolerance)]
+
+
+def _keep_ring(points: list[tuple[float, float]],
+               tolerance: float) -> list[int]:
+    """The same, on a closed loop: the indices of the vertices to keep.
 
     Cut at the two points furthest apart and simplify each side. A loop
     simplified from an arbitrary start keeps that start as a vertex whether or
@@ -1008,7 +1470,7 @@ def _simplify_ring(points: list[tuple[float, float]],
     """
     n = len(points)
     if n < 4:
-        return list(points)
+        return list(range(n))
     au, av = points[0]
     far = max(range(n), key=lambda i: math.hypot(points[i][0] - au,
                                                  points[i][1] - av))
@@ -1016,9 +1478,15 @@ def _simplify_ring(points: list[tuple[float, float]],
     other = max(range(n), key=lambda i: math.hypot(points[i][0] - bu,
                                                   points[i][1] - bv))
     lo, hi = sorted((far, other))
-    first = _simplify(points[lo:hi + 1], tolerance)
-    second = _simplify(points[hi:] + points[:lo + 1], tolerance)
-    return first[:-1] + second[:-1]
+    first = _keep_run(points[lo:hi + 1], tolerance)
+    second = _keep_run(points[hi:] + points[:lo + 1], tolerance)
+    return ([lo + i for i in first[:-1]]
+            + [(hi + i) % n for i in second[:-1]])
+
+
+def _simplify_ring(points: list[tuple[float, float]],
+                   tolerance: float) -> list[tuple[float, float]]:
+    return [points[i] for i in _keep_ring(points, tolerance)]
 
 
 def iou(a: Mask, b: Mask) -> float:

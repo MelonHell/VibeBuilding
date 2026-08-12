@@ -22,6 +22,7 @@ telling a staircase from a sawtooth.
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -29,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from blockwright import checks                       # noqa: E402
 from blockwright.frame import Frame                  # noqa: E402
-from blockwright.mask import Mask, iou               # noqa: E402
+from blockwright.mask import Mask, iou, _fit_face    # noqa: E402
 
 ANGLE = 52.0
 W = L = 96
@@ -45,6 +46,18 @@ def check(name: str, ok: bool, detail: str) -> None:
 
 def frame() -> Frame:
     return Frame((12.0, 9.0), ANGLE)
+
+
+def clear() -> Frame:
+    """The same angle, placed so `block` fits on the canvas whole.
+
+    At `frame()` the block runs off the west edge and is cut by it. Checks 1--9
+    do not care: a clipped rectangle is still straight, still holds a court and
+    still mirrors. The edge checks care completely -- a clipped shape has a
+    sixteen-metre face along the *world* axis that the building never had, and
+    reading the faces a shape actually has is the whole of what they test.
+    """
+    return Frame((24.0, 6.0), ANGLE)
 
 
 def block(f: Frame, u0=6.0, u1=54.0, v0=6.0, v1=30.0) -> Mask:
@@ -188,6 +201,139 @@ def main() -> int:
     check("symmetrise intersection never adds",
           (inner - lopsided).count() <= lopsided.count() * 0.02,
           f"{(inner - lopsided).count()} cells added")
+
+    # From here on the shapes are read rather than reshaped, so they are built
+    # on the frame that keeps them off the canvas edge -- see `clear`.
+    g = clear()
+    slab = block(g)
+    toothed = sawtoothed(g, slab)
+
+    # 10. A rectangle has four faces and they run along u and v. This is the
+    # floor under everything else here: if a shape whose faces are known cannot
+    # be read back, no number `Mask.edges` reports about a shape whose faces are
+    # not known means anything.
+    faces = slab.edges(g, 1.0)
+    angles = sorted(round(e.angle) for e in faces)
+    worst = max((e.spread for e in faces), default=9.9)
+    check("edges reads a rectangle as four faces",
+          len(faces) == 4 and worst <= 0.5
+          and all(min(abs(a - 0), abs(a - 90), abs(a - 180)) <= 2
+                  for a in angles),
+          f"{len(faces)} face(s) at {angles} deg, worst fit {worst:.2f} m")
+
+    # 11. A rake is a measurement and has to survive. This is the case the whole
+    # primitive exists for: `squared` can only offer a rectangle in u and v, so
+    # on a raked end it squares off the one thing the mapper drew on purpose.
+    raked = g.region(W, L, lambda u, v: 6.0 <= u < 54.0 and 6.0 <= v < 30.0
+                     and v < 30.0 - 0.4 * (u - 30.0))
+    out = raked.faceted(g, 1.0)
+    kept = iou(raked, out) if out is not None else 0.0
+    boxed = raked.squared(g)
+    square = iou(raked, g.rect(W, L, *boxed)) if boxed else 0.0
+    check("faceted keeps a rake that squaring loses",
+          kept >= 0.95 and kept > square + 0.05,
+          f"iou {kept:.3f} faceted against {square:.3f} squared")
+
+    # 12. And it has to take a sawtooth off, which is what it shares with
+    # straightening. The difference is in 13.
+    #
+    # Counted in outline segments rather than in `checks.jaggedness`'s `share`.
+    # That share is defined as *what straightening would change*, and a tooth
+    # deep enough for Douglas-Peucker to keep is a tooth straightening keeps
+    # too: on this shape the share reads 0.003 while the outline is still
+    # eighteen segments long. Fitting has no such hole -- a face is a line or it
+    # is not a face -- and the segment count is where that shows.
+    before = checks.jaggedness(toothed, g)["vertices"]
+    out = toothed.faceted(g, 1.0)
+    after = checks.jaggedness(out, g)["vertices"] if out is not None else 99
+    check("faceted removes a sawtooth", after <= 6 and after < before / 2,
+          f"outline of {before} segment(s) -> {after}")
+
+    # 13. The corner `Site.footprint` rounds off comes back square. Nothing
+    # else in the library can do this: the pad and the closing are both
+    # Euclidean and a Euclidean dilation is a disc, so every convex corner is
+    # bitten by a quarter-disc that no straightening tolerance will recover --
+    # a chamfer is further off the chord than drawing noise ever is.
+    #
+    # Here the arc is not a face at all. It runs about a metre and a half,
+    # which is under `least` stations, so it is dropped rather than fitted, and
+    # the two faces either side of it meet where their own lines cross.
+    grown = slab.dilate(1.0).erode(0.5)           # what `Site.footprint` does
+    faces = grown.edges(g, 1.0, least=3)
+    check("edges drops the arc a pad leaves at a corner", len(faces) == 4,
+          f"{len(faces)} face(s): "
+          + ", ".join(f"{e.angle:.0f} deg over {e.span} stations"
+                      for e in faces))
+    # The corner itself is asked of the polygon and not of `checks.corners`,
+    # which reads a *rasterised* outline: a rectangle drawn dead square at this
+    # angle comes back from it as five or six vertices, so "four" is not an
+    # answer any raster at 52 degrees can give. What the primitive claims is
+    # narrower and exact -- the corner is where the two faces cross -- and a
+    # half-metre pad puts that crossing on the corner of the padded rectangle.
+    out = grown.faceted(g, 1.0)
+    crosses = [faces[i].meets(faces[(i + 1) % len(faces)])
+               for i in range(len(faces))]
+    want = [(5.5, 5.5), (54.5, 5.5), (54.5, 30.5), (5.5, 30.5)]
+    off = (max(min(math.hypot(u - wu, v - wv) for wu, wv in want)
+               for u, v in crosses)
+           if len(faces) == 4 and all(c is not None for c in crosses)
+           else 99.9)
+    check("faceted puts a corner where its own two faces cross",
+          out is not None and off <= 1.0,
+          f"worst corner {off:.2f} m from where a half-metre pad puts it")
+
+    # 14. And a chamfer long enough to be a face is kept as one. `least` has to
+    # cut between the quarter-disc the pipeline puts in by itself and the corner
+    # somebody cut back on purpose, and a rule that squared off both would be
+    # `box` with more arithmetic.
+    chamfer = g.region(W, L, lambda u, v: 6.0 <= u < 54.0 and 6.0 <= v < 30.0
+                       and (u - 6.0) + (v - 6.0) >= 8.0)
+    faces = chamfer.edges(g, 1.0, least=3)
+    skew = [e for e in faces
+            if min(abs(e.angle - 0), abs(e.angle - 90),
+                   abs(e.angle - 180)) > 20]
+    check("edges keeps a chamfer that is long enough to be a face",
+          len(faces) == 5 and len(skew) == 1 and abs(skew[0].angle - 135) <= 5,
+          f"{len(faces)} face(s), skew one at "
+          + (f"{skew[0].angle:.0f} deg over {skew[0].span} stations"
+             if skew else "none"))
+
+    # 15. A curve comes back as the polygon the tolerance asks for, and says as
+    # much by the number of faces: a disc is not four faces badly fitted, it is
+    # a dozen short ones fitted well. A caller wanting a circle draws a circle
+    # -- `Frame.disc` -- and this is here so that reading one is not silently
+    # mistaken for reading a building.
+    disc = g.disc(W, L, 30.0, 30.0, 16.0)
+    faces = disc.edges(g, 1.0)
+    longest = max((e.run for e in faces), default=0.0)
+    check("edges reads a curve as many short faces",
+          len(faces) >= 8 and longest <= 16.0,
+          f"{len(faces)} face(s), longest {longest:.1f} m of a "
+          f"{2 * 16.0:.0f} m disc")
+
+    # 16. And every one of them is inside the tolerance at its *worst* station
+    # rather than on average. This is the guarantee that makes a fitted polygon
+    # worth drawing at all, and it is not the same guarantee as a small RMS: an
+    # arc's stations all sit on one side of its chord, so a face can average
+    # half a metre off and be two metres off in the middle. Merged on the RMS
+    # this disc came back as a heptagon whose every side was a metre outside it.
+    bowed = max((e.worst for e in faces), default=9.9)
+    check("no fitted face is a bow the average hides", bowed <= 1.0,
+          f"worst station on any face {bowed:.2f} m off its line")
+
+    # 17. Stations the shape is not on are dropped before the fit and not read
+    # as zero. Asked of the fitting helper directly, because the failure is
+    # invisible from outside: a face with a gap in it still comes back as a
+    # face, just tilted, and the tilt is a degree or two on a real building.
+    line = [(u, 4.0) for u in range(0, 41)]
+    gapped = [p for p in line if not 12.0 <= p[0] < 28.0]
+    whole = _fit_face(line, 1.0, 1.0)
+    holed = _fit_face(gapped, 1.0, 1.0)
+    check("a fit drops the stations it has nothing on",
+          abs(whole["m"] - holed["m"]) < 1e-6
+          and holed["absent"] == 16 and holed["kept"] == 25,
+          f"slope {whole['m']:+.4f} whole against {holed['m']:+.4f} gapped, "
+          f"{holed['absent']} station(s) absent of {holed['span']}")
 
     if failures:
         print(f"\n[evenness] {len(failures)} failed: {', '.join(failures)}")

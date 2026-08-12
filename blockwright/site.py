@@ -61,6 +61,13 @@ class Site:
     # Set it to 0.0 in a building whose parts are boxes and discs: nothing was
     # traced there, so there are no notches, and closing only rounds the corners
     # off shapes the map drew square.
+    #
+    # In metres, and by rights it should be in cells -- `slack`. What it closes
+    # is the notch a rasterised edge leaves, and that notch is `staircase`
+    # wide, so half a metre is half a notch on a building square to the world
+    # and a third of one at fifty-seven degrees. It stays in metres because
+    # every footprint in the corpus was drawn with this number and changing the
+    # unit moves all seven of them; `docs/backlog.md` carries it.
     CLOSE = 0.5
 
     # Whether a part the decomposition called a disc is drawn as one. True is
@@ -143,6 +150,26 @@ class Site:
         # Filled by `across` on first use: how far the drawn mass reaches across
         # the plot at each station along it.
         self._reach: dict[int, tuple[float, float]] | None = None
+
+    def slack(self, cells: float = 1.0) -> float:
+        """`cells` cells of this frame's grid, in metres.
+
+        For every threshold that means "near enough to be the same thing" --
+        the gap between two parts drawn separately, the reach that joins a
+        floor to the wall it belongs to, the width of a seam. Written as metres
+        those thresholds mean different numbers of cells on different
+        buildings, and the corpus runs from square to the world to
+        fifty-seven degrees off it: `dilate(2.0)` is two cells on one and 1.4
+        on the other, and it is the diagonal building where a gap is hardest to
+        rasterise and the threshold most needs to be generous.
+
+        `Grading.slack` is the same function on the gate's side, and the two
+        have to agree or the build closes a seam the gate then measures open.
+
+        Not to be used for a dimension of the building. A balcony is 1.8 m deep
+        because it is 1.8 m deep, at any angle.
+        """
+        return cells * self.staircase
 
     # -- what `derive` had to have written ---------------------------------
 
@@ -408,6 +435,59 @@ class Site:
         u0, u1, v0, v1 = box
         return self.rect(u0 - self.pad, u1 + self.pad,
                          v0 - self.pad, v1 + self.pad)
+
+    def faceted(self, name: str, tolerance: float = 1.0, least: int = 3,
+                report: bool = True) -> Mask:
+        """One part rebuilt as the polygon of its own fitted faces.
+
+        The idiom for a part that is a polygon and not a rectangle: a slab with
+        a raked end, a wing splayed off the street grid, anything cut off by a
+        plot boundary. `squared` can only offer a rectangle in u and v, so on
+        one of those it either squares off the rake -- which is the one thing
+        the mapper drew on purpose -- or is not used, and every building that
+        met the case wrote the rake by hand off a pair of extreme points. A pair
+        of extreme points is the reading a single cell of tracing whisker moves,
+        and on one building it put a five metre wedge down a side that is
+        straight on the map.
+
+        Here each face is a line fitted to every station of itself and the
+        corners are where those lines cross, so a whisker is one station out of
+        thirty and the corner is as good as the two faces that make it. See
+        `Mask.edges` for how the faces are found and `Edge` for what each one
+        knows about its own fit.
+
+        The pad is applied by moving each face out along its own normal, so a
+        padded corner is still a corner. `footprint` pads with a dilation, which
+        is Euclidean and therefore a disc, and comes back with every convex
+        corner bitten by a quarter-disc of `pad + CLOSE`.
+
+        Stops rather than guesses when fewer than `least`-station faces are
+        left, which is what a disc, a blob or a part smaller than its own noise
+        comes to. Quietly handing back the drawn shape there would put the
+        rounded corner into the build under the name of the fix for it. Use
+        `footprint` for a shape that has no faces, and say so where it is used.
+        """
+        p = self.parts[name]
+        if p.kind == "disc" and self.ROUND:
+            return self.disc(p.centre[0], p.centre[1], p.radius + self.pad)
+        faces = p.mask.edges(self.frame, tolerance=tolerance, least=least)
+        out = p.mask.faceted(self.frame, pad=self.pad, edges=faces)
+        if out is None:
+            raise SystemExit(
+                f"part {name!r} leaves {len(faces)} straight face(s) at a "
+                f"{tolerance:.1f} m tolerance, and a polygon needs three; it is "
+                "a curve, a blob or smaller than its own drawing noise -- draw "
+                "it with footprint or box and say why")
+        if report:
+            # The face reported is the one furthest off its line at a single
+            # station, not the one with the worst average: a bowed face averages
+            # well and is the one worth looking at.
+            bent = max(faces, key=lambda e: e.worst)
+            print(f"  {name}: {len(faces)} face(s), "
+                  + ", ".join(f"{e.angle:.0f} deg/{e.run:.0f} m" for e in faces)
+                  + f"; worst fit {bent.worst:.2f} m at a station, "
+                  f"{bent.spread:.2f} m over {bent.kept}/{bent.span}")
+        return out
 
     def box(self, name: str) -> Mask:
         """One part as the rectangle its extent describes, opened by the pad.

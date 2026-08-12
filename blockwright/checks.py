@@ -518,19 +518,42 @@ def conformance(drawn: Mask, built: Mask, within: Mask | None = None) -> dict:
     most buildings -- a balcony, a cornice, a canopy and a deck all overhang a
     plan the map drew as walls -- so it is a number to print and to threshold
     per building rather than a fault by itself.
+
+    **`worst_missing` and `worst_outside` are what to grade, and the shares are
+    what to print.** The two states this has to tell apart are "the outline
+    moved by a cell all the way round", which is the pad and the straightening
+    doing their job, and "there is a wedge of forty-four cells out past the
+    corner", which is a defect -- and by area they are nearly the same building.
+    One real case: a clean build scored 0.981 and the one with the wedge in it
+    scored 0.974, six thousandths apart and both plausible. The largest
+    connected piece of the disagreement separates them at a glance: one to three
+    cells against forty-four. So the blob is the number with a budget on it and
+    the overlap is a number to read.
+
+    `built` should be a filled slice -- `slice | slice.holes()` -- or every room
+    in the building reads as a hole the build failed to fill.
     """
     from .mask import iou
 
     want = drawn.count()
     if not want:
-        return {"missing": 0.0, "outside": 0.0, "iou": 1.0, "cells": 0}
+        return {"missing": 0.0, "outside": 0.0, "iou": 1.0, "cells": 0,
+                "worst_missing": 0, "worst_outside": 0}
     inside = (built & drawn).count()
+    short = drawn - built
     beyond = built - (within if within is not None else drawn)
+
+    def biggest(mask: Mask) -> int:
+        found = mask.components()
+        return found[0].count() if found else 0
+
     return {
         "missing": 1.0 - inside / want,
         "outside": beyond.count() / want,
         "iou": iou(drawn, built & drawn) if inside else 0.0,
         "cells": want,
+        "worst_missing": biggest(short),
+        "worst_outside": biggest(beyond),
     }
 
 

@@ -38,7 +38,7 @@ from pathlib import Path
 
 from . import checks, gate, measure, report, sources, style
 from . import model as model3d
-from .mask import Mask
+from .mask import Mask, iou
 from .mesh import Mesh
 from .schedule import Schedule
 from .schem import AIR, Schematic
@@ -155,6 +155,31 @@ class Grading:
         """Whether the building set this itself or inherited the default."""
         return hasattr(self.c, name)
 
+    def slack(self, read, cells: float = 2.0) -> float:
+        """`cells` cells of the build's own grid, in metres.
+
+        Every "is this the same piece or the next one" threshold in this file
+        means a number of cells and was written as a number of metres, which is
+        the same thing only on a building that stands square to the world. It
+        does not: a one-cell step along an edge at angle t covers
+        `|cos t| + |sin t|` metres -- 1.0 head-on, 1.41 at forty-five degrees --
+        so `dilate(2.0)` reaches two cells across a north-south building and
+        1.4 across a diagonal one. The corpus runs from 0 to 57 degrees, so the
+        same constant has meant two different things the whole time, and the
+        one it means least is on the buildings whose edges are hardest to
+        rasterise.
+
+        Named `slack` rather than `reach` because it is never a dimension of
+        the building: it is how far apart two cells may be and still be one
+        thing -- the pad's half-metre, the gap a diagonal wall leaves between a
+        floor and the wall it belongs to, the width of the seam between two
+        parts drawn separately.
+
+        Measured off the frame rather than read from `derived.json`, so a
+        caller with a frame and no survey gets the same answer.
+        """
+        return cells * measure.staircase(read.frame)
+
     # -- the run -----------------------------------------------------------
 
     def main(self) -> int:
@@ -201,8 +226,8 @@ class Grading:
         cut = self.divisions(g, model, sched)
         self.watertight(g, cut)
         self.evenness(g, model, read, sched)
-        self.plan_shape(g, model, read)
-        self.corners(g, model, read)
+        plan = self.plan_shape(g, model, read)
+        self.corners(g, model, read, derived, sched)
         mixes, matrix = self.facades(g, model, read, derived)
         self.elevations(g, derived)
         self.grounds(g, derived, read, sched)
@@ -230,6 +255,7 @@ class Grading:
                                     for name, found in mixes.items()},
                            facade_matrix=[[a, b, round(far, 3)]
                                           for a, b, far in matrix],
+                           plan=plan,
                            evidence=derived.get("evidence"))
 
         for line in (reg.lines() if reg is not None else []):
@@ -686,8 +712,39 @@ class Grading:
                   "bitten where the pool is, and every one of those is the "
                   "reading rather than the thing")
 
-    def plates(self, model, read, names):
-        """The floor plate of each named plan part: (level, cover, spill).
+    def drawn_mass(self, read) -> Mask:
+        """The whole drawn building, however this plan came to be read."""
+        mass = getattr(read, "mass", None)
+        if mass is None:
+            mass = Mask.union([p.mask for p in read.named.values()])
+        return mass
+
+    def outside_ring(self, model, read) -> tuple[Mask, int]:
+        """The plot round the building: empty at a storey, solid at the ground.
+
+        The one test that tells a floor plate from a course of terrain, and it
+        has to look *outside* the building to do it. Inside, the two are
+        indistinguishable -- paving under a court and a floor slab over it are
+        both a filled level -- and outside, the ground is laid to the edge of
+        the plot and a storey is sky.
+        """
+        mass = self.drawn_mass(read)
+        u0 = min(p.u0 for p in read.named.values())
+        u1 = max(p.u1 for p in read.named.values())
+        v0 = min(p.v0 for p in read.named.values())
+        v1 = max(p.v1 for p in read.named.values())
+        ring = (read.frame.rect(model.width, model.length,
+                                u0 - 8.0, u1 + 8.0, v0 - 8.0, v1 + 8.0)
+                - mass.dilate(self.slack(read)))
+        return ring, max(1, ring.count())
+
+    def plates(self, model, read, figures, windows=None):
+        """The floor plate of each named figure: (level, cover, spill).
+
+        `figures` is `{name: Mask}` -- a plan part, a run measured along the
+        building, a footprint a manifest part declared. Masks and not names,
+        because the interesting figures on an E- or an H-plan are not parts:
+        see `Grading.figures`.
 
         A plate is a level that is full over the part and empty *outside the
         building*. Both halves are needed and the second is easy to get wrong.
@@ -711,38 +768,44 @@ class Grading:
         not the same shape: the top one is a roof with plant on it and a setback
         under it. Its own first floor is where its plan shape is.
 
+        `windows` narrows the search for a figure that already knows where it
+        lives: `{name: (y0, y1)}`, half-open, as a manifest declaration gives
+        it. Without one the search caught a garden deck a metre under itself --
+        the plinth it is laid on covers the same cells, qualifies as a plate,
+        and is a different shape -- and reported the difference as the garden
+        having been built wrong. A figure that declares its own height is not
+        asking about any other.
+
         Returns the qualifying plates and, separately, the best cut found for
         every part, so a caller can say what it looked at when nothing
         qualified.
         """
+        windows = windows or {}
         least = self._("CORNERS_COVER", 0.80)
         # How much of the plot round the building may stand at a course before
         # that course is the terrain rather than a floor. A quarter and not a
         # half: a row that reads the map against the map cannot fail, which is a
         # worse outcome than an ungraded row.
         clear = self._("CORNERS_CLEAR", 0.25)
-        reach = 2.0
 
-        u0 = min(p.u0 for p in read.named.values())
-        u1 = max(p.u1 for p in read.named.values())
-        v0 = min(p.v0 for p in read.named.values())
-        v1 = max(p.v1 for p in read.named.values())
-        mass = getattr(read, "mass", None)
-        if mass is None:
-            mass = Mask.union([p.mask for p in read.named.values()])
-        ring = (read.frame.rect(model.width, model.length,
-                                u0 - 8.0, u1 + 8.0, v0 - 8.0, v1 + 8.0)
-                - mass.dilate(reach))
-        ring_cells = max(1, ring.count())
-
+        ring, ring_cells = self.outside_ring(model, read)
         step = max(1, model.height // 24)
+        # Anchored at each window's own floor as well as at the building's, or
+        # a part one course deep falls between two steps of the sweep and is
+        # ungraded for want of ever having been looked at.
+        levels = set(range(1, model.height, step))
+        for low, high in windows.values():
+            levels.update(range(max(1, int(low)),
+                                min(model.height, int(high)), step))
         plates: dict[str, tuple[int, float, float]] = {}
         best: dict[str, tuple[int, float, float]] = {}
-        for y in range(1, model.height, step):
+        for y in sorted(levels):
             layer = solid(model, y)
             spill = (layer & ring).count() / ring_cells
-            for name in names:
-                mask = read.named[name].mask
+            for name, mask in figures.items():
+                low, high = windows.get(name, (0, model.height))
+                if not low <= y < high:
+                    continue
                 cover = (layer & mask).count() / max(1, mask.count())
                 seen = best.get(name)
                 if seen is None or cover - spill > seen[1] - seen[2]:
@@ -771,13 +834,22 @@ class Grading:
         eight metres short of its own drawing, or a court the recipe filled in,
         had nothing anywhere to fail against.
 
-        Two numbers per part, because the two directions are fixed in different
-        files -- see `checks.conformance`. `missing` is graded by default:
-        the plan says material stands there and it does not. `outside` is
-        printed by default and graded only where a building sets
-        `PLAN_OUTSIDE`, because a balcony, a cornice, a canopy and a deck all
-        legitimately overhang a plan the map drew as walls, and a default
-        threshold on that would be a number nobody measured.
+        **Graded on the largest connected piece of the disagreement, not on the
+        share.** The share cannot tell the two states apart: an outline that
+        moved a cell all the way round -- the pad and the straightening doing
+        what they are for -- and a wedge of forty-four cells past one corner
+        came out at 0.981 and 0.974 on one real pair, six thousandths apart. The
+        blob separates them at one to three cells against forty-four. So
+        `PLAN_BLOB` is the budget and the shares are printed beside it.
+
+        Material *outside* the plan is printed and graded only where a building
+        sets `PLAN_OUTSIDE`, and that asymmetry is measured rather than timid: a
+        balcony, a cornice, a canopy and a roof track all legitimately overhang
+        a plan the map drew as walls, and across the corpus the largest such
+        piece runs from nothing to a hundred and sixty cells with nothing wrong
+        anywhere. There is no default that separates a wedge from a cornice.
+        What separates them is that a wedge *appeared*, so the number is
+        written into the report and `report.moved` is what raises it.
 
         Also draws the answer: `out/compare/plan-vs-build.png` lays the drawn
         plan and the build's own plates over each other in three colours. Four
@@ -786,12 +858,17 @@ class Grading:
         is the difference between rounding and a defect.
         """
         allowed = self._("PLAN_MISSING", 0.12)
+        # A dozen cells. Under it the disagreement is an edge that moved, which
+        # is what the pad and the straightening are for; over it it is a piece
+        # of building in the wrong place. Measured rather than chosen: a clean
+        # plate disagrees in ones and twos and the wedge that shipped was 44.
+        blob = self._("PLAN_BLOB", 12)
         beyond = self._("PLAN_OUTSIDE", None)
-        mass = getattr(read, "mass", None)
-        if mass is None:
-            mass = Mask.union([p.mask for p in read.named.values()])
+        mass = self.drawn_mass(read)
 
-        plates, best = self.plates(model, read, read.named)
+        plates, best = self.plates(
+            model, read, {n: p.mask for n, p in read.named.items()})
+        measured: dict[str, dict] = {}
         # The picture is drawn against the whole **mass** and not against the
         # union of the parts, so that it says the same thing the numbers do.
         # `plan.decompose` subtracts the mapper's drawn line to find the parts,
@@ -812,26 +889,50 @@ class Grading:
                     "as well. Nothing here can be compared against the drawing")
                 continue
             at = found[0]
-            layer = solid(model, at)
-            near = layer & part.mask.dilate(6.0)
+            # Filled before it is compared, and filled at the building's own
+            # reach rather than the part's. A storey is a ring of walls round
+            # rooms and every level of a real building has light wells, shafts
+            # and stairs in it, each of which would read as material the build
+            # failed to place -- so the holes are closed. But a court is not a
+            # hole: it is open to the sky at one end, and `holes` knows that
+            # only while the mask has not been dilated far enough to bridge its
+            # mouth. Dilated by six cells the E's courts closed over, filled,
+            # and every part came back at nought per cent missing -- a row that
+            # had stopped being able to fail.
+            near = (self.plate_of(model, read, mass, at)
+                    & part.mask.dilate(self.slack(read, 4.0)))
             shape = checks.conformance(part.mask, near, within=mass)
-            drawn_all = drawn_all | part.mask | (mass & part.mask.dilate(2.0))
+            measured[name] = {
+                "at": at,
+                "iou": round(shape["iou"], 4),
+                "missing": round(shape["missing"], 4),
+                "outside": round(shape["outside"], 4),
+                "worst_missing": shape["worst_missing"],
+                "worst_outside": shape["worst_outside"],
+            }
+            drawn_all = (drawn_all | part.mask
+                         | (mass & part.mask.dilate(self.slack(read))))
             built_all = built_all | near
-            ok = shape["missing"] <= allowed
+            ok = shape["worst_missing"] <= blob
             if beyond is not None:
                 ok = ok and shape["outside"] <= beyond
             g.add(f"{name} stands where the plan says", ok,
-                  f"{shape['missing']:.0%} of the drawn part has nothing on it "
-                  f"at {at} m (allowed {allowed:.0%}), and material equal to "
-                  f"{shape['outside']:.0%} of it stands outside the whole "
-                  "drawn plan"
-                  + (f" (allowed {beyond:.0%})" if beyond is not None
-                     else ", which is printed rather than graded -- a balcony, "
-                          "a cornice and a canopy all overhang a plan drawn as "
+                  f"the largest piece of the drawn part with nothing on it at "
+                  f"{at} m is {shape['worst_missing']} cell(s), budget {blob}; "
+                  f"{shape['missing']:.0%} of it is unbuilt in all and the two "
+                  f"overlap {shape['iou']:.3f}. Material equal to "
+                  f"{shape['outside']:.0%} of the part stands outside the whole "
+                  f"drawn plan, worst piece {shape['worst_outside']} cell(s)"
+                  + (f", allowed {beyond:.0%}" if beyond is not None
+                     else " -- printed rather than graded, because a balcony, a "
+                          "cornice and a canopy all overhang a plan drawn as "
                           "walls; set PLAN_OUTSIDE to hold this building to a "
                           "figure")
                   + ". Against the plan and not the reference: this says the "
                     "machinery kept the shape it was given")
+
+        self.built_straight(g, model, read, mass, plates)
+        self.pieces(g, model, read, mass, plates)
 
         if drawn_all.count():
             from . import compare
@@ -841,9 +942,200 @@ class Grading:
             print(f"[gate] {path}: grey where the plan and the build agree, "
                   "warm where the plan drew material the build did not stand "
                   "on, cool where the build went outside the plan")
+        return measured
 
-    def corners(self, g, model, read):
-        """Whether the parts the map drew square were built square.
+    def plate_of(self, model, read, mass, at: int) -> Mask:
+        """The build's own floor plate at one level, as a solid figure.
+
+        The level inside the building's own reach, with each piece's holes
+        closed. Two cells of reach and not more -- `Grading.slack`, which is
+        metres on a building square to the world and 2.8 m on one at
+        forty-five degrees, because that is what two cells are there. The pad
+        puts the built face half a metre outside the drawn one and a wall leans
+        no further than that, while six cells bridges the mouth of a court and
+        turns the court into a hole to be filled.
+
+        **Every piece and not the largest one.** Taking the largest was the
+        obvious reading of "the plate" and it is wrong on any building whose
+        plan has more than one thing in it: a roof track standing over a bowl,
+        a pavilion in a court, the second of two blocks. Dropped, those parts
+        came back as a hundred per cent of the drawing unbuilt -- the loudest
+        possible failure, about a part that was standing there the whole time.
+        """
+        found = solid(model, at) & mass.dilate(self.slack(read))
+        out = Mask(found.width, found.length)
+        for piece in found.components(min_cells=self._("MIN_PART")):
+            out = out | piece | piece.holes()
+        return out
+
+    def built_straight(self, g, model, read, mass, plates):
+        """Whether the outline the build stands on is one line or a staircase.
+
+        `checks.jaggedness` is already asked of every part, and of the **map**:
+        it reads the drawn mask and answers "how wobbly a line did the mapper
+        draw". That is a real question and it is not this one. A plan can come
+        back at 2 per cent -- a clean drawing -- while the build standing on it
+        has an edge that steps 1, 2, 3, 2 cells at a time, because the pad, the
+        closing, a hand-written rectangle and a mask union each put their own
+        teeth in after the drawing was read. Nothing measured the result.
+
+        The same measure, on the built outline. A perfectly straight edge at
+        fifty degrees to the world grid is a staircase, and that is the point of
+        defining jaggedness against `Mask.straighten` rather than against local
+        roughness: an even staircase simplifies to one segment and scores near
+        zero, and a staircase with uneven treads does not. It is the only
+        measure in the pipeline that can say "a straight line stopped being
+        straight", and until now it only ever asked it of the drawing.
+
+        Taken over the whole plate rather than per part, because a part's own
+        clipped slice inherits the drawn mask's boundary and would report the
+        map's number back.
+        """
+        if not plates:
+            return
+        at = min(y for y, _, _ in plates.values())
+        built = self.plate_of(model, read, mass, at)
+        if not built.count():
+            return
+
+        budget = self._("BUILT_JAGGED", 0.15)
+        found = checks.jaggedness(built, read.frame)
+        drew = checks.jaggedness(mass, read.frame)
+        g.add("the built outline is straight", found["share"] <= budget,
+              f"{found['share']:.0%} of the plate at {at} m differs from its "
+              f"own straightened reading, over {found['vertices']} straight "
+              f"segments; budget {budget:.0%}. The map's own outline reads "
+              f"{drew['share']:.0%} over {drew['vertices']} -- this row is the "
+              "build's edge and that one is the drawing's, and a clean drawing "
+              "does not stop the build from stepping")
+
+    def pieces(self, g, model, read, mass, plates):
+        """One drawn part, one plate: the floor over it does not arrive in two.
+
+        `COUNTS` answers a version of this and answers it better -- how many
+        things stand inside one declared part -- and it is a table somebody has
+        to fill in with the right number before the run. It caught a floor
+        coming apart twice on one building, and it is optional, so the case it
+        cannot cover is the building where nobody thought to fill it in.
+
+        This needs nothing filled in, because the drawing already carries the
+        answer: what the map draws as one continuous part has one floor over
+        it, and a plate that comes back in two pieces has come apart -- at the
+        joint between two kinds of wall, at a court built closed, where an arm
+        parted from its slab. None of those moves a silhouette, a section or
+        the schedule.
+
+        **Per part at its own plate, and not per level over the whole
+        building.** The obvious form -- as many pieces standing as the map drew,
+        at every level in `LEVELS` -- was tried and is simply false about real
+        buildings: a stadium whose plan is one connected drum stands as six
+        separate things at twenty metres and twenty at twenty-eight, all of them
+        correct, because a ring, a roof track and a wall panel end at different
+        heights. Connectivity in plan is not connectivity at a height, and only
+        the second one has a floor to be measured on.
+
+        Counted at the building's own reach rather than at the drawn edge. The
+        pad puts a built face half a metre outside the line the map drew, so a
+        cut taken at that line shaves the cells joining one part to the next: on
+        one building it reported an eight-metre strip of wall as a second piece
+        at four levels of five, and the building was sound. The reach is two
+        cells, not two metres -- `Grading.slack`.
+        """
+        least = self._("MIN_PART")
+        reach = mass.dilate(self.slack(read))
+        for name, found in plates.items():
+            at = found[0]
+            part = read.named[name]
+            over = solid(model, at) & reach & part.mask.dilate(self.slack(read))
+            standing = over.components(min_cells=least)
+            g.add(f"{name} is one plate at {at} m", len(standing) <= 1,
+                  f"{len(standing)} piece(s) of floor over a part the map draws "
+                  "as one"
+                  + ("" if len(standing) <= 1 else
+                     ", sizes " + ", ".join(str(p.count())
+                                            for p in standing[:5])
+                     + " -- a floor that came apart at the joint between two "
+                       "kinds of wall, a court built closed, or an arm off its "
+                       "slab"))
+
+    def figures(self, model, read, derived, sched) -> dict[str, tuple]:
+        """Every measured figure a squareness row could be asked about.
+
+        A figure is a name, a mask saying what shape something is supposed to
+        be, a note about who said so, and the courses it lives in where that is
+        known. Three sources, in falling order of authority:
+
+        *The plan's own parts.* The map is the authority for the plan, and a
+        part is what it drew. This was the only source, and on the two most
+        interesting plans in the corpus it yields nothing usable: the mapper
+        draws no line between an arm of an E and the court beside it, so
+        `plan.decompose` returns the whole E as one region, and one region
+        shaped like an E is nowhere near its own bounding rectangle. The row
+        went ungraded on exactly the buildings whose corners are worth asking
+        about.
+
+        *The runs `probes` measured along the building.* Cut the drawn mass at
+        the u range of a run and the arm falls out of the E as its own figure --
+        still the map's drawing, still the map's authority, just divided at a
+        line the mapper did not draw and the geometry does. `facade_spans`
+        already reads these for the same reason.
+
+        *The footprints the manifest parts declared.* Not a drawing at all but
+        `build.py`'s own claim, and worth a row for a reason the other two do
+        not cover: `Canvas.fill` is last-write-wins, so a part declared square
+        can be eaten into at a corner by a part drawn after it, and the
+        declaration keeps saying square. Skipped where a plan part already has
+        the name, and only ever the shape at a floor plate, so a declaration
+        that spans forty metres of tower is compared against a storey of it --
+        a storey **of its own**, which is what the y range is carried for. A
+        garden deck one course deep, searched over the whole building, was
+        graded against the plinth a metre under it and failed for being a
+        different shape from something it is not.
+
+        Figures too close to one already taken are dropped -- a run that is a
+        part is one figure, not two -- and so are figures too small to have
+        corners worth measuring.
+
+        Near-*equal* and not contained, which is the difference between a
+        working row and a silent one. Dropping a figure because a bigger one
+        already covers it throws away every arm of the E, since an arm is by
+        construction a subset of the E, and leaves the row with nothing but the
+        letter it could not grade in the first place.
+        """
+        out: dict[str, tuple] = {}
+        least = max(self._("MIN_PART"), 64)
+
+        def keep(name: str, mask: Mask, whose: str, window=None) -> None:
+            if name in out or mask.count() < least:
+                return
+            for held, _, _ in out.values():
+                if iou(held, mask) >= 0.8:
+                    return
+            out[name] = (mask, whose, window)
+
+        for name, part in read.named.items():
+            keep(name, part.mask, "the map's own part")
+
+        mass = self.drawn_mass(read)
+        runs = (derived.get("wings") or {}).get("found") or []
+        if runs:
+            v0 = min(p.v0 for p in read.named.values()) - 8.0
+            v1 = max(p.v1 for p in read.named.values()) + 8.0
+            for i, run in enumerate(runs, 1):
+                u0, u1 = float(run["u"][0]), float(run["u"][1])
+                band = read.frame.rect(model.width, model.length,
+                                       u0, u1, v0, v1)
+                keep(f"run {i} (u {u0:.0f}..{u1:.0f})", mass & band,
+                     "a run probes measured along this building")
+
+        if sched is not None:
+            for name, held in sched.built.items():
+                keep(name, held.mask, "a footprint this build declared",
+                     (int(held.y0), max(int(held.y0) + 1, int(held.y1))))
+        return out
+
+    def corners(self, g, model, read, derived=None, sched=None):
+        """Whether the figures drawn square were built square.
 
         **This grades conformance and not resemblance, and the difference is
         the whole of how to read it.** The witness here is the plan, which is
@@ -879,10 +1171,21 @@ class Grading:
         placed outside the plan. The section and the silhouette sheets cover
         the other direction.
 
-        Asked only of the parts the *map* drew as rectangles, because only there
-        is there an answer to compare against. A part whose drawn mask is
-        `SQUARE_SAME` or more of the rectangle fitted to it is one of those, and
-        the build should stand about as square there as the map drew.
+        Asked only of the figures drawn as rectangles, because only there is
+        there an answer to compare against: a figure whose mask is `SQUARE_SAME`
+        or more of the rectangle fitted to it is one of those, and the build
+        should stand about as square there as it was drawn.
+
+        **A figure is not only a plan part**, and that was the row's largest
+        hole. On an E- and on an H-plan the mapper draws no line between an arm
+        and the court beside it, `plan.decompose` hands back one region shaped
+        like the whole letter, and a letter is nowhere near its own bounding
+        box -- so the row printed "the map drew nothing here as a rectangle" on
+        precisely the two buildings with the most corners in them. `figures`
+        adds the runs `probes` measured along the building, which cut the arms
+        out of the E at lines the geometry draws, and the footprints the
+        manifest parts declared, which catch a square part eaten into at a
+        corner by a part `Canvas.fill` drew after it.
 
         Read off a floor plate of the build itself rather than off anything
         declared, so it cannot be answered by naming a part. **Which** plate is
@@ -891,53 +1194,67 @@ class Grading:
         own rectangle however square it is. `LEVELS` is no help here -- it is
         chosen for counting components, and on one building its lowest entry
         sits between the ground and the first slab. So every level is tried and
-        the plate that covers most of the drawn part wins; a part that has no
-        such plate is ungraded rather than failed, because the row could not
+        the plate that covers most of the drawn figure wins; a figure that has
+        no such plate is ungraded rather than failed, because the row could not
         find the thing it was going to measure.
         """
         square = self._("SQUARE_SAME", 0.90)
         budget = self._("CORNERS_LOST", 0.05)
         least = self._("CORNERS_COVER", 0.80)
-        wanted = {name: found for name, found in
-                  ((name, checks.rectangular(part.mask, read.frame))
-                   for name, part in read.named.items())
-                  if found["share"] >= square}
+        offered = self.figures(model, read, derived or {}, sched)
+        wanted = {}
+        for name, (mask, whose, window) in offered.items():
+            found = checks.rectangular(mask, read.frame)
+            if found["share"] >= square:
+                wanted[name] = (mask, whose, window, found)
         if not wanted:
             g.ungraded(
                 "corners",
-                f"the map drew nothing here as a rectangle -- no part reaches "
-                f"{square:.0%} of its own fitted box -- so there is no corner "
-                "this row can hold the build to.")
+                f"nothing here is drawn as a rectangle -- of "
+                f"{len(offered)} figure(s) offered (the map's parts, the runs "
+                f"probes measured, the footprints the build declared) none "
+                f"reaches {square:.0%} of its own fitted box -- so there is no "
+                "corner this row can hold the build to.")
             return
 
-        plates, best = self.plates(model, read, wanted)
-        for name, drawn in wanted.items():
+        plates, best = self.plates(
+            model, read, {n: f[0] for n, f in wanted.items()},
+            {n: f[2] for n, f in wanted.items() if f[2] is not None})
+        for name, (mask, whose, _, drawn) in wanted.items():
             at, cover, spill = plates.get(name) or best.get(name, (0, 0.0, 1.0))
             if name not in plates:
+                # Two different nothings, and saying which is the difference
+                # between a gap and an expected silence. A figure that covers
+                # itself and the plot around it is a ground, and a ground has
+                # no floor plate by construction -- `RECTANGULAR` is where its
+                # shape is graded. A figure nothing covers is a wall, a rail or
+                # a set of panels, which has no floor either.
+                why = ("this is a surface laid over the plot -- a ground has no "
+                       "floor plate to read, and its shape is RECTANGULAR's row"
+                       if spill > self._("CORNERS_CLEAR", 0.25)
+                       else f"under {least:.0%} covered the row is looking at a "
+                            "wall, a rail or a ring rather than a floor")
                 g.ungraded(
                     f"{name} is built square",
                     f"no floor plate of this build stands over it clear of the "
                     f"ground: the best cut is {at} m, which covers {cover:.0%} "
                     f"of it with {spill:.0%} of the plot round the building "
-                    f"filled as well. Under {least:.0%} covered the row is "
-                    "looking at a wall ring rather than a floor, and a course "
-                    "with the plot in it is the terrain")
+                    f"filled as well -- {why}")
                 continue
-            # Cut to the part's *own* drawn mask, the way `divisions` counts
-            # inside a declared footprint and for the same reason: anything
-            # crossing between two parts stands in the same layer, and a shape
-            # taken over a box round one of them is that part welded to its
-            # neighbour. Clipped this way a rounded corner shows as the thing it
-            # is -- cells missing where the map drew material -- and nothing
-            # else can leak in.
-            part = read.named[name]
-            mine = solid(model, at) & part.mask
+            # Cut to the figure's *own* mask, the way `divisions` counts inside
+            # a declared footprint and for the same reason: anything crossing
+            # between two parts stands in the same layer, and a shape taken over
+            # a box round one of them is that part welded to its neighbour.
+            # Clipped this way a rounded corner shows as the thing it is --
+            # cells missing where material was drawn -- and nothing else can
+            # leak in.
+            mine = solid(model, at) & mask
             built = checks.rectangular(mine, read.frame)
             angles = checks.corners(mine, read.frame)
             g.add(f"{name} is built square",
                   built["share"] >= drawn["share"] - budget,
-                  f"the map draws it {drawn['share']:.0%} of its own rectangle "
-                  f"and the build stands {built['share']:.0%} of one on its "
+                  f"{whose}, drawn {drawn['share']:.0%} of its own rectangle; "
+                  f"the build stands {built['share']:.0%} of one on its "
                   f"plate at {at} m, on {angles['right']} right angle(s) of "
                   f"{angles['vertices']}; allowed to lose {budget:.0%}. Against "
                   "the plan and not against the reference: this says the "
