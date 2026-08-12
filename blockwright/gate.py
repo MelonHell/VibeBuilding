@@ -1133,10 +1133,10 @@ class Section:
     """The verdict on one window, and every station that went into it."""
 
     __slots__ = ("name", "u0", "u1", "mesh_u0", "mesh_u1", "stations",
-                 "skipped", "tolerance", "exemptions", "hits")
+                 "skipped", "tolerance", "exemptions", "hits", "dropped")
 
     def __init__(self, name, u0, u1, mesh_u0, mesh_u1, stations, skipped,
-                 tolerance, exemptions, hits):
+                 tolerance, exemptions, hits, dropped=()):
         self.name = name
         self.u0 = u0
         self.u1 = u1
@@ -1147,6 +1147,7 @@ class Section:
         self.tolerance = tolerance
         self.exemptions = exemptions
         self.hits = hits
+        self.dropped = list(dropped)
 
     @property
     def graded(self) -> int:
@@ -1185,7 +1186,9 @@ class Section:
             return (f"nothing to grade here: the reference offered "
                     f"{self.skipped} station(s) and the plan claims none of "
                     "them. Either this window is past the end of the building, "
-                    "or the clip has no material over it.")
+                    "or the clip has no material over it. Run the gate with "
+                    "--profile: it prints both skylines at every station here, "
+                    "with the reason against each one that was dropped.")
         return (f"{self.graded} stations, {self.misses} outside "
                 f"{self.tolerance:.0f} m ({self.empty} with nothing built), "
                 f"{sum(self.hits.values())} exempt, worst {self.worst:.1f} m "
@@ -1203,6 +1206,57 @@ class Section:
         out.extend(e.line(self.hits[e.name]) for e in self.exemptions)
         return out
 
+    def profile(self) -> list[str]:
+        """Both skylines over this window, every station, in one unit.
+
+        `lines` is the verdict and shows only what was graded. This is the
+        measurement the verdict was made from, and the difference between the
+        two is the question a person asks after two runs that did not move the
+        report: *is the window in the wrong place, or is the building right?* A
+        section that grades forty stations of ninety-six says so in one number
+        and cannot say which forty; the reader moves the window, gets another
+        number, and cycles. Both profiles side by side, with a reason against
+        every station that did not reach the verdict, answers it by being read.
+        The rows are sorted by v and not by which side offered them, because a
+        run of `--` down one column at one end of the building is the shape the
+        answer usually has, and it is only a shape if the table is in order.
+
+        Printed under `--profile` and never otherwise: it is a line per station
+        on both sides, the right length for the person holding this problem and
+        far too long for anybody else.
+        """
+        rows: list[tuple[float, str]] = []
+        for s in self.stations:
+            mark = "" if s.state == "ok" else s.state
+            if s.excuse:
+                mark = f"{s.state} ~ {s.excuse}"
+            rows.append((s.v, self._row(s.v, s.mesh, s.build, mark)))
+        for v, mesh, built, why in self.dropped:
+            rows.append((v, self._row(v, mesh, built, f"dropped: {why}")))
+        rows.sort(key=lambda r: r[0])
+        out = [
+            f"{self.name}: every station over build u {self.u0:.0f}..{self.u1:.0f}"
+            f" (mesh u {self.mesh_u0:.0f}..{self.mesh_u1:.0f}), "
+            f"{self.graded} graded and {len(self.dropped)} dropped",
+            f"{'v':>6} {'mesh':>6} {'build':>6} {'diff':>6}  state",
+        ]
+        out.extend(line for _, line in rows)
+        # A superset of `lines`, exemptions included, so the flag swaps the table
+        # out rather than printing every graded station twice.
+        out.extend(e.line(self.hits[e.name]) for e in self.exemptions)
+        return out
+
+    @staticmethod
+    def _row(v: float, mesh: float | None, built: float | None,
+             mark: str) -> str:
+        # A station only one side offered prints `--` rather than a zero: the
+        # whole use of this table is telling "nothing here" from "nothing tall
+        # here", and a zero reads as a measurement.
+        m = "--" if mesh is None else f"{mesh:.1f}"
+        b = "--" if built is None else f"{built:.1f}"
+        d = "--" if mesh is None or built is None else f"{built - mesh:+.1f}"
+        return f"{v:6.1f} {m:>6} {b:>6} {d:>6}  {mark}".rstrip()
+
     def report(self) -> dict:
         return {
             "name": self.name,
@@ -1212,6 +1266,11 @@ class Section:
             "graded": self.graded,
             "skipped": self.skipped,
             "misses": self.misses,
+            # Counted by reason and not listed: the list is the `--profile`
+            # table and belongs on a terminal, but the counts are what tell a
+            # reader of the report that there is a table worth asking for.
+            "dropped": {why: sum(1 for d in self.dropped if d[3] == why)
+                        for why in sorted({d[3] for d in self.dropped})},
             "empty": self.empty,
             "worst": round(self.worst, 2),
             "tolerance": self.tolerance,
@@ -1280,6 +1339,41 @@ def section(name: str, u0: float, u1: float, *, mesh: Cloud, build: Cloud,
     offered = [k for k, h in mesh_top.items() if h >= floor]
     graded = sorted(k for k in offered if build_bin(reg, k) in expected)
 
+    # Every station this window saw and did not grade, with the reason. Counted
+    # here and printed only under `--profile`, because the question it answers
+    # is the one asked after two runs that did not move the report: a section
+    # that grades forty stations of ninety-six is silent about the other
+    # fifty-six, and the reader cannot tell a window in the wrong place from a
+    # building that is right. The build column comes along because a station
+    # the reference drops is exactly where the build is graded by nothing.
+    # Carried in build v, the same unit and the same half-station offset the
+    # graded rows use, so the two can be printed as one table.
+    kept = set(graded)
+    dropped: list[tuple[float, float | None, float | None, str]] = []
+    for k in sorted(mesh_top):
+        if k in kept:
+            continue
+        b = build_top.get(build_bin(reg, k))
+        why = ("under the clutter floor" if mesh_top[k] < floor
+               else "the plan claims nothing here")
+        dropped.append((reg.to_build_v(k + 0.5), mesh_top[k], b, why))
+    # And the other direction: build material at a station the reference never
+    # offered at all. The section is one-directional by construction and this is
+    # the whole of what it cannot see. Two reasons and not one, because the two
+    # want opposite things done about them: a run of stations past the end of the
+    # clip is the site being larger than the capture and is expected, while a
+    # station inside the clip with nothing over it is either a hole in the
+    # reference or a piece of building nobody asked for.
+    seen = {build_bin(reg, k) for k in mesh_top}
+    inside = sorted((reg.to_build_v(reg.mesh_v[0]), reg.to_build_v(reg.mesh_v[1])))
+    for bv in sorted(build_top):
+        if bv in seen:
+            continue
+        why = ("nothing in the reference at this station"
+               if inside[0] <= bv <= inside[1]
+               else "past the end of the reference clip")
+        dropped.append((float(bv), None, build_top[bv], why))
+
     band = Band(name, u0, u1, mesh_top, build_top, reg)
     excused = [make(band) for make in exemptions]
     hits = {e.name: 0 for e in excused}
@@ -1310,7 +1404,7 @@ def section(name: str, u0: float, u1: float, *, mesh: Cloud, build: Cloud,
         stations.append(Station(k, v, m, b, "over" if d > 0 else "under"))
 
     return Section(name, u0, u1, m0, m1, stations, len(offered) - len(graded),
-                   tolerance, excused, hits)
+                   tolerance, excused, hits, dropped)
 
 
 __all__ = [

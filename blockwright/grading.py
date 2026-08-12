@@ -10,6 +10,12 @@ one branch that every one of them got slightly differently.
     def main() -> int:
         return GATE.main()
 
+`main` takes the command line, so every building's gate answers `--profile`:
+both skylines at every station of every window, graded and dropped alike, in one
+unit. That is the table to reach for when two runs in a row have not moved the
+report, because the ordinary output shows only the stations that were graded and
+cannot say whether the window is in the wrong place.
+
 The building's `gate.py` is then its constants and, where it needs one, its own
 `windows()` -- which stretches to cut a section through, and which exemptions
 each may use. Everything else here is fixed, and fixed on purpose: the order
@@ -34,6 +40,7 @@ what is written above.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from . import checks, gate, measure, report, sources, style
@@ -182,8 +189,18 @@ class Grading:
 
     # -- the run -----------------------------------------------------------
 
-    def main(self) -> int:
+    def main(self, argv=None) -> int:
         paths, derive, c = self.paths, self.derive, self.c
+
+        # One flag, and an unknown one is refused rather than ignored: somebody
+        # typing `--profiles` is asking for a table, and a run that prints the
+        # ordinary report and exits zero answers them with the wrong thing.
+        argv = list(sys.argv[1:] if argv is None else argv)
+        profile = "--profile" in argv
+        rest = [a for a in argv if a != "--profile"]
+        if rest:
+            raise SystemExit(f"unknown argument(s) {' '.join(rest)}; "
+                             "the gate takes --profile and nothing else")
 
         if not paths.DERIVED.exists():
             raise SystemExit(
@@ -263,7 +280,7 @@ class Grading:
             print(line)
         for section in sections:
             print()
-            for line in section.lines():
+            for line in (section.profile() if profile else section.lines()):
                 print(line)
         print()
         for line in g.lines():
