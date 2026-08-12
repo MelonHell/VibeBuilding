@@ -242,7 +242,7 @@ class Grading:
         self.placement(g, sched)
         cut = self.divisions(g, model, sched)
         self.watertight(g, cut)
-        self.evenness(g, model, read, sched)
+        self.evenness(g, model, read, sched, derived)
         plan = self.plan_shape(g, model, read)
         self.corners(g, model, read, derived, sched)
         mixes, matrix = self.facades(g, model, read, derived)
@@ -1461,7 +1461,7 @@ class Grading:
                   "and both bite a convex corner; `Site.squared` draws the "
                   "rectangle instead")
 
-    def evenness(self, g, model, read, sched):
+    def evenness(self, g, model, read, sched, derived):
         """Whether the building agrees with itself.
 
         Every other row here compares the build against something outside it,
@@ -1490,6 +1490,24 @@ class Grading:
         An empty `TWINS` is a row and not a silence, for the reason `COUNTS` is:
         an unasked question and a satisfied one print the same nothing. A
         building with genuinely nothing repeated says `SINGULAR = True`.
+
+        **And one question is asked without any table at all**, because five
+        buildings of six answered `SINGULAR = True` and every one of them was
+        telling the truth. `TWINS` asks about a *mirror pair*, and a mirror pair
+        is a rare thing: what these buildings actually repeat is storeys, rows of
+        villas, bays of a facade -- copies by translation, for which there is no
+        reflection to grade. A row that everybody steps over the same way has
+        stopped being a question, and the fix is the one `facades` got: not to
+        forbid the exit, but to ask something the exit does not cover.
+        `self.cadence` is that something. It needs no table to be asked, and the
+        one table it does take only ever takes parts *out*:
+
+            NOT_WALLS  (part, ...) -- **plan** parts that have no storeys to
+                       stand at, because they are not walls. A retractable roof
+                       vault, a girder track, a plaza apron. Named parts are
+                       printed in a row of their own; a name the plan does not
+                       draw stops the gate, so that renaming a part cannot
+                       quietly hand it back.
         """
         c = self.c
         pairs = self._("TWINS", ())
@@ -1580,6 +1598,166 @@ class Grading:
                   f"{found['count']} distinct top height(s), "
                   f"{found['share']:.0%} of {found['cells']} cells at the "
                   f"commonest; allowed {allowed}")
+
+        self.cadence(g, model, read, derived)
+
+    def cadence(self, g, model, read, derived):
+        """Whether the build stands at the storey somebody measured for it.
+
+        Every storey figure in this pipeline is a figure about the building and
+        none of them is a figure about the build: the capture's vertex histogram,
+        a count off a photograph, a spacing declared in words. `storey height
+        agree` compares two of those to each other and never asks what got laid.
+        So the schedule's own warning -- stamp one step and give up a floor,
+        never distribute the remainder -- is a rule with nothing behind it. A
+        build that spent its remainder as 3-2-3-3-2 has the same total height,
+        the same silhouette, the same section at every station and the same one
+        storey number as a build that is right, and looks like a stack of shelves
+        in the first render anybody opens.
+
+        `checks.cadence` reads the period off the outside wall of each plan part,
+        the same signal and the same autocorrelation the capture is read with,
+        and this compares it to the storey `Site.storeys` laid the levels at --
+        the measured or declared spacing, times whatever vertical stretch that
+        building's `derived.json` carries, which is the one measured factor there
+        is and the same one `Site` is handed. Reading it from there rather than
+        taking it as a setting is deliberate: a gate that asked the building to
+        restate its own scale would be graded against a number typed twice.
+
+        The slack is **six tenths of a block**: half of it is the rounding the
+        build is required to do, since a storey is a whole number of blocks and a
+        storey of 4.5 may land on either side, and the tenth on top of it keeps a
+        storey of exactly one half off a knife edge. Wider than that stops
+        distinguishing a storey of three from a storey of four, which is the
+        whole of what this asks.
+
+        A remainder spread over the levels is what this catches, and it does not
+        catch it by scoring badly. A wall stepping 3-2-3-3-2 correlates *well* --
+        r=0.69 over sixty courses, because the five-course group repeats exactly
+        -- and reports a period of five against a storey of three. It fails here
+        by being a different number, which is the only place in this pipeline
+        that number is looked at.
+
+        Only parts whose wall carries a readable rhythm are graded, and that is
+        not a loophole: a blank wall has nothing to correlate, exactly as a
+        smooth model has nothing for `measure.storey_height`, and a low score is
+        that fact rather than a small period. It *is* a loophole if the reference
+        found a rhythm and the build shows none -- the facade was measured
+        ribbed and built flat -- so that case is named rather than passed over,
+        as `ungraded` and not as a failure: the capture reads its rhythm off the
+        bands it was pointed at, and a part can honestly carry one only on the
+        face those bands were on.
+        """
+        storeys = derived.get("storeys") or {}
+        clear = self._("CADENCE_CLEAR", 0.5)
+        slack = self._("CADENCE_SLACK", 0.6)
+        name = "the storeys are the storey that was measured"
+
+        # Named first, so that it prints on every path out of here. A building
+        # that takes eight of its ten parts out of this check and then goes
+        # ungraded for want of a storey figure would otherwise print the second
+        # fact and not the first, which is the wrong way round: the list is why
+        # the rest of the row is as short as it is.
+        #
+        # `NOT_WALLS` is not a way of quietening a row that failed: a retractable
+        # roof vault, a girder track and a plaza apron are all drawn as plan parts
+        # and none of them has a storey, so asking one where its floors are is a
+        # question with no right answer -- the arch on this corpus reports a
+        # period of four because that is the pitch of its curvature. Naming them
+        # costs a printed row, the same way switching off `JAGGED` for a part
+        # does.
+        not_walls = set(self._("NOT_WALLS", ()))
+        strangers = not_walls - set(read.named)
+        if strangers:
+            raise SystemExit(
+                f"NOT_WALLS names {', '.join(sorted(strangers))}, which the plan "
+                "does not draw. A part renamed out from under this list would "
+                "otherwise go back to being graded silently.")
+        if not_walls:
+            g.ungraded(
+                "the parts that are not walls",
+                "no storey is asked of " + ", ".join(sorted(not_walls))
+                + ", because NOT_WALLS says they are not walls. Right for a roof "
+                "vault, a girder track and a plaza apron, and wrong for anything "
+                "with a facade on it -- so it is worth reading the list back "
+                "rather than the reason it was written.")
+
+        if not storeys.get("found") or not storeys.get("spacing"):
+            g.ungraded(
+                name,
+                "nothing in derived.json says what a storey of this building is "
+                f"({storeys.get('why', 'no `storeys` block at all')}), so the "
+                "period the build stands at has nothing to be compared against. "
+                "`derive` writes it from the capture or from DECLARED_STOREY.")
+            return
+        # The stretch is applied the same way and in the same order `Site.storeys`
+        # applies it, so that the number here is the number the levels were laid
+        # at and not a second opinion about it.
+        stretch = (derived.get("stretch") or {}).get("vertical", 1.0)
+        storey = storeys["spacing"] * stretch
+
+        # Only the parts the correlation actually ran on. A part too short to
+        # show the period twice is not a wall that read blank, and folding the
+        # two together would print `r=0.00` against a canopy as though somebody
+        # had looked.
+        read_off = {}
+        for part_name, part in read.named.items():
+            if part_name in not_walls:
+                continue
+            found = checks.cadence(model, part.mask)
+            if found["read"]:
+                read_off[part_name] = found
+        ribbed = {n: f for n, f in read_off.items() if f["score"] >= clear}
+        best = max(read_off.values(), key=lambda f: f["score"], default=None)
+
+        told = (f"a storey here is {storeys['spacing']:.2f} m "
+                f"{storeys.get('by', 'measured')}"
+                + (f" and the build stretches it by {stretch:.4f}"
+                   if stretch != 1.0 else "")
+                + f", so its walls owe a period of {storey:.2f} block(s)")
+        if not ribbed:
+            found = ("the strongest reading is "
+                     f"r={best['score']:+.2f} over {best['courses']} course(s)"
+                     if best else "no part of it is tall enough to show a period")
+            if storeys.get("score", 0.0) >= clear:
+                g.ungraded(
+                    name,
+                    f"{told}, and no wall of this build shows one: {found}, "
+                    f"against a floor of r={clear:+.2f}. The capture did find a "
+                    f"rhythm here (r={storeys['score']:+.2f}), which leaves two "
+                    "readings: the facade was measured ribbed and built flat, or "
+                    "the capture read its rhythm off bands on a face this build "
+                    "carries plainly. Look at an elevation before believing "
+                    "either.")
+                return
+            g.ungraded(
+                name,
+                f"{told}, and no wall of this build carries a readable rhythm: "
+                f"{found}, against a floor of r={clear:+.2f}. That is the honest "
+                "answer for a blank wall and for a building of two storeys -- "
+                "there is nothing for a period to repeat in -- and it is also "
+                "what a facade whose rhythm was flattened looks like. The "
+                "reference cannot break the tie: it did not find a rhythm either "
+                f"(r={storeys.get('score', 0.0):+.2f}).")
+            return
+
+        for part_name, found in sorted(ribbed.items()):
+            off = abs(found["period"] - storey)
+            g.add(f"{part_name} stands at that storey", off <= slack,
+                  f"{told}; its wall repeats every {found['period']:.0f} block(s)"
+                  f" in {found['by']} (r={found['score']:+.2f} over "
+                  f"{found['courses']} course(s), {found['cells']} cells of "
+                  f"wall), which is {off:.2f} off a slack of {slack:.2f}")
+        quiet = sorted(set(read_off) - set(ribbed))
+        if quiet:
+            g.ungraded(
+                "the walls without a rhythm",
+                "no period is read off " + ", ".join(quiet)
+                + f", all under r={clear:+.2f} though each is tall enough to be "
+                "asked. Not a failure and not a small period: a blank wall and a "
+                "wall of one material have nothing to correlate. Printed because "
+                "the graded rows above are silent about them, and a facade built "
+                "flat that should be ribbed lands in exactly this list.")
 
     def watertight(self, g, cut):
         c = self.c

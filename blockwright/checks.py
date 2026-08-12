@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 
+from . import measure
 from .blocks import AIR, base, unknown_blocks
 from .mask import Mask
 
@@ -360,6 +361,118 @@ def twins(model, a: Mask, b: Mask, frame, axis: float, along: str = "u",
         "worst_course": at,
         "worst": worst,
     }
+
+
+def cadence(model, mask: Mask, thickness: float = 1.0,
+            lo: float = 2.0, hi: float = 9.0, harmonic: float = 0.85) -> dict:
+    """The storey rhythm the *build* actually stands at, read off its own wall.
+
+    Every other reading of a storey in this pipeline is taken from something
+    that is not the build: the capture's vertex histogram, a count off a
+    photograph, a figure declared in words. All of them say what the storey
+    ought to be, and nothing says what got laid. That gap is where the defect
+    the schedule notes warns about lives -- a loop that distributes `H % step`
+    across the levels instead of stamping one step and giving up a floor, so the
+    building comes out 3-2-3-3-2 and is a stack of shelves of different
+    thicknesses. It has the same total height, the same silhouette, the same
+    section station by station and the same single-number storey as a building
+    that is right, which is to say every other row here passes it.
+
+    Read the same way the capture is read, and for the same reason: a floor slab,
+    a window head and a sill course each put a change in the wall at their own
+    level and the blank wall between them does not, so the course-to-course
+    *change* along the outside face has one spike per floor and its period is the
+    storey. Autocorrelated rather than peak-picked -- the spikes are two and
+    three courses wide, so counting gaps between maxima reports 3, 4, 5 and 6 on
+    a wall that is perfectly regular, and the correlation reports 5.
+
+    Read **twice**, because a storey line is drawn two different ways and a build
+    may use either. A balcony, a loggia and a setback cut air into the wall and
+    show in its silhouette; a slab band, a sill course and a spandrel panel cut
+    nothing and show only as a change of block. Neither reading covers the other:
+    on one building here the silhouette reads r=0.64 where the material reads
+    0.37, and on the next it is 0.12 against 0.76 -- on the same wall, for the
+    same period. The stronger of the two is returned and `by` says which it was.
+    Taking the stronger rather than combining them is what keeps the two from
+    diluting each other, and it is safe in a way a maximum usually is not,
+    because the verdict this feeds is the *period* and not the score: where
+    either reading is confident the two agree about the period, and where they
+    disagree neither clears the floor.
+
+    Measured over the outline ring, because that is the face the rhythm is on;
+    over the whole footprint the floor plates dominate and every building
+    reports its slab spacing whether or not its wall shows one. Courses above the
+    part's own top are dropped before the correlation: a tail of zeros is
+    perfectly self-similar at every lag and would score any period at all.
+
+    `score` is the correlation and the number to threshold on. A blank wall has
+    no rhythm to find and comes back near zero, which is not a failure and not a
+    small period -- it is the same "nothing to correlate here" that
+    `measure.storey_height` reports on a smooth model.
+
+    `read` is false when the correlation never ran, and it is a different answer
+    from a score of zero. A canopy three courses tall cannot show a period of
+    five twice over and so cannot be asked about one; reporting `r=0.00` for it
+    reads as a wall that was measured and found blank, which is the one thing a
+    caller must not conclude about a part that was never measured.
+
+    `harmonic` is how much of the winning correlation a *divisor* of it has to
+    keep to be preferred to it -- see the comment where it is applied. Nine tenths
+    is too tight to catch the case it is for and a half starts preferring noise.
+    """
+    height = model.height
+    area = model.width * model.length
+    air = {i for i, block in enumerate(model.palette) if block == AIR}
+    cells = [z * model.width + x for x, z in mask.outline(thickness).cells()]
+    if not cells:
+        return {"cells": 0, "courses": 0, "period": 0.0, "score": 0.0,
+                "read": False}
+
+    courses = []
+    for y in range(height):
+        base_i = y * area
+        courses.append([model.blocks[base_i + i] for i in cells])
+    top = max((y for y, c in enumerate(courses)
+               if any(b not in air for b in c)), default=-1)
+    courses = courses[:top + 1]
+
+    # Four courses is `measure.period`'s own floor, and a part shorter than
+    # three of the longest period it is asked about cannot show that period
+    # twice. Both are "there was nothing to measure", not "the period is zero".
+    if len(courses) - 1 < max(4, int(3 * hi)):
+        return {"cells": len(cells), "courses": max(0, len(courses) - 1),
+                "period": 0.0, "score": 0.0, "read": False}
+
+    best = (0.0, 0.0, "")
+    for how, wall in (("silhouette", [[b not in air for b in c] for c in courses]),
+                      ("material", courses)):
+        change = [
+            sum(1 for p, q in zip(wall[y - 1], wall[y]) if p != q) / len(cells)
+            for y in range(1, len(wall))
+        ]
+        found = measure.period(change, 1.0, lo, hi)
+        # A signal that repeats every three courses repeats every six as well,
+        # and the correlation says so: the harmonic is a peak of its own, within
+        # a few per cent of the fundamental, and it wins outright about as often
+        # as it loses. Two towers of one building read 3 and 6 off the same wall
+        # detail that way, which is a storey of three reported as one of six.
+        #
+        # So the fundamental is preferred over its own multiples, and *only*
+        # over its own multiples. Not "prefer the smallest peak": a wall stepping
+        # 3-2-3-3-2 peaks at 8 and again at 5, neither of which divides the
+        # other, and taking the smaller there would report a period the wall does
+        # not stand at and hide the very defect this is for.
+        value, score = found.value, found.score
+        for lag, r in sorted(found.peaks):
+            if lag < value and r >= harmonic * score and abs(
+                    value / lag - round(value / lag)) < 1e-9:
+                value, score = lag, r
+                break
+        if score > best[1]:
+            best = (value, score, how)
+    return {"cells": len(cells), "courses": len(courses) - 1,
+            "period": best[0], "score": round(best[1], 3), "by": best[2],
+            "read": True}
 
 
 def facade_mix(model, mask: Mask, frame, u0: float, u1: float,

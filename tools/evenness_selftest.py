@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from blockwright import checks                       # noqa: E402
 from blockwright.frame import Frame                  # noqa: E402
 from blockwright.mask import Mask, iou, _fit_face    # noqa: E402
+from blockwright.schem import AIR, Schematic         # noqa: E402
 
 ANGLE = 52.0
 W = L = 96
@@ -46,6 +47,29 @@ def check(name: str, ok: bool, detail: str) -> None:
 
 def frame() -> Frame:
     return Frame((12.0, 9.0), ANGLE)
+
+
+def _tower(mask: Mask, steps: list[int]) -> Schematic:
+    """A solid extrusion of `mask` with a band of a second material per storey.
+
+    The band is what a floor slab, a sill course or a window head all are to a
+    reading taken off the outside of the wall: one course that differs from its
+    neighbours. `steps` is the gap in front of each band in turn, so `[3] * n` is
+    a regular wall and `[3, 2, 3, 3, 2] * n` is the one this file cares about.
+    """
+    levels: list[int] = []
+    y = 1
+    for step in steps:
+        levels.append(y)
+        y += step
+    height = y + 1
+    model = Schematic(W, height, L, palette=[AIR, "minecraft:stone",
+                                             "minecraft:glass"])
+    band = set(levels)
+    for x, z in mask.cells():
+        for level in range(height):
+            model.blocks[level * W * L + z * W + x] = 2 if level in band else 1
+    return model
 
 
 def clear() -> Frame:
@@ -334,6 +358,43 @@ def main() -> int:
           and holed["absent"] == 16 and holed["kept"] == 25,
           f"slope {whole['m']:+.4f} whole against {holed['m']:+.4f} gapped, "
           f"{holed['absent']} station(s) absent of {holed['span']}")
+
+    # 18. The storey a build actually stands at, off its own wall. The defect
+    # this exists for is the one the schedule warns about and nothing else here
+    # can see: a loop that spends `H % step` across the levels instead of
+    # stamping one step and giving up a floor. Every other row passes it -- same
+    # total height, same silhouette, same section station by station -- so the
+    # tower stepping 3-2-3-3-2 and the tower stepping 3-3-3-3-3 are one building
+    # to this whole pipeline until somebody opens a render.
+    #
+    # Both walls here are the same footprint, the same height and the same
+    # material, and differ only in where the courses land.
+    wall = frame().region(W, L, lambda u, v: 0.0 <= u < 24.0 and 0.0 <= v < 12.0)
+    found = checks.cadence(_tower(wall, [3] * 24), wall)
+    check("cadence reads the storey a regular wall stands at",
+          found["period"] == 3 and found["score"] >= 0.5,
+          f"period {found['period']:.0f} block(s) at r={found['score']:+.2f} on "
+          "a wall banded every 3")
+
+    # 19. And the uneven one is caught by being a *different number*, not by
+    # scoring badly. This is the part worth pinning: 3-2-3-3-2 correlates well,
+    # because the five-course group repeats exactly, so a check that thresholded
+    # on the correlation would pass it. It reports a period of five against a
+    # storey of three, and that is the whole of the catch.
+    found = checks.cadence(_tower(wall, [3, 2, 3, 3, 2] * 8), wall)
+    check("cadence catches a remainder spread across the storeys",
+          found["period"] != 3 and found["score"] >= 0.5,
+          f"period {found['period']:.0f} block(s) at r={found['score']:+.2f} on "
+          "a wall banded 3-2-3-3-2 -- caught by the period, and it would not "
+          "have been caught by the score")
+
+    # 20. A part too short to show its period twice says so, rather than
+    # reporting a correlation of zero. The two answers are read differently by
+    # everything downstream: a blank wall was measured and a canopy was not.
+    found = checks.cadence(_tower(wall, [3] * 2), wall)
+    check("cadence will not read a period off a part it cannot measure",
+          found["read"] is False and found["score"] == 0.0,
+          f"read={found['read']} over {found['courses']} course(s)")
 
     if failures:
         print(f"\n[evenness] {len(failures)} failed: {', '.join(failures)}")
