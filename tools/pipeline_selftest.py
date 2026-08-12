@@ -228,10 +228,11 @@ def main(argv: list[str]) -> int:
 
     # And the buildings that actually exist, which the four synthetic branches
     # above do not stand in for. They are built from `_template`, and the
-    # template calls a strict subset of the library: not `site`, not `grading`,
-    # not `paths.Layout`, not `roof`, not `palm`. Everything a real building
-    # leans on was outside this harness until this call, and the price of that
-    # was six buildings dead on import for a fortnight with this test green.
+    # template calls a strict subset of the library: not `site`, not
+    # `paths.Layout`, not `roof`, not `palm`. Everything a real building leans
+    # on beyond that subset was outside this harness until this call, and the
+    # price of that was six buildings dead on import for a fortnight with this
+    # test green.
     print()
     from . import lint_buildings
     bad += lint_buildings.main()

@@ -1,11 +1,39 @@
 """What counts as right for this building.
 
     python -m buildings.<name>.gate
+    python -m buildings.<name>.gate --profile
 
-The grading is `blockwright.gate`'s. What belongs here is the part only this
-building can say: which stretches of it to cut a section through, what the
-reference is not a witness for, how many parts a plan cut through a storey should
-show, and how much clutter a finished build of this size is allowed.
+The *order* the rows are asked in belongs to `grading.Grading`, and so does every
+row itself. What belongs here is the part only this building can say: which
+stretches of it to cut a section through, how many parts a plan cut through a
+storey should show, which of its parts are a pair, and how much clutter a
+finished build of this size is allowed.
+
+This file used to carry the whole sequence -- its own `solid`, its own `holds`,
+its own loops over `COUNTS` and `WATERTIGHT`, four hundred lines of it. That copy
+had the failure mode `blockwright.gate` warns about in its own docstring: a
+building started from here got **none** of the rows the library grew afterwards
+-- not `corners`, not `facades built alike`, not `grounds`, not `the elevations
+agree`, not `stands at that storey` -- and nothing said so, because a row that
+does not exist prints nothing. Everybody worked around it by starting from the
+last building instead, which is a template maintained by not being used.
+
+So the sequence is gone and the constants are the file. A row the library adds
+tomorrow appears here tomorrow, and if it needs a table this building has not
+filled in, it says so as an `[----]` row naming the table. That is the point:
+
+  * An empty table and a satisfied one look identical from outside -- both print
+    nothing -- so "no rows failed" quietly comes to mean "no rows were asked".
+    Every table below therefore has a companion that says *this building has
+    nothing to declare here*: `UNDIVIDED` for `COUNTS`, `SINGULAR` for `TWINS`,
+    `UNIFORM` for `FACADES`, `GROUNDLESS` for `GROUNDS`. Setting one is a
+    decision a reader can disagree with. Leaving both empty is a silence.
+
+  * Every budget should be set by lowering it onto a build that already passed
+    rather than typed in advance: a budget with an order of magnitude of slack
+    has stopped being a check and become a comment. What is not written here is
+    inherited from `grading.DEFAULTS`, and the row says `(default)` when it was,
+    so an inherited budget is legible as one.
 
 The section is the one check in this pipeline that can come back wrong. Every
 other row grades the build against something it was drawn from, which is a
@@ -22,48 +50,34 @@ is nothing to cut a section against, and the run is reported `ungraded` -- not
 `pass`, which would be this file claiming a building was checked because nothing
 contradicted it.
 
-Everything below the constants is generic and usually needs no editing. The
-constants are the whole of the building-specific part, and every one of them
-should be set by lowering it onto a build that already passed rather than typed
-in advance: a budget with an order of magnitude of slack has stopped being a
-check and become a comment.
+Two things a building may override with a function rather than a constant, both
+documented in `grading.Grading`: `windows()`, the stretches to cut through and
+the exemptions each may use, and `build_cloud()`, for a build that has to bring
+its heights back to the reference's scale before the comparison. Neither has a
+silent default worth relying on -- write one only with the reason beside it.
 """
 
 from __future__ import annotations
 
-import json
 import sys
-from pathlib import Path
 
-from blockwright import checks, gate, report, sources
-from blockwright import model as model3d
-from blockwright.mask import Mask
-from blockwright.mesh import Mesh
-from blockwright.schedule import Schedule
-from blockwright.schem import AIR, Schematic
+from blockwright import grading
 
 from . import paths
 from .probes import derive
 
 BUILDING = "<name>"
 
-# How far a station of the build may stand from the mesh's reading of the same
-# station before the section fails it. Two metres is half a storey: tight enough
-# that a floor gained or lost fails, loose enough that photogrammetry's rounding
-# of a parapet does not.
-TOLERANCE = 2.0
-
 # The library registers on material above half the build's height. Raise it when
 # the clip carries tall trees or a neighbour that photogrammetry cannot tell from
 # building: fitting an extent against a belt of trees stretches that axis, and
 # what is then graded is the landscaping. `derive` reports the disagreement
 # between the two axes, which is how this number gets chosen.
+#
+# Read only if the survey never registered anything. The registration this gate
+# grades through is the one `derive` already made, because every number in the
+# build came through that fit.
 REGISTER_AT = 0.5
-
-# How far the build may be from the reference in overall size. Widen it only for
-# a building whose reference is knowingly a different one -- another block of the
-# same design, an earlier phase -- and write the reason beside the number.
-SCALE_TRUE = gate.SCALE_TRUE
 
 # Planting and water stand on the building rather than being it. Left in, a palm
 # sets the skyline and the section grades a frond against a parapet.
@@ -76,13 +90,14 @@ SOFT = {
     "minecraft:water",
 }
 
-# Watermarks. Nothing may hang unsupported, ever. The other two are what this
-# building's fixtures actually cost -- planter feet standing clear on a podium,
-# rail posts and truss webs ending in air -- and are set from a run that passed.
-FLOATING_BLOCKS = 0
+# What this building's fixtures actually cost -- planter feet standing clear on a
+# podium, rail posts and truss webs ending in air. Set from a run that passed.
+# `FLOATING_BLOCKS` is not written here because it is not a budget: nothing may
+# hang unsupported, ever, and the default is zero.
 GROUNDED_STRAYS = 200
-FREE_ENDS = 1200
 
+# -- how the building divides -------------------------------------------------
+#
 # What a plan cut through a storey should show, part by part: the name the build
 # declared in its schedule, and how many separate components a cut through it
 # ought to find. Counted rather than looked at, so a floor that lost its division
@@ -102,359 +117,92 @@ COUNTS: dict[str, int] = {
 }
 LEVELS: tuple[int, ...] = (3, 8, 12, 17, 20)
 
+# Set True for a building that genuinely has no repeated division: one shed, one
+# tower, one hall. Then the row says so, by name, and the reader can disagree
+# with a decision instead of guessing at a silence.
+UNDIVIDED = False
+
 # Parts that should read as one closed ring at one height -- a drum, a shell, a
 # tower shaft. The height is chosen above whatever stands under the part and
-# below whatever caps it.
+# below whatever caps it: a taper drawn one course too thin closes to a dashed
+# line at some height and at no other.
 RINGS: dict[str, int] = {
     # "cone": 20,
 }
 
-# Whether an empty `COUNTS` is a decision or an omission. Left False, the gate
-# prints an ungraded row saying nobody has said how this building divides --
-# because an empty table and a satisfied one produce exactly the same output
-# otherwise, and "no rows failed" then means "no rows were asked".
-#
-# Set it True for a building that genuinely has no repeated division: one shed,
-# one tower, one hall. Then the row says so, by name, and the reader can
-# disagree with a decision instead of guessing at a silence.
-UNDIVIDED = False
-
-# A part smaller than this is a fixture, not a floor plate: a column, a rail
-# post, the corner of a planter clipped by the layer.
-MIN_PART = 8
-
 # Where to test that a wall ring actually holds what it encloses, and for which
 # parts. A band of footprint-minus-erosion leaks at every diagonal, and on a
-# rotated frame every wall in the building is a diagonal.
+# rotated frame every wall in the building is a diagonal. The height must be one
+# of `LEVELS`: this reads the cut the gate already took.
 WATERTIGHT_AT = 8
 WATERTIGHT: tuple[str, ...] = tuple(COUNTS)
 
+# -- whether the building agrees with itself ----------------------------------
+#
+# Plan parts that are a mirror pair, with the axis taken between them. Nothing
+# else can ask this: two bars of the same footprint have one silhouette and one
+# profile, so whatever happens on their facades, every outside row passes.
+TWINS: tuple[tuple[str, str], ...] = (
+    # ("front", "back"),
+)
+# True where this building genuinely has no mirror pair. Say it rather than
+# leaving `TWINS` empty -- but note that the storey rhythm is asked either way,
+# by `stands at that storey`, and that row needs no table at all. What repeats in
+# most buildings is translation, not reflection.
+SINGULAR = False
 
-def solid(model, y: int) -> Mask:
-    """Everything that is not air on one layer."""
-    area = model.width * model.length
-    air = {i for i, block in enumerate(model.palette) if block == AIR}
-    layer = Mask(model.width, model.length)
-    base = y * area
-    for i in range(area):
-        if model.blocks[base + i] not in air:
-            layer.bits[i] = 1
-    return layer
+# How many distinct top heights a part is allowed. A parapet built at nine
+# heights along one roof passes every station it is judged at -- it is what those
+# stations were cut from -- and reads as a staircase in the first render.
+LEVEL: dict[str, int] = {
+    # "front": 5,
+}
+
+# Plan parts that are not walls and so have no storey to stand at: a retractable
+# roof vault, a girder rail, a plaza apron. Asking one where its floors are is a
+# question with no right answer, and it answers with its own geometry -- an arch
+# reports the pitch of its curvature. Named parts print a row of their own, and a
+# name the plan does not draw stops the gate.
+NOT_WALLS: tuple[str, ...] = ()
+
+# -- whether the reference agrees ---------------------------------------------
+#
+# Groups of parts the reference says are faced alike, and the parts that stand
+# apart. This asks the opposite of `TWINS`: not "you said these are the same, are
+# they?" but "does the reference agree with what the build made uniform?" Only
+# the reference can raise it.
+FACADES: dict[str, tuple[str, ...]] = {
+    # "towers": ("tower_east", "tower_west"),
+}
+# True where the reference shows one facade treatment over the whole building.
+# It takes a reason rather than a bare flag on a building that has one.
+UNIFORM = False
+
+# The ground this building stands on, by surface and the height band it lies in.
+# The clip the section is cut against throws the grounds away by construction, so
+# without this the deck, the road and the beach can be any size and any shape and
+# every other row stays green. It has happened twice.
+GROUNDS: dict[str, tuple[float, float]] = {
+    # "deck": (1.5, 3.0),
+}
+RECTANGULAR: tuple[str, ...] = ()
+# True where this build lays no ground at all.
+GROUNDLESS = False
+
+# Parts the reference reads at two heights, and what the second one is: a plant
+# room on a roof, a neighbour standing on a podium. Never a failure -- the
+# capture is what it is -- but unexplained it leaves a measured number with
+# nothing beside it.
+PLATEAUS: dict[str, str] = {
+    # "podium": "the chiller house on its north end",
+}
 
 
-def holds(ring: Mask) -> int:
-    """How many cells a ring encloses that the outside cannot reach.
-
-    Zero means the ring leaks -- either a wall met itself corner to corner and
-    left a diagonal gap, or what looked like a room is open on one side.
-    """
-    bounds = ring.bounds()
-    if bounds is None:
-        return 0
-    x0, z0, x1, z1 = bounds
-    box = Mask(ring.width, ring.length)
-    for z in range(z0, z1 + 1):
-        for x in range(x0, x1 + 1):
-            box.set(x, z)
-    inside = box - ring
-    return inside.count() - len(checks.watertight(inside, ring))
-
-
-def windows(parts, frame, derived: dict, names: dict | None = None):
-    """The stretches along the building to cut a section through.
-
-    One window is right only where the building is one thing for its whole
-    length. Split it where a wing stops or a tower sets back: one window would
-    average a wing and a courtyard together and grade neither.
-
-    Each window is offered only the exemptions it can actually use. An exemption
-    offered to a window that cannot use it excuses nothing and reports itself as
-    stale geometry, which trains the reader to skim past the one row that
-    matters. An exemption withheld is also the safer error -- if a window ever
-    does need one, it fails and gets looked at.
-
-    Exemptions available from `blockwright.gate`:
-
-      `taller_than_the_mesh(part, note)` -- this part stands above what the mesh
-      records, and the note says why the capture is wrong rather than the build.
-      Photogrammetry rounding off a tapering tip is the usual reason.
-
-      `next_lot()` -- material in the clip past the end of this building's plot,
-      which is a neighbour and not this building.
-
-    Returns `(name, u0, u1, exemptions)` tuples in u order.
-
-    The default splits the building wherever its parts stop overlapping along u.
-    Two parallel wings share one window, because a cut through them is one cut
-    through both; a wing and a tower beyond its end get one each. That is the
-    right shape of answer far more often than a single window for the whole
-    length: a section through a uniform extrusion is the same section wherever
-    it is cut, so one wide window grades the middle repeatedly and the ends not
-    at all -- and the ends are where things go wrong.
-
-    Split further where a single part steps, and merge by hand where two
-    stretches really are one continuous thing.
-    """
-    ordered = sorted((names or {}).items(), key=lambda kv: kv[1].u0)
-    if not ordered:
-        u0 = min(p.u0 for p in parts)
-        u1 = max(p.u1 for p in parts)
-        return (("body", u0, u1, ()),)
-
-    runs: list[list] = []
-    for name, part in ordered:
-        if runs and part.u0 < runs[-1][2]:
-            runs[-1][0].append(name)
-            runs[-1][2] = max(runs[-1][2], part.u1)
-        else:
-            runs.append([[name], part.u0, part.u1])
-    return tuple(("+".join(held), u0, u1, ()) for held, u0, u1 in runs)
+GATE = grading.Grading(paths, derive, sys.modules[__name__])
 
 
 def main() -> int:
-    if not paths.DERIVED.exists():
-        raise SystemExit(
-            f"{paths.DERIVED} is missing; run probes/derive.py first")
-
-    derived = json.loads(paths.DERIVED.read_text(encoding="utf-8"))
-    evidence = sources.survey(paths)
-    read = derive.plan_of()
-    reference = evidence.reference
-    g = gate.Gate(BUILDING)
-
-    # Freshness first, and fatally. A stale schematic registers perfectly -- it
-    # was a real build of the same building -- so every row after it goes on
-    # printing a grade that was true yesterday and is being reported today.
-    #
-    # The inputs it is checked against are the ones the geometry came from, not
-    # everything in `input/`: a photograph added this morning does not make
-    # yesterday's massing stale, and a gate that says it does teaches people to
-    # rebuild without reading why.
-    # `build.py` is in the list, and that is not pedantry: a recipe edited and
-    # not re-run is the commonest way a gate comes to grade last week's build,
-    # and it is exactly the case a mtime check is for.
-    g.fresh(made=[paths.SCHEM, paths.SCHEDULE],
-            sources=[read.source.path, paths.DERIVED,
-                     Path(__file__).with_name("build.py")]
-                    + ([reference.path] if reference else []))
-    if not g.ok:
-        for line in g.lines():
-            print(line)
-        return 1
-
-    model = Schematic.read(paths.SCHEM)
-    frame, parts = read.frame, read.parts
-    sched = Schedule.load(paths.SCHEDULE)
-
-    # -- did the build place what the manifest asked for --------------------
-    audit = list(sched.audit(model))
-    g.extend(audit)
-
-    # -- is what it placed sound --------------------------------------------
-    findings = checks.inspect(model, layers=list(LEVELS), soft=SOFT)
-    g.add("palette", not findings.unknown,
-          "every block has a colour" if not findings.unknown
-          else "unknown: " + ", ".join(sorted(findings.unknown)))
-    g.budget("floating", sum(p.count for p in findings.adrift),
-             FLOATING_BLOCKS, "blocks with nothing under them")
-    g.budget("strays", sum(p.count for p in findings.strays),
-             GROUNDED_STRAYS, "blocks adrift from the main mass")
-    g.budget("free ends", len(findings.ends), FREE_ENDS,
-             "blocks with one neighbour or none")
-
-    # -- does it still divide the way it is supposed to ----------------------
-    #
-    # An empty table is a row and not a silence. `COUNTS` unfilled and `COUNTS`
-    # satisfied print the same thing otherwise -- nothing -- and then "no rows
-    # failed" quietly comes to mean "no rows were asked", which is the exact
-    # confusion the three-state verdict exists to prevent.
-    if not COUNTS and not UNDIVIDED:
-        g.ungraded(
-            "division",
-            "COUNTS is empty, so nothing checks that this building still reads "
-            "as separate parts. A row of houses and one long block cast the "
-            "same silhouette and pass every other row here. Fill it in, or set "
-            "UNDIVIDED = True to say this building genuinely has no repeated "
-            "division.")
-
-    cut: dict[str, dict[int, list[Mask]]] = {}
-    for name, expected in COUNTS.items():
-        footprint = sched.built[name].mask
-        cut[name] = {y: (solid(model, y) & footprint).components(min_cells=MIN_PART)
-                     for y in LEVELS}
-        for y, found in cut[name].items():
-            g.add(f"{name} at {y} m", len(found) == expected,
-                  f"{len(found)} parts, expected {expected}")
-
-    for name, y in RINGS.items():
-        found = (solid(model, y) & sched.built[name].mask).components(
-            min_cells=MIN_PART)
-        g.add(f"{name} at {y} m", len(found) == 1,
-              f"{len(found)} parts, expected one closed ring" if len(found) != 1
-              else f"one ring of {found[0].count()} blocks")
-
-    if WATERTIGHT and WATERTIGHT_AT not in LEVELS:
-        raise SystemExit(
-            f"WATERTIGHT_AT is {WATERTIGHT_AT} m and LEVELS are {LEVELS}: the "
-            "watertightness test reads the cut this gate already took, and "
-            "there is no cut at that height. Add it to LEVELS or move it onto "
-            "one.")
-
-    for name in WATERTIGHT:
-        rings = cut[name][WATERTIGHT_AT]
-        leaking = [r for r in rings if holds(r) == 0]
-        g.add(f"{name} watertight", not leaking,
-              f"all {len(rings)} hold what they enclose" if not leaking
-              else f"{len(leaking)} of {len(rings)} at {WATERTIGHT_AT} m are "
-                   "open to the outside")
-
-    # -- do the references agree with each other -----------------------------
-    #
-    # Rows that can fail for a reason no section can produce. A section compares
-    # the build against one reference; these compare two references against each
-    # other, and catch what is wrong with the reference itself: a rescaled crop,
-    # a capture of the building next door, a model of a later revision, a
-    # drawing read at the wrong scale.
-    #
-    # The numbers are `derive`'s -- measured once, written to derived.json, read
-    # here. The gate grades; it does not re-measure.
-    for one in derived.get("witnesses", []):
-        name = f"{one['question']} agree"
-        if one["ok"] is None:
-            g.ungraded(name, one.get("expected")
-                       or "only one source can answer this")
-            continue
-        worst = one["worst"]
-        where = max(one["rows"], key=lambda k: abs(one["rows"][k][0]
-                                                   - one["rows"][k][1]),
-                    default="")
-        g.add(name, one["ok"],
-              f"{one['pair']}: worst {worst:.2f} {one['unit']}"
-              + (f" at {where}" if where else "")
-              + f", tolerance {one['tolerance']:.2f} {one['unit']}")
-
-    # -- where it stands, against the reference ------------------------------
-    sections = []
-    reg = None
-    if reference is None:
-        # No model and no capture: nothing holds a height at a station, so there
-        # is no section to cut. Said out loud, as a row, because a check that is
-        # skipped in silence reads exactly like a check that passed.
-        g.ungraded(
-            "section",
-            "no model and no capture, so nothing states where material actually "
-            "stands. Every height in this build is declared, and nothing here "
-            "can agree or disagree with it.")
-    else:
-        if read.massing is not None and reference.name == read.source.name:
-            # One fit, not two: the plan came out of this same file, so the
-            # frame it was measured in addresses the mesh exactly.
-            mesh = model3d.load(reference.path, up=derive.MODEL_UP,
-                                scale=derive.MODEL_SCALE)
-            mesh_frame, datum = read.massing.model_frame, read.massing.datum
-        else:
-            mesh = Mesh.read(reference.path)
-            datum = mesh.ground()
-            # The floor the survey chose, not a number typed here. A building
-            # that had to raise it -- a belt of palms, a podium, a neighbour --
-            # gets a frame fitted the same way its own measurements were, and
-            # one that did not is unaffected. Hardcoding six metres here made a
-            # gate read a frame the survey never used, 33 m longer than the
-            # mesh, and grade every station against the wrong place.
-            mesh_frame = mesh.frame(datum=datum, floor=derive.MESH_FLOOR)
-
-        cloud_mesh = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
-        cloud_build = gate.Cloud.from_model(model, frame, skip=SOFT)
-        # The plan goes in with the clouds: an extent is the same end for end,
-        # so without it the fit cannot tell which way round the two frames
-        # stand. Where they differ -- a game map on an invented street grid
-        # against a capture of the real prototype -- everything registers
-        # perfectly and every station is graded against the opposite end of the
-        # building.
-        drawn = gate.Plan.from_parts(parts, frame)
-
-        # One registration, not two. `derive` already fitted the plan to the
-        # reference, and every number in this build came through that fit;
-        # fitting a second one here -- on a fraction of the build's own height,
-        # which moves whenever the build does -- grades those numbers through a
-        # different map. Where the two differed by five metres, the section
-        # reported the gap between them as the building's error.
-        #
-        # `fit` stays as the fallback for a survey that never registered
-        # anything, and it is the only path that can still choose the
-        # orientation, so the measured one carries it across.
-        reg = gate.Registration.measured(derived)
-        if reg is None:
-            reg = gate.Registration.fit(cloud_mesh, cloud_build,
-                                        at=REGISTER_AT, plan=drawn)
-        # `EXPECTED` in probes/derive.py may declare either of these: a crop
-        # from a game map and a capture of the real prototype are drawings of
-        # different proportions, and no clip will bring them together.
-        expect = dict(getattr(derive, "EXPECTED", {}))
-        g.witness("registration", reg.agrees(), reg.detail,
-                  expect.get("registration", ""))
-
-        # Two different questions, and only the first used to be asked. The row
-        # above asks whether the two axes tell the same story; this one asks
-        # whether that story is 1:1. A build a quarter smaller than the
-        # reference on both axes registers perfectly and sections perfectly,
-        # because the section compares heights through a normalised u and v --
-        # and it is a quarter smaller.
-        g.witness("scale", reg.scaled(SCALE_TRUE),
-                  f"the build is {1 / reg.u_scale:.2f}x by "
-                  f"{1 / reg.v_scale:.2f}x of the {reference.name}, tolerance "
-                  f"{SCALE_TRUE:.0%}",
-                  expect.get("scale", ""))
-
-        if reg.agrees():
-            cuts = windows(parts, frame, derived, read.named)
-            seams = tuple(u1 for _, _, u1, _ in cuts[:-1])
-            sections = [
-                gate.section(name, u0, u1, mesh=cloud_mesh, build=cloud_build,
-                             plan=drawn, registration=reg, tolerance=TOLERANCE,
-                             exemptions=allowed, seams=seams)
-                for name, u0, u1, allowed in cuts
-            ]
-            for section in sections:
-                g.take(section)
-        # A section cut against a registration that does not agree with itself
-        # is noise dressed up as a grade, so none is cut and the row above is
-        # the failure. Everything already measured is still reported.
-
-        if not evidence.independent:
-            others = [w.name for w in evidence.witnesses_for("plan")]
-            g.ungraded(
-                "independent witness",
-                f"the {reference.name} the section is cut against is also what "
-                "the plan was read off, so the section grades the "
-                "simplification and cannot catch the reference itself being "
-                "wrong. "
-                + (f"The plan alone is witnessed by {', '.join(others)}, which "
-                   "the comparison sheets score by silhouette; the heights are "
-                   "not witnessed by anything."
-                   if others else
-                   "A second source -- a map, a survey, photographs -- is what "
-                   "would make it an outside check."))
-
-    doc = report.write(paths.REPORT, BUILDING, g,
-                       sections=sections, findings=findings, frame=frame,
-                       registration=reg, schedule=audit,
-                       evidence=derived.get("evidence"))
-
-    for line in (reg.lines() if reg is not None else []):
-        print(line)
-    for section in sections:
-        print()
-        for line in section.lines():
-            print(line)
-    print()
-    for line in g.lines():
-        print(line)
-    print()
-    for line in report.lines(doc):
-        print(line)
-    print(f"\nwrote {paths.REPORT}")
-    return 0 if g.ok else 1
+    return GATE.main()
 
 
 if __name__ == "__main__":

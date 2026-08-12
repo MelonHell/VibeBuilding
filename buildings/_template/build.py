@@ -24,8 +24,8 @@ Three kinds of value appear here, and each is labelled where it is set:
     python -m buildings.<name>.gate
 
 This is the skeleton, and it builds: a podium, the parts extruded to their
-measured heights, a floor at every measured level, and a rhythm of window bays on
-every facade. That is a massing study, and it will pass the gate. Everything
+measured heights, a floor at every measured level, a roof and a parapet over
+each part, and a rhythm of window bays on every facade. That is a massing study, and it will pass the gate. Everything
 after it -- what the parts are made of, what carries what, what stands in the
 gaps between them -- is this building's own, and goes in sections of its own
 below.
@@ -72,6 +72,7 @@ PAVING = "minecraft:smooth_sandstone"
 # together so that the measured numbers further down are not diluted by them.
 
 PAD = 0.5               # half a block of tolerance around an edge a map drew
+CLOSE = 1e-6            # what a half-open edge owes an inclusive extent
 THICK = 1.0             # wall thickness
 APRON = 3.0             # how far the podium stands out past the building
 COURT = 8.0             # the widest gap between parts that is still one site
@@ -265,12 +266,34 @@ class Site:
         inside its own drawn edge, which at an angle makes every second course
         of a diagonal wall one block short. On a plan measured off geometry it
         is zero -- see `self.pad`.
+
+        The rectangle is redrawn from the part's extent rather than taken from
+        its mask, and that is deliberate: a traced mask carries the dither of
+        whatever drew it, and a wing built as a polygon of its own measured
+        edges is straight where a wing built from its tracing is not.
+
+        `CLOSE` is what that redrawing owes back, and it is a nudge rather than
+        a pad. `Part.u0..u1` is the extent of the part's own cell *centres* and
+        includes both ends, while `Frame.rect` tests `u0 <= u < u1`, so a cell
+        sitting exactly on the far edge is outside the rectangle that was drawn
+        from it. On a frame square to the world that is every cell of the last
+        column and the last row at once -- a connected L of 93 cells on the
+        fixture, against a `PLAN_BLOB` budget of twelve. On a rotated frame it
+        is two or three cells, because no two of them share a u exactly.
+        Opening the far end by a micrometre includes them and adds no size;
+        opening it by half a cell would add a metre and a half to a wing
+        fourteen wide, which the registration reads as the two axes scaling
+        differently. The defect went unseen for as long as it did because `PAD`
+        covers it, and `PAD` is only laid on a map-drawn plan.
         """
         p = self.parts[name]
         if p.kind == "disc":
+            # A radius read off the rim is already a distance to the outer face
+            # of the last cell, not to its centre, so it owes nothing back.
             return self.disc(p.centre[0], p.centre[1], p.radius + self.pad)
-        return self.rect(p.u0 - self.pad, p.u1 + self.pad,
-                         p.v0 - self.pad, p.v1 + self.pad)
+        out = self.pad
+        return self.rect(p.u0 - out, p.u1 + out + CLOSE,
+                         p.v0 - out, p.v1 + out + CLOSE)
 
     def terraces(self, name: str) -> list[tuple[int, Mask]]:
         """(height, where) for a part whose roof is not one level, tallest first.
@@ -371,6 +394,15 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
         for y in floors:
             build.slab(canvas, foot, y, DECK, inset=THICK)
             sched.declare("floors", deck, y, y + 1)
+
+        # The roof is a floor like any other, and this skeleton did without one
+        # for a long time: a ring of wall with storeys inside it and open sky
+        # over the middle. Almost nothing here says so. The section reads the
+        # tallest thing over each station and the parapet ring stands a metre
+        # above the roof line, so a hole in the middle of a part is answered by
+        # its own edge; the first render is what shows it.
+        build.slab(canvas, foot, top - 1, DECK, inset=THICK)
+        sched.declare("floors", deck, top - 1, top)
 
         # The parapet: a course above the roof line, which is what stops a roof
         # reading as an unfinished floor.
