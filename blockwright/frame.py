@@ -34,6 +34,23 @@ import math
 
 from . import fast
 
+# How far off a cell centre is actually sampled, in metres.
+#
+# A nanometre, and it is there to break exact ties the same way every time. On a
+# lattice slope the building's own axis is an integer vector, which is the whole
+# point -- and it means cell centres land *exactly* on the boundaries of
+# rectangles authored in round numbers. `-dx*sin + dz*cos` is then zero in the
+# reals and plus or minus four times ten to the minus sixteen in doubles, so a
+# `v >= 0` boundary alternates between including and excluding cells that ought
+# to be identical. One column in ninety of an otherwise perfectly periodic wall
+# came back a cell out, which is the sawtooth the whole exercise removes.
+#
+# Nudging the sample point by a constant leaves every comparison's meaning
+# alone -- half-open stays half-open, a centre on the near edge is still in and
+# one on the far edge is still out -- while putting the tie a million times
+# further from the noise than the noise can reach.
+NUDGE = 1e-9
+
 
 def convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Andrew's monotone chain, counter-clockwise, without collinear points."""
@@ -97,7 +114,7 @@ class Frame:
             u = 2.0 * self.flip_u - u
         if self.flip_v is not None:
             v = 2.0 * self.flip_v - v
-        return (u, v)
+        return (u + NUDGE, v + NUDGE)
 
     def to_world(self, u: float, v: float) -> tuple[float, float]:
         if self.flip_u is not None:
@@ -153,6 +170,39 @@ class Frame:
         return Frame(self.origin, self.angle, self.extent_u, self.extent_v,
                      flip_u=self.flip_u,
                      flip_v=None if self.flip_v is not None else axis)
+
+    @property
+    def centre(self) -> tuple[float, float]:
+        """The world point at the middle of the frame's own extent."""
+        return self.to_world(self.extent_u / 2.0, self.extent_v / 2.0)
+
+    def turned(self, angle_deg: float,
+               about: tuple[float, float] | None = None) -> "Frame":
+        """The same frame at a different angle, pivoted about a world point.
+
+        For putting a measured azimuth onto a lattice slope -- see
+        `blockwright.lattice`. The pivot matters more than it looks: turning
+        about the origin swings the whole building through an arc as long as it
+        is, so a snap of half a degree would move a 165 m slab by a metre and a
+        half *and* translate it bodily. About its own centre, the same snap
+        moves each end by half that and moves the middle not at all, which is
+        the error the section is asked to forgive.
+
+        Extents and flips are carried across unchanged: this turns the drawing
+        board, not the drawing.
+        """
+        if about is None:
+            about = self.centre
+        u, v = self.to_local(about[0], about[1])
+        probe = Frame((0.0, 0.0), angle_deg, self.extent_u, self.extent_v,
+                      self.flip_u, self.flip_v)
+        wx, wz = probe.to_world(u, v)
+        return Frame((about[0] - wx, about[1] - wz), angle_deg,
+                     self.extent_u, self.extent_v, self.flip_u, self.flip_v)
+
+    def snapped(self, slope, about: tuple[float, float] | None = None) -> "Frame":
+        """This frame turned onto a `lattice.Slope`."""
+        return self.turned(slope.angle, about)
 
     @property
     def direction(self) -> str:
@@ -272,7 +322,8 @@ class Frame:
         if fast.HAVE:
             return Mask(width, length,
                         fast.rect(width, length, self.origin, self._cos,
-                                  self._sin, u0, u1, v0, v1))
+                                  self._sin, u0, u1, v0, v1,
+                                  self.flip_u, self.flip_v, NUDGE))
         return self.region(
             width, length,
             lambda u, v: u0 <= u < u1 and v0 <= v < v1,
@@ -292,7 +343,8 @@ class Frame:
         if fast.HAVE:
             return Mask(width, length,
                         fast.disc(width, length, self.origin, self._cos,
-                                  self._sin, cu, cv, outer2, inner2))
+                                  self._sin, cu, cv, outer2, inner2,
+                                  self.flip_u, self.flip_v, NUDGE))
         return self.region(
             width, length,
             lambda u, v: inner2 <= (u - cu) ** 2 + (v - cv) ** 2 < outer2,

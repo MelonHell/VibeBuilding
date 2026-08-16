@@ -26,6 +26,9 @@ is worse than no check at all.
 
 from __future__ import annotations
 
+import math
+
+from . import lattice
 from .mask import Mask
 
 
@@ -150,6 +153,105 @@ class Site:
         # Filled by `across` on first use: how far the drawn mass reaches across
         # the plot at each station along it.
         self._reach: dict[int, tuple[float, float]] | None = None
+
+        # The lattice slope the frame was put onto, or None for a building that
+        # declared UNLATTICED. Everything about repeating lives off this: see
+        # `period`, `pitch` and `stamp`.
+        found = derived.get("frame", {}).get("slope")
+        self.slope = lattice.Slope.from_json(found) if found else None
+        self.unlatticed = derived.get("frame", {}).get("unlatticed")
+
+    # -- repeating ---------------------------------------------------------
+
+    @property
+    def period(self) -> float:
+        """Metres from one cell of the wall's motif to the same cell of the next.
+
+        The unit every repeat is counted in. A section is copied at a whole
+        number of these and at nothing else: at any other pitch the copy is a
+        re-rasterisation of the same shape rather than the same cells, which is
+        the difference between a terrace somebody built with copy-paste and a
+        terrace that was drawn eight times.
+        """
+        self.on_a_lattice("asking what the wall's period is")
+        return self.slope.period
+
+    def periods(self, metres: float) -> int:
+        """`metres` as a whole number of periods, at least one."""
+        self.on_a_lattice("turning a pitch in metres into a count of periods")
+        return self.slope.multiple(metres)
+
+    def pitch(self, metres: float) -> float:
+        """`metres` rounded to a pitch this frame can actually copy at.
+
+        Print it beside what was asked for. A measured 20.6 m becoming a built
+        20.0 m is a decision, and a decision that only shows up in the geometry
+        is one nobody can argue with.
+        """
+        self.on_a_lattice("rounding a pitch to something that can be copied")
+        return self.slope.pitch(metres)
+
+    def step(self, periods: int = 1, along: str = "u") -> tuple[int, int]:
+        """The world (dx, dz) that is `periods` periods along or across.
+
+        Both axes of a lattice frame are integer vectors -- a quarter turn maps
+        the cell lattice onto itself -- so a wing copied across a court is as
+        exact as a section copied along a terrace.
+        """
+        self.on_a_lattice("asking for the vector a copy steps by")
+        if along == "u":
+            return self.slope.times(int(periods))
+        if along == "v":
+            return self.slope.across(int(periods))
+        raise ValueError(f"a copy steps along u or v, not {along!r}")
+
+    def repeat(self, unit: Mask, periods: int, count: int,
+               along: str = "u") -> Mask:
+        """`unit` and `count - 1` copies of it, every `periods` periods.
+
+        The mask side of a repeat: a run of window openings, a row of piers, a
+        line of planters. Each one is the same figure translated by whole cells,
+        so every one of them rasterises the same -- which a rhythm laid out by
+        `Facade.bays` cannot promise, because arc length lands each opening in
+        its own sub-cell phase and the raster of one is not the raster of the
+        next.
+        """
+        if count < 1:
+            raise ValueError("a repeat lays at least the first one")
+        return unit.stamped(self.step(periods, along), count - 1)
+
+    def openings(self, u0: float, u1: float, v0: float, v1: float,
+                 periods: int, count: int, along: str = "u") -> Mask:
+        """One opening drawn in (u, v), stamped along the building.
+
+        The lattice answer to a run of window bays. `periods` is the pitch in
+        periods of the wall's own motif -- `Site.periods` turns a measurement in
+        metres into one -- and what comes back is `count` figures that are the
+        same cells, not `count` rasterisations of the same rectangle.
+        """
+        return self.repeat(self.rect(u0, u1, v0, v1), periods, count, along)
+
+    def on_a_lattice(self, doing: str) -> None:
+        """Stop unless this building's frame sits on a lattice slope."""
+        if self.slope is None:
+            raise SystemExit(
+                f"{doing} needs a lattice slope, and this building has none"
+                + (f" -- UNLATTICED says: {self.unlatticed}"
+                   if self.unlatticed else
+                   ", because derived.json was measured before the frame was "
+                   "put on one. Re-run probes/derive.py.")
+                + "\nA repeat off the lattice is a redraw, not a copy: the "
+                  "sections come out looking alike and rasterised differently.")
+
+    def stamp(self, canvas, mask: Mask, y0: int, y1: int, periods: int,
+              count: int) -> int:
+        """Copy what stands over `mask` along the building, `count` more times.
+
+        The whole idiom, in one call: draw one section, stamp the rest. See
+        `Canvas.stamp` for what is copied and `Site.period` for what `periods`
+        counts.
+        """
+        return canvas.stamp(mask, y0, y1, self.step(periods), count)
 
     def slack(self, cells: float = 1.0) -> float:
         """`cells` cells of this frame's grid, in metres.
@@ -305,9 +407,24 @@ class Site:
     def rect(self, u0: float, u1: float, v0: float, v1: float) -> Mask:
         return self.frame.rect(self.width, self.length, u0, u1, v0, v1)
 
+    # Whether a circle is drawn about a point the block grid is symmetric on.
+    #
+    # True, and it is not a tolerance: a circle has no angle, so nothing is lost
+    # by drawing it in world space, and what is gained is the only property a
+    # circle has. Drawn through the frame, its centre lands at an arbitrary
+    # sub-cell offset and the arc comes back longer in one octant than in its
+    # mirror -- a dent, on the one shape whose whole job is not to have one. See
+    # `Mask.circle`. The centre moves by a quarter of a metre at most.
+    #
+    # False where the centre is itself the measurement under test.
+    ROUND_ON_THE_GRID = True
+
     def disc(self, cu: float, cv: float, radius: float,
              inner: float = 0.0) -> Mask:
-        return self.frame.disc(self.width, self.length, cu, cv, radius, inner)
+        if not self.ROUND_ON_THE_GRID:
+            return self.frame.disc(self.width, self.length, cu, cv, radius, inner)
+        cx, cz = self.frame.to_world(cu, cv)
+        return Mask.circle(self.width, self.length, cx, cz, radius, inner)
 
     def empty(self) -> Mask:
         return Mask(self.width, self.length)
@@ -436,6 +553,14 @@ class Site:
         return self.rect(u0 - self.pad, u1 + self.pad,
                          v0 - self.pad, v1 + self.pad)
 
+    # How many runs a fitted face's own slope may have. The frame's slope only
+    # regularises the faces along u and v; a rake, a splayed wing or a plot
+    # boundary stands at whatever it was measured at and rasterises into the
+    # never-repeating staircase the lattice exists to remove. Zero leaves each
+    # face on its measured line -- right where the face's own direction is the
+    # measurement under test and nothing may round it.
+    FACE_RUNS = 3
+
     def faceted(self, name: str, tolerance: float = 1.0, least: int = 3,
                 report: bool = True) -> Mask:
         """One part rebuilt as the polygon of its own fitted faces.
@@ -470,7 +595,9 @@ class Site:
         p = self.parts[name]
         if p.kind == "disc" and self.ROUND:
             return self.disc(p.centre[0], p.centre[1], p.radius + self.pad)
-        faces = p.mask.edges(self.frame, tolerance=tolerance, least=least)
+        measured = p.mask.edges(self.frame, tolerance=tolerance, least=least)
+        faces = ([e.snapped(self.frame, self.FACE_RUNS) for e in measured]
+                 if self.FACE_RUNS else measured)
         out = p.mask.faceted(self.frame, pad=self.pad, edges=faces)
         if out is None:
             raise SystemExit(
@@ -487,6 +614,16 @@ class Site:
                   + ", ".join(f"{e.angle:.0f} deg/{e.run:.0f} m" for e in faces)
                   + f"; worst fit {bent.worst:.2f} m at a station, "
                   f"{bent.spread:.2f} m over {bent.kept}/{bent.span}")
+            if self.FACE_RUNS:
+                # What the snap moved, face by face. A decision that only shows
+                # up in the geometry is one nobody can argue with.
+                moved = [(was, now) for was, now in zip(measured, faces)
+                         if abs(now.angle - was.angle) > 0.005]
+                if moved:
+                    print("    snapped: " + ", ".join(
+                        f"{was.angle:.1f}->{now.angle:.1f} deg ("
+                        f"{now.run / 2 * abs(math.sin(math.radians(now.angle - was.angle))):.2f}"
+                        " m at its ends)" for was, now in moved))
         return out
 
     def box(self, name: str) -> Mask:

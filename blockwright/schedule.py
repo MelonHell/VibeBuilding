@@ -102,13 +102,35 @@ class Item:
 
     Names are matched on the part before the state, so `minecraft:oak_fence`
     covers `minecraft:oak_fence[north=true]`.
+
+    `copies` is how many of this part the building has, when they are all the
+    same one -- a row of villas, a terrace of houses, a court of identical
+    cottages. **A count and not a step.** Counting is what a photograph is good
+    for, by the same argument `placed` rests on; the vector the copies step by
+    is a measurement and lives in `derived.json` beside `frame.staircase`, where
+    it is worked out rather than typed.
+
+    What it buys is a row nothing else can supply. The copies of a section are
+    the same silhouette, the same section, the same plan, the same materials and
+    the same schedule whether they are identical or merely alike, so a build
+    that stopped copying and started redrawing would read as correct
+    everywhere -- and read as wrong from the ground, immediately. Declaring the
+    count lets the gate compare the blocks themselves; see `checks.copies`.
+
+    The two ends of a run are usually not copies -- a gable, a stair core, a
+    corner return -- and they are their own items rather than a copy with an
+    edit. A stamp that gets edited afterwards is not a copy of anything, and the
+    row would need per-copy exceptions to say so, which is the shape of a
+    measure about to stop measuring.
     """
 
-    __slots__ = ("name", "what", "source", "near", "reach", "blocks", "placed")
+    __slots__ = ("name", "what", "source", "near", "reach", "blocks", "placed",
+                 "copies")
 
     def __init__(self, name: str, what: str, source: str,
                  near: str | tuple[str, ...] = (), reach: float = REACH,
-                 blocks: str | tuple[str, ...] = (), placed: str = ""):
+                 blocks: str | tuple[str, ...] = (), placed: str = "",
+                 copies: int = 0):
         self.name = name
         self.what = what
         self.source = source
@@ -120,6 +142,11 @@ class Item:
                 f"{name!r} is placed by judgement and says nothing about how; "
                 "name the anchor it was counted against")
         self.placed = placed.strip()
+        if copies and int(copies) < 2:
+            raise ValueError(
+                f"{name!r} declares {copies} copies; a repeat is two or more. "
+                "A part there is one of is an ordinary item.")
+        self.copies = int(copies)
 
     def __repr__(self) -> str:
         near = f", near {'+'.join(self.near)}" if self.near else ""
@@ -135,6 +162,27 @@ class Declaration:
         self.mask = mask
         self.y0 = y0
         self.y1 = y1
+
+
+class Repeat:
+    """Where a build says it stamped one section and copied it.
+
+    The motif is the mask of the *first* copy and the y range is the volume that
+    copy owns -- not the band the whole run occupies. The gate reads the blocks
+    under the motif, then under the motif shifted by one step, and so on, and
+    compares them; handing it the run's outline instead would compare the run
+    with itself and pass whatever it was given.
+    """
+
+    __slots__ = ("motif", "y0", "y1", "step", "count")
+
+    def __init__(self, motif: Mask, y0: int, y1: int,
+                 step: tuple[int, int], count: int):
+        self.motif = motif
+        self.y0 = int(y0)
+        self.y1 = int(y1)
+        self.step = (int(step[0]), int(step[1]))
+        self.count = int(count)
 
 
 class Standing:
@@ -178,6 +226,7 @@ class Schedule:
         self.width = 0
         self.length = 0
         self.built: dict[str, Declaration] = {}
+        self.repeated: dict[str, Repeat] = {}
 
     # -- the build's side --------------------------------------------------
 
@@ -206,10 +255,50 @@ class Schedule:
             held.y0 = min(held.y0, y0)
             held.y1 = max(held.y1, y1)
 
+    def declare_repeat(self, name: str, motif: Mask, y0: int, y1: int,
+                       step: tuple[int, int], count: int) -> None:
+        """Record that this part is one section stamped `count` times.
+
+        Called beside `Canvas.stamp`, with the same four arguments, so that the
+        thing declared and the thing built cannot drift apart -- and once per
+        part: a second call replaces the first rather than merging, because two
+        different repeats of one name is an authoring mistake and merging them
+        would make it look like an answer.
+        """
+        if name not in self.by_name:
+            raise KeyError(f"{name!r} is not in the schedule")
+        item = self.by_name[name]
+        if not item.copies:
+            raise ValueError(
+                f"{name!r} declares a repeat and the manifest says nothing "
+                "about copies. Say how many the building has, with the "
+                "photograph they were counted on: Item(..., copies=N).")
+        if count != item.copies:
+            raise ValueError(
+                f"{name!r} was stamped {count} times and the manifest says "
+                f"{item.copies}. One of the two is wrong, and the gate cannot "
+                "tell which -- fix it here.")
+        if count < 2:
+            raise ValueError(f"{name!r} repeats {count} time(s); a repeat is two "
+                             "or more")
+        if not (step[0] or step[1]):
+            raise ValueError(f"{name!r} repeats on a step of (0, 0)")
+        if y1 <= y0:
+            raise ValueError(f"{name!r} repeats over an empty y range {y0}..{y1}")
+        if not motif.count():
+            raise ValueError(f"{name!r} repeats an empty motif")
+        self.repeated[name] = Repeat(motif.copy(), y0, y1, step, count)
+
     @property
     def undeclared(self) -> list[str]:
         """Manifest entries this build never claimed. Empty is the goal."""
         return [i.name for i in self.items if i.name not in self.built]
+
+    @property
+    def unrepeated(self) -> list[str]:
+        """Items the manifest says are copies and the build never stamped."""
+        return [i.name for i in self.items
+                if i.copies and i.name not in self.repeated]
 
     @property
     def placed(self) -> list[Item]:
@@ -228,11 +317,16 @@ class Schedule:
             "length": self.length,
             "items": [{"name": i.name, "what": i.what, "source": i.source,
                        "near": list(i.near), "reach": i.reach,
-                       "blocks": list(i.blocks), "placed": i.placed}
+                       "blocks": list(i.blocks), "placed": i.placed,
+                       "copies": i.copies}
                       for i in self.items],
             "built": {name: {"y0": d.y0, "y1": d.y1,
                              "cells": d.mask.count(), "mask": _pack(d.mask)}
                       for name, d in self.built.items()},
+            "repeated": {name: {"y0": r.y0, "y1": r.y1, "step": list(r.step),
+                                "count": r.count, "cells": r.motif.count(),
+                                "motif": _pack(r.motif)}
+                         for name, r in self.repeated.items()},
         }, indent=1), encoding="utf-8")
 
     @classmethod
@@ -241,11 +335,16 @@ class Schedule:
         out = cls(Item(i["name"], i["what"], i["source"],
                        tuple(i["near"]), i["reach"],
                        tuple(i.get("blocks", ())),
-                       i.get("placed", "")) for i in doc["items"])
+                       i.get("placed", ""),
+                       i.get("copies", 0)) for i in doc["items"])
         out.width, out.length = doc["width"], doc["length"]
         for name, d in doc["built"].items():
             out.built[name] = Declaration(
                 _unpack(d["mask"], out.width, out.length), d["y0"], d["y1"])
+        for name, r in doc.get("repeated", {}).items():
+            out.repeated[name] = Repeat(
+                _unpack(r["motif"], out.width, out.length),
+                r["y0"], r["y1"], tuple(r["step"]), r["count"])
         return out
 
     # -- the gate's side ---------------------------------------------------
@@ -405,17 +504,41 @@ class Schedule:
                     continue
                 if other not in gaps:
                     gaps[other] = there.mask.distance_field(inside=False)
-                flat = min(gaps[other][i]
-                           for i, v in enumerate(here.mask.bits) if v)
-                flat = math.sqrt(flat)
+
+                # Copy by copy where the part is a repeat, and the *worst* of
+                # them. A merged mask answers with its nearest cell, so a row of
+                # eight villas where seven sit on the deck and the eighth hangs
+                # five metres off the end of it reads as touching -- the seven
+                # answer for the one. A translate is cheap to take apart again,
+                # so there is no reason to leave that hole open.
+                repeat = self.repeated.get(item.name)
+                pieces = [(None, here.mask)]
+                if repeat is not None:
+                    apart = []
+                    for n in range(repeat.count):
+                        moved, _ = repeat.motif.shifted(repeat.step[0] * n,
+                                                        repeat.step[1] * n)
+                        piece = moved & here.mask
+                        if piece.count():
+                            apart.append((n, piece))
+                    pieces = apart or pieces
+
+                which, flat = None, -1.0
+                for n, piece in pieces:
+                    reach = math.sqrt(min(gaps[other][i]
+                                          for i, v in enumerate(piece.bits) if v))
+                    if reach > flat:
+                        which, flat = n, reach
+
                 # Vertically they only have to overlap within the same reach:
                 # a bridge meets a tower it runs into at one level, not at all
                 # of them.
                 lift = max(here.y0 - there.y1, there.y0 - here.y1, 0)
                 ok = flat <= item.reach and lift <= item.reach
+                whose = "" if which is None else f"copy {which} is the furthest, "
                 yield (f"{item.name} meets {other}", ok,
-                       f"{flat:.1f} m apart, {lift} m of daylight in y; "
+                       f"{whose}{flat:.1f} m apart, {lift} m of daylight in y; "
                        f"reach {item.reach:g} m")
 
 
-__all__ = ["Declaration", "Item", "Schedule", "Standing", "REACH"]
+__all__ = ["Declaration", "Item", "Repeat", "Schedule", "Standing", "REACH"]

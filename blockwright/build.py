@@ -178,6 +178,157 @@ class Canvas:
                         written += 1
         return written
 
+    def stamp(self, mask: Mask, y0: int, y1: int, step: tuple[int, int],
+              count: int) -> int:
+        """Copy the volume over `mask` sideways `count` times, every `step`.
+
+        `Canvas.repeat` is this along y, and its docstring says why a stamp
+        beats a loop that redraws from the same numbers: what is copied is the
+        blocks, so the copies are identical rather than nearly identical. This
+        is the same argument along the ground, and it is only sound on a whole
+        number of cells -- see `Mask.shifted`. That is what
+        `blockwright.lattice` exists to arrange: on a lattice slope the
+        building's own axis *is* an integer vector, so a section repeated at a
+        whole number of periods is a translation of the first and not a second
+        rasterisation of the same shape.
+
+        **The air inside the mask is copied too**, and it has to be: a window
+        carved out of section one is part of what section two is a copy of. So
+        `[y0, y1)` must be the volume the motif owns, not a band across a
+        building that has other things in it.
+
+        Refuses to run off the grid. A repeat that quietly loses its last copy
+        is the failure `Facade` shipped twice -- a hotel with one blank tower
+        and a villa row with seven blank villas, neither visible to the audit
+        nor to the section.
+        """
+        if (mask.width, mask.length) != (self.width, self.length):
+            raise ValueError("mask does not match the canvas grid")
+        if count < 0:
+            raise ValueError("a stamp repeats a whole number of times")
+        dx, dz = int(step[0]), int(step[1])
+        if count and not (dx or dz):
+            raise ValueError("a stamp steps somewhere; (0, 0) copies onto itself")
+        y0, y1 = self._clamp(y0, y1)
+        if y1 <= y0:
+            return 0
+
+        area = self.width * self.length
+        cells = mask.cells()
+        here = set(cells)
+        written = 0
+        for n in range(1, count + 1):
+            ox, oz = dx * n, dz * n
+            for x, z in cells:
+                nx, nz = x + ox, z + oz
+                if not (0 <= nx < self.width and 0 <= nz < self.length):
+                    raise ValueError(
+                        f"copy {n} of {count} on step ({dx}, {dz}) leaves the "
+                        f"{self.width}x{self.length} canvas at ({nx}, {nz})")
+                if (nx, nz) in here:
+                    # Every copy is read from the motif, so a copy that lands
+                    # back on it reads cells an earlier copy has already
+                    # overwritten -- and what comes out is neither the motif nor
+                    # a copy of it. A step shorter than the section is an
+                    # authoring mistake in any case.
+                    raise ValueError(
+                        f"copy {n} of {count} on step ({dx}, {dz}) lands back "
+                        f"on the motif at ({nx}, {nz}); the step is shorter "
+                        "than the section it copies")
+            for y in range(y0, y1):
+                base = y * area
+                for x, z in cells:
+                    self.data[base + (z + oz) * self.width + (x + ox)] = \
+                        self.data[base + z * self.width + x]
+                    written += 1
+        return written
+
+    def place(self, mask: Mask, y0: int, y1: int, corner: tuple[int, int],
+              turn: int = 0, mirror: str | None = None) -> int:
+        """Copy the volume over `mask` to another spot, optionally turned.
+
+        For the building that is several of the same building: a court of
+        identical cottages, a pair of pavilions, a gatehouse that appears at
+        both ends of a drive. `Canvas.stamp` walks one run at one step; this
+        puts a copy anywhere, and can turn it.
+
+        **Quarter turns and axis mirrors only, and that is not a limitation to
+        be worked around.** Those, with the translations, are the whole group of
+        transforms that map the cell lattice onto itself. Anything between them
+        resamples: a copy turned thirty degrees has to decide what to do with
+        cells that land between cells, and both answers are bad -- a forward
+        splat leaves pinholes, a backward sample re-rasterises every edge. See
+        `Frame.flipped`, which makes the same argument about mirroring at fifty
+        degrees.
+
+        `corner` is where the copy's minimum corner lands, so a turned copy is
+        placed by the box it occupies rather than by wherever a rotation happened
+        to fling it. `mirror` is applied first, then `turn`.
+
+        Block state is turned with the blocks -- see `blocks.turned`. Without
+        that, a copied cottage keeps its original's stairs facing the original's
+        way, which is a defect no row of the gate can read: every block is
+        present, of the right kind, in the right cell.
+        """
+        if (mask.width, mask.length) != (self.width, self.length):
+            raise ValueError("mask does not match the canvas grid")
+        bounds = mask.bounds()
+        if bounds is None:
+            return 0
+        turn %= 4
+        x0, z0, x1, z1 = bounds
+        w, h = x1 - x0 + 1, z1 - z0 + 1
+        y0, y1 = self._clamp(y0, y1)
+        if y1 <= y0:
+            return 0
+
+        def moved(x: int, z: int) -> tuple[int, int]:
+            lx, lz = x - x0, z - z0
+            if mirror == "x":
+                lx = w - 1 - lx
+            elif mirror == "z":
+                lz = h - 1 - lz
+            elif mirror is not None:
+                raise ValueError(f"a mirror is across x or z, not {mirror!r}")
+            if turn == 1:
+                lx, lz = h - 1 - lz, lx
+            elif turn == 2:
+                lx, lz = w - 1 - lx, h - 1 - lz
+            elif turn == 3:
+                lx, lz = lz, w - 1 - lx
+            return corner[0] + lx, corner[1] + lz
+
+        cells = mask.cells()
+        here = set(cells)
+        for x, z in cells:
+            nx, nz = moved(x, z)
+            if not (0 <= nx < self.width and 0 <= nz < self.length):
+                raise ValueError(
+                    f"a copy of a {w}x{h} motif at {tuple(corner)} turned "
+                    f"{turn} quarter(s) leaves the {self.width}x{self.length} "
+                    f"canvas at ({nx}, {nz})")
+            if (nx, nz) in here:
+                raise ValueError(
+                    f"a copy of a {w}x{h} motif at {tuple(corner)} overlaps "
+                    f"what it is a copy of, at ({nx}, {nz}); it would read "
+                    "cells it has already written")
+
+        area = self.width * self.length
+        written = 0
+        for x, z in cells:
+            nx, nz = moved(x, z)
+            for y in range(y0, y1):
+                value = self.data[y * area + z * self.width + x]
+                block = self.palette[value]
+                if mirror:
+                    block = blocklib.mirrored(block, mirror)
+                if turn:
+                    block = blocklib.turned(block, turn)
+                self.data[y * area + nz * self.width + nx] = \
+                    self.palette_id(block)
+                written += 1
+        return written
+
     def finalize(self) -> int:
         """Give panes, bars, fences and walls the state their neighbours imply.
 
@@ -692,6 +843,16 @@ class Facade:
         first one. Nudged **per piece**, because that is where a ring closes: one
         step computed from the longest piece leaves every other piece with a
         doubled or a missing bay wherever its loop comes round.
+
+        **This spaces bays; it does not copy them.** Arc length is a continuous
+        coordinate, so each opening lands at its own sub-cell phase and each one
+        rasterises differently: on a diagonal wall the run of bays comes back
+        four cells wide, then three, then four with the step on the other side.
+        That is right for a curved wall, where there is no translation that
+        takes one bay to the next and this is the only way to keep a rhythm at
+        all -- and it is the wrong tool for a straight one, where
+        `Site.openings` stamps one figure along a lattice step and every bay is
+        the same cells. Use this on the curve and that on the straight.
         """
         if period <= 0:
             raise ValueError("bay period must be positive")

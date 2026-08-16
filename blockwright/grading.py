@@ -40,10 +40,11 @@ what is written above.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
-from . import checks, gate, measure, report, sources, style
+from . import checks, gate, measure, report, sources, style, survey
 from . import model as model3d
 from .mask import Mask, iou
 from .mesh import Mesh
@@ -240,6 +241,7 @@ class Grading:
 
         findings = self.soundness(g, model)
         self.placement(g, sched)
+        self.repetition(g, model, sched, derived)
         cut = self.divisions(g, model, sched)
         self.watertight(g, cut)
         self.evenness(g, model, read, sched, derived)
@@ -349,6 +351,91 @@ class Grading:
             f"{len(placed)} part(s) stand where a photograph says, counted "
             "against a measured anchor rather than measured: "
             + "; ".join(f"{i.name} -- {i.placed}" for i in placed))
+
+    def repetition(self, g, model, sched, derived):
+        """Are the parts this building says it copied actually the same blocks?
+
+        The question `division` asks about shape, asked about material: a row of
+        eight sections and a row of eight sections that were each drawn from the
+        same numbers cast the same silhouette, cut the same section, cover the
+        same plan and satisfy the same audit. The second reads as wrong from the
+        ground and as right to every other row here.
+
+        Empty is `[----]` and not silence, for the reason `COUNTS` is: a
+        building that declares no copies has either nothing that repeats or a
+        mechanism nobody reached for, and those look identical from the outside.
+        `UNREPEATED` says which, in a sentence -- not a flag, because the flag
+        version of this is `UNIFORM = True`, which stood on two buildings and
+        turned off the only row that looked at a wall.
+        """
+        wanted = [i for i in sched.items if i.copies]
+        why = self._("UNREPEATED", None)
+        if not wanted:
+            if why is True:
+                g.ungraded(
+                    "repetition",
+                    "UNREPEATED is a reason, not a flag: say what about this "
+                    "building has nothing in it twice.")
+            elif why:
+                g.ungraded("repetition",
+                           f"nothing here repeats -- {why}")
+            else:
+                g.ungraded(
+                    "repetition",
+                    "no item declares copies and UNREPEATED is not set, so "
+                    "nothing checks that the sections this building repeats are "
+                    "the same section. Eight identical villas and eight villas "
+                    "drawn eight times pass every other row here -- same "
+                    "silhouette, same section, same plan, same materials, same "
+                    "schedule -- and differ from the ground. Say "
+                    "Item(..., copies=N) beside the part and call "
+                    "Schedule.declare_repeat where it is stamped, or set "
+                    "UNREPEATED to the reason this building has nothing in it "
+                    "twice.")
+            return
+
+        slope = (derived.get("frame", {}) or {}).get("slope")
+        for item in wanted:
+            found = sched.repeated.get(item.name)
+            if found is None:
+                g.add(f"{item.name} repeats", False,
+                      f"the manifest says {item.copies} copies ({item.source}) "
+                      "and the build declares no repetition. Either the "
+                      "sections are being drawn one by one -- in which case "
+                      "they are not copies -- or the stamp is there and "
+                      "Schedule.declare_repeat beside it is not.")
+                continue
+
+            same = checks.copies(model, found.motif, found.y0, found.y1,
+                                 found.step, found.count)
+            step = tuple(found.step)
+            reach = math.hypot(*step)
+            where = (f"step {step} = {reach:.2f} m"
+                     + (f" = {reach / slope['period']:.0f} period(s) of "
+                        f"{abs(slope['step'][0])}:{abs(slope['step'][1])}"
+                        if slope and slope.get("period") else ""))
+            excused = (f"; {same['excused']} rim cell(s) excused ("
+                       + ", ".join(f"{k} states" for k in same["families"])
+                       + ")" if same["excused"] else "")
+
+            if same["outside"]:
+                g.add(f"{item.name} repeats", False,
+                      f"{same['outside']} cell(s) of the run stand outside the "
+                      f"schematic: {found.count} copies on {where} do not fit "
+                      "what was written.")
+            elif same["ok"]:
+                g.add(f"{item.name} repeats", True,
+                      f"{found.count} copies on {where}, byte-identical over "
+                      f"{same['cells']} cells x {same['courses']} "
+                      f"course(s){excused}")
+            else:
+                n, x, y, z, was, now = same["first"]
+                g.add(f"{item.name} repeats", False,
+                      f"{found.count} copies on {where} came out "
+                      f"{same['distinct']} distinct pattern(s); copy {n} "
+                      f"differs from copy 0 in {same['differ'][n]} of "
+                      f"{same['cells'] * same['courses']} cells, first at "
+                      f"({x}, {y}, {z}): {now} where copy 0 has {was}{excused}")
 
     def divisions(self, g, model, sched):
         """Counts of components inside each declared part, at several heights.
@@ -1823,7 +1910,8 @@ class Grading:
             # there is one fit and no registration between two frames.
             mesh = model3d.load(reference.path, up=derive.MODEL_UP,
                                 scale=derive.MODEL_SCALE)
-            mesh_frame, datum = read.massing.model_frame, read.massing.datum
+            datum = read.massing.datum
+            mesh_frame = survey.with_the_plan(read, read.massing.model_frame)
         else:
             mesh = Mesh.read(reference.path)
             datum = mesh.ground()
@@ -1833,7 +1921,12 @@ class Grading:
             # building. That number is the building's own, so it is read from
             # `derive` and not typed here -- a gate with its own floor grades
             # every station in a frame the measurements were never taken in.
-            mesh_frame = mesh.frame(datum=datum, floor=derive.MESH_FLOOR)
+            #
+            # Turned with the plan, for the same reason the survey turns it: a
+            # plan on a lattice slope and a reference on its own fit are two
+            # coordinate systems, and a registration can only express one.
+            mesh_frame = survey.with_the_plan(
+                read, mesh.frame(datum=datum, floor=derive.MESH_FLOOR))
 
         cloud_mesh = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
         cloud_build = gate.Cloud.from_model(model, frame, skip=self._("SOFT", set()))

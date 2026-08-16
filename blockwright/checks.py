@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 
 from . import measure
-from .blocks import AIR, base, unknown_blocks
+from .blocks import AIR, base, connects, unknown_blocks
 from .mask import Mask
 
 # Blocks that are allowed to float or to end in mid-air: planting, water, and
@@ -473,6 +473,99 @@ def cadence(model, mask: Mask, thickness: float = 1.0,
     return {"cells": len(cells), "courses": len(courses) - 1,
             "period": best[0], "score": round(best[1], 3), "by": best[2],
             "read": True}
+
+
+def copies(model, motif: Mask, y0: int, y1: int,
+           step: tuple[int, int], count: int) -> dict:
+    """Are the copies of a repeated section the same blocks, cell for cell?
+
+    Nothing else here can ask this. Eight sections and eight nearly-identical
+    sections cast the same silhouette, cut the same section, cover the same
+    plan, hold the same materials in the same proportions and satisfy the same
+    schedule; the difference between them is visible from the ground and to no
+    row of the gate. It is also the difference between a terrace somebody built
+    with copy-paste and one that was drawn eight times, which is the whole
+    reason `Canvas.stamp` and `blockwright.lattice` exist.
+
+    **Byte-identity, with no tolerance at all.** A budget of "near enough"
+    readmits the loop that redraws each section from the same numbers and lands
+    each one in its own sub-cell phase -- which is exactly what is being
+    stopped, and which differs from a copy by a handful of cells per section.
+
+    The one exception is named rather than measured. `Canvas.finalize` gives
+    panes, fences, bars and walls the state their neighbours imply, and the
+    copies at the two ends of a run have different neighbours: the outer face of
+    the last section joins nothing, where the same face of the middle sections
+    joins the next one. Those cells are on the motif's rim and are of a family
+    `blocks.connects` knows, and they are compared by name without state. Every
+    one is counted and reported, so an excuse that starts covering half the
+    building says so.
+    """
+    if count < 2:
+        raise ValueError("a repeat is two copies or more")
+    dx, dz = int(step[0]), int(step[1])
+    cells = motif.cells()
+    rim = {(x, z) for x, z in motif.rim().cells()}
+    courses = list(range(int(y0), int(y1)))
+    width, length = model.width, model.length
+    height = model.height
+
+    def read(x: int, y: int, z: int) -> str | None:
+        if not (0 <= x < width and 0 <= z < length and 0 <= y < height):
+            return None
+        return model.get(x, y, z)
+
+    prints: list[int] = []
+    differ: list[int] = []
+    excused = 0
+    families: dict[str, int] = {}
+    first = None
+    outside = 0
+
+    for n in range(count):
+        ox, oz = dx * n, dz * n
+        seen: list[str] = []
+        wrong = 0
+        for x, z in cells:
+            loose = (x, z) in rim
+            for y in courses:
+                block = read(x + ox, y, z + oz)
+                if block is None:
+                    outside += 1
+                    seen.append("<off the grid>")
+                    continue
+                if loose and connects(block):
+                    # A joining block on the rim is compared by what it is, not
+                    # by what it found beside it.
+                    seen.append(base(block))
+                    if n and block != read(x, y, z):
+                        excused += 1
+                        families[connects(block)] = \
+                            families.get(connects(block), 0) + 1
+                    continue
+                seen.append(block)
+                if n and block != read(x, y, z):
+                    wrong += 1
+                    if first is None:
+                        first = (n, x + ox, y, z + oz, read(x, y, z), block)
+        prints.append(hash(tuple(seen)))
+        differ.append(wrong)
+
+    distinct = len(set(prints))
+    return {
+        "copies": count,
+        "cells": len(cells),
+        "courses": len(courses),
+        "step": [dx, dz],
+        "distinct": distinct,
+        "differ": differ,
+        "worst": max(differ) if differ else 0,
+        "first": first,
+        "excused": excused,
+        "families": families,
+        "outside": outside,
+        "ok": distinct == 1 and not outside,
+    }
 
 
 def facade_mix(model, mask: Mask, frame, u0: float, u1: float,

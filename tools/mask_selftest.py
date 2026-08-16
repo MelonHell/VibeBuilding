@@ -96,11 +96,24 @@ def main() -> int:
     # that reassociated one multiply-add would put a cell on the wrong side of a
     # wall roughly once in a very large number of cells -- which is exactly the
     # kind of difference nobody would ever trace back to here.
-    for _ in range(ROUNDS * 4):
+    #
+    # A quarter of the frames are mirrored, and that share is not decoration.
+    # The fast path did not carry `flip_u`/`flip_v` at all: every second half of
+    # every mirrored pair -- which is how `Site.flipped` draws one -- came out
+    # reflected about the wrong place on any machine with numpy installed, and
+    # this loop passed every time because it had never fitted a flipped frame.
+    for round_ in range(ROUNDS * 4):
         width = rng.randint(1, 64)
         length = rng.randint(1, 64)
         frame = Frame((rng.uniform(-40, 40), rng.uniform(-40, 40)),
                       rng.uniform(0.0, 360.0))
+        if round_ % 4 == 1:
+            frame = frame.flipped(rng.uniform(-30, 30), "u")
+        elif round_ % 4 == 2:
+            frame = frame.flipped(rng.uniform(-30, 30), "v")
+        elif round_ % 4 == 3:
+            frame = frame.flipped(rng.uniform(-30, 30), "u") \
+                         .flipped(rng.uniform(-30, 30), "v")
         u0 = rng.uniform(-30, 30)
         v0 = rng.uniform(-30, 30)
         u1, v1 = u0 + rng.uniform(0, 50), v0 + rng.uniform(0, 50)

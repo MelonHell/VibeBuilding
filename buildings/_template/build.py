@@ -135,6 +135,26 @@ SCHEDULE = Schedule([
     Item("parapets", "the upstand around each roof",
          "photographs: <which one>",
          near="shell", blocks=TRIM),
+    # A part the building has several of, all the same one. `copies` is a count,
+    # and counting is what a photograph is good for; the vector they step by is
+    # a measurement and comes off `derived.json` through `Site.step`.
+    #
+    # Build one, stamp the rest, declare both:
+    #
+    #     unit = site.rect(0.0, 20.0, 0.0, 12.0)
+    #     build.walls(canvas, unit, site.ground, top, WALL, THICK)
+    #     periods = site.periods(20.6)          # the measured pitch, in periods
+    #     site.stamp(canvas, unit, site.ground, top, periods, 7)
+    #     sched.declare("villa", site.repeat(unit, periods, 8),
+    #                   site.ground, top)
+    #     sched.declare_repeat("villa", unit, site.ground, top,
+    #                          site.step(periods), 8)
+    #
+    # The ends of a run are usually not copies -- a gable, a stair core, a corner
+    # return -- and those are their own items rather than a copy with an edit.
+    # Item("villa", "one section of the row",
+    #      "photographs: eight bays, all alike",
+    #      near="podium", blocks=WALL, copies=8),
 ])
 
 

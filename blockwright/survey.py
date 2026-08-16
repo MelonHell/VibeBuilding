@@ -27,12 +27,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import declared, flatmap, gate, measure, roof, sources, witnesses
+from . import declared, flatmap, gate, lattice, measure, roof, sources, witnesses
 from . import model as model3d
 from .flatmap import guides
+from .frame import Frame
 from .mask import iou
 from .mesh import Mesh
-from .plan import decompose
+from .plan import Part, decompose
 from . import vectorplan
 
 # What a building gets if it does not say. Every one of these is a window --
@@ -84,6 +85,23 @@ DEFAULTS = {
     # projected -- and one already in metres needs none either; an SVG has no
     # units at all and cannot be read without this.
     "VECTOR_SCALE": 0.0,
+    # Which lattice slope the frame is put onto: "auto" for the shortest period
+    # the budget affords, or a pair like (3, 4) chosen by hand. See
+    # `Survey.on_a_lattice` and `blockwright.lattice`.
+    "LATTICE": "auto",
+    # Why this building is not on a lattice, as a sentence. A building whose
+    # shape is a curve or whose azimuth carries a measurement nothing may round
+    # sets this and says so; the gate then prints the reason rather than a
+    # verdict. A bare True would be the `UNIFORM` mistake again.
+    "UNLATTICED": None,
+    # How far a snap may move an end of the building, in metres. None takes
+    # `lattice.budget_for`, which scales with the span and caps at the
+    # section's own tolerance.
+    "LATTICE_BUDGET": None,
+    # The pitch this building repeats at, in metres, if it knows. Slopes whose
+    # period cannot express it are passed over -- a period that does not divide
+    # the pitch is a building that cannot copy its own sections.
+    "LATTICE_PITCH": None,
 }
 
 
@@ -111,6 +129,70 @@ class Tables:
         return value
 
 
+def with_the_plan(read, frame):
+    """A reference's frame, turned by however far the plan's frame was.
+
+    **Both sides of a registration have to be measured along the same
+    directions.** Turn the plan onto a lattice slope and leave the reference on
+    its own fit, and the two stand half a degree apart -- which a registration
+    cannot express, because it is scale and shift per axis. It comes out as a
+    scale disagreement instead: on the fixture, u fitted at 0.994 and v at
+    0.945, and the run stopped, saying the fit had latched onto something that
+    was not the building. It had not. It had been handed two coordinate systems,
+    which is the fault `Registration.measured` exists to end -- and the reason
+    this is a function both the survey and the gate call rather than a line in
+    either.
+
+    By the *delta* and not onto the plan's own angle. Where the two really do
+    stand at different azimuths -- a game map's invented street grid against a
+    capture of the real prototype -- that difference is a fact about the inputs,
+    declared in `EXPECTED`, and turning one frame onto the other would swallow
+    it silently.
+
+    What this does mean is that the section cannot see the snap: both sides move
+    together, so a station cuts both in the same place. That is the right place
+    for the blindness. What a snap turns is the drawing against the drawn plan,
+    and the rows that compare a build with its plan -- `stands where the plan
+    says`, `is built square` -- are the ones that can see a rotation, and do.
+    The section grades heights, and heights are what it still grades.
+    """
+    slope = getattr(read, "slope", None)
+    if slope is None or not slope.error:
+        return frame
+    return frame.turned(frame.angle + slope.error)
+
+
+def _resat(frame, was, cells):
+    """`frame` given the extent and the datum corner its predecessor had.
+
+    `Frame.turned` keeps the extent it was handed, which was measured at the old
+    angle: after a turn the minimum-area box is a little different, and the
+    corner u = 0 sits somewhere else. Left alone, that shows up twice -- the
+    registration compares extents with the reference, and every part's `u0`
+    moves by a metre for no reason a reader could name.
+
+    So the extent is re-read off the same cells at the new angle, and the origin
+    is put back where it was relative to the mass: whatever gap the old frame
+    left between u = 0 and the first cell, the new one leaves the same. That is
+    the pad the fitting branch chose, and it belongs to the branch rather than
+    to this.
+    """
+    def span(f):
+        us, vs = [], []
+        for x, z in cells:
+            u, v = f.to_local(x + 0.5, z + 0.5)
+            us.append(u)
+            vs.append(v)
+        return min(us), max(us), min(vs), max(vs)
+
+    old_u0, _, old_v0, _ = span(was)
+    u0, u1, v0, v1 = span(frame)
+    pad_u, pad_v = -old_u0, -old_v0
+    origin = frame.to_world(u0 - pad_u, v0 - pad_v)
+    return Frame(origin, frame.angle,
+                 (u1 - u0) + 2 * pad_u, (v1 - v0) + 2 * pad_v)
+
+
 class Read:
     """What a plan branch produced, whichever branch it was.
 
@@ -120,7 +202,8 @@ class Read:
     the same file also holds the heights.
     """
 
-    __slots__ = ("source", "frame", "named", "order", "massing", "mass")
+    __slots__ = ("source", "frame", "named", "order", "massing", "mass",
+                 "slope", "unlatticed")
 
     def __init__(self, source, frame, named, order, mass=None, massing=None):
         self.source = source
@@ -129,6 +212,12 @@ class Read:
         self.order = order
         self.mass = mass
         self.massing = massing
+        # The lattice slope the frame was put onto, if it was -- see
+        # `Survey.on_a_lattice`. `unlatticed` carries the building's reason for
+        # not being on one, which is a decision and therefore has to be a
+        # sentence rather than a flag.
+        self.slope = None
+        self.unlatticed = None
 
     @property
     def parts(self) -> list:
@@ -457,12 +546,89 @@ class Survey:
             raise SystemExit(sources.refuse(sources.survey(self.paths)) or
                              "nothing states the plan")
         if by.name == "vector":
-            return self.from_vector(out, by)
-        if by.name == "map":
-            return self.from_map(out, by)
-        if by.name in ("model", "capture"):
-            return self.from_model(out, by)
-        return self.from_declared(out, by)
+            read = self.from_vector(out, by)
+        elif by.name == "map":
+            read = self.from_map(out, by)
+        elif by.name in ("model", "capture"):
+            read = self.from_model(out, by)
+        else:
+            read = self.from_declared(out, by)
+        return self.on_a_lattice(read)
+
+    def on_a_lattice(self, read: Read) -> Read:
+        """The same plan, drawn on a slope the block grid can repeat on.
+
+        One place for all four branches, and it has to be here rather than in
+        each of them: `build.py` and `gate.py` call `plan_of` too, and a frame
+        that turned during the survey and not during the build is two buildings.
+
+        **What turns is the drawing board, not the drawing.** The parts keep the
+        masks the map drew; they are re-measured in the new frame because their
+        `u0..u1` are readings *through* it. Everything authored in `(u, v)` --
+        every `rect`, every `disc`, every bay -- lands on the new slope, and
+        that is the whole effect: an authored wall becomes a staircase whose run
+        lengths repeat, and a section repeated at a whole number of periods
+        becomes a translation of the first rather than a second rasterisation of
+        the same shape. `tools/lattice_selftest.py` asserts both, and asserts
+        that both stop being true off the lattice.
+
+        The price is an angle. It is measured here, in metres at the ends of the
+        building, and it is carried into `derived.json` so that no row downstream
+        has to guess whether a disagreement is the building or the snap. Where
+        the price is over budget the slope still comes back -- marked -- because
+        the section is the thing entitled to grade it, and refusing here would
+        move the decision somewhere nothing measures it.
+        """
+        why = self.t.UNLATTICED
+        if why:
+            if why is True:
+                raise SystemExit(
+                    "UNLATTICED is a reason, not a flag: say what about this "
+                    "building makes a lattice slope wrong -- a shoreline that "
+                    "really does wander, an azimuth that carries a measurement "
+                    "-- so the gate can print it.")
+            read.unlatticed = str(why)
+            return read
+
+        cells = (read.mass.cells() if read.mass is not None
+                 else [c for p in read.parts for c in p.mask.cells()])
+        if not cells:
+            read.unlatticed = "the plan has no cells to fit a slope to"
+            return read
+
+        span = max(read.frame.extent_u, read.frame.extent_v) or 1.0
+        setting = self.t.LATTICE
+        if isinstance(setting, (tuple, list)):
+            slope = lattice.Slope(setting[0], setting[1],
+                                  measured=read.frame.angle, span=span)
+            if slope.runs > lattice.RUNS:
+                raise SystemExit(
+                    f"LATTICE = {tuple(setting)} has a motif of {slope.runs} "
+                    f"runs ({'-'.join(str(n) for n in slope.motif)}), and a "
+                    f"motif over {lattice.RUNS} reads as noise rather than as "
+                    "rhythm. Pick a coarser slope, or say why in UNLATTICED.\n"
+                    + lattice.table(read.frame.angle, span=span))
+        elif setting == "auto":
+            slope = lattice.choose(read.frame.angle, span,
+                                   budget=self.t.LATTICE_BUDGET,
+                                   pitch=self.t.LATTICE_PITCH)
+        else:
+            raise SystemExit(
+                f"LATTICE is {setting!r}; it is \"auto\" or a pair like (3, 4). "
+                "A building that should not be on a lattice sets UNLATTICED "
+                "with its reason instead.")
+
+        read.slope = slope
+        if slope.step == (1, 0) and abs(slope.error) < 1e-9:
+            return read              # already square to the world; nothing to turn
+
+        frame = _resat(read.frame.turned(slope.angle), read.frame, cells)
+        out = Read(read.source, frame,
+                   {name: Part(part.mask, frame)
+                    for name, part in read.named.items()},
+                   read.order, mass=read.mass, massing=read.massing)
+        out.slope = slope
+        return out
 
     def datum_of(self, mesh, path, note: dict) -> float:
         """Where the ground is, having first checked that it is the ground.
@@ -530,26 +696,27 @@ class Survey:
         if read.massing is not None and reference.name == read.source.name:
             mesh = model3d.load(reference.path, up=self.t.MODEL_UP, scale=self.t.MODEL_SCALE)
             datum = read.massing.datum
+            model_frame = with_the_plan(read, read.massing.model_frame)
             note["mesh"] = {
                 "read": True,
                 "kind": reference.name,
                 "vertices": len(mesh),
                 "datum": round(datum, 2),
                 "top": round(max(mesh.y) - datum, 1),
-                "frame": {"origin": [round(v, 2)
-                                     for v in read.massing.model_frame.origin],
-                          "angle": round(read.massing.model_frame.angle, 2),
+                "frame": {"origin": [round(v, 2) for v in model_frame.origin],
+                          "angle": round(model_frame.angle, 2),
                           "extent": [round(read.frame.extent_u, 1),
                                      round(read.frame.extent_v, 1)]},
             }
             note["registration"] = {"needed": False,
                                    "why": "the plan and the section come from the "
                                           "same file, so they share one fit"}
-            return Link(mesh, read.massing.model_frame, datum, reference.name)
+            return Link(mesh, model_frame, datum, reference.name)
 
         mesh = Mesh.read(reference.path)
         datum = self.datum_of(mesh, reference.path, note)
-        mesh_frame = mesh.frame(datum=datum, floor=self.t.MESH_FLOOR)
+        mesh_frame = with_the_plan(
+            read, mesh.frame(datum=datum, floor=self.t.MESH_FLOOR))
         cloud = gate.Cloud.from_mesh(mesh, mesh_frame, datum=datum)
 
         # Both sides of this registration have to describe the same thing, and the
@@ -1349,7 +1516,19 @@ class Survey:
             "angle": round(read.frame.angle, 2),
             "extent": [round(read.frame.extent_u, 1), round(read.frame.extent_v, 1)],
             "staircase": round(step, 3),
+            # What the drawing board was put onto and what that cost, or the
+            # building's reason for staying off it. Written whichever way it
+            # went: a snap nobody can see the price of is a snap nobody can
+            # argue with.
+            "slope": (read.slope.to_json() if read.slope is not None else None),
+            "unlatticed": read.unlatticed,
         }
+        if read.slope is not None and read.slope.strained:
+            out["frame"]["slope"]["strained"] = True
+            out["frame"]["slope"]["budget"] = round(
+                self.t.LATTICE_BUDGET
+                or lattice.budget_for(max(read.frame.extent_u,
+                                          read.frame.extent_v)), 2)
         out["parts"] = [
             {"name": name, "kind": read.named[name].kind,
              "u": [round(read.named[name].u0, 1), round(read.named[name].u1, 1)],
@@ -1409,9 +1588,20 @@ class Survey:
             f"frame  origin ({f['origin'][0]}, {f['origin'][1]})  "
             f"{f['angle']} deg  {f['extent'][0]} x {f['extent'][1]} m  "
             f"staircase {f['staircase']}",
-            "",
-            "the parts",
         ]
+        s = f.get("slope")
+        if s:
+            motif = "-".join(str(n) for n in s["motif"]) or "flat"
+            lines.append(
+                f"lattice {abs(s['step'][0])}:{abs(s['step'][1])}  motif {motif}"
+                f"  period {s['period']} m  "
+                f"{s['error']:+.2f} deg off the measured {s['measured']}"
+                f"  {s['cost']} m at the ends"
+                + (f"  -- OVER the {s['budget']} m budget; the section is what "
+                   "grades this" if s.get("strained") else ""))
+        elif f.get("unlatticed"):
+            lines.append(f"lattice none -- {f['unlatticed']}")
+        lines += ["", "the parts"]
         for p in out["parts"]:
             lines.append(f"  {p['name']:12s} {p['kind']:5s} "
                          f"u {p['u'][0]:6.1f}..{p['u'][1]:6.1f}  "

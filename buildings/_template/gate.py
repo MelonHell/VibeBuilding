@@ -151,6 +151,18 @@ TWINS: tuple[tuple[str, str], ...] = (
 # most buildings is translation, not reflection.
 SINGULAR = False
 
+# What repeats by translation is asked in the manifest instead, not here:
+# `Item(..., copies=N)` beside the part and `Schedule.declare_repeat` beside the
+# stamp that made them. The row compares the blocks of each copy with the first,
+# cell for cell, which is the one thing that tells eight identical sections from
+# eight sections that were drawn eight times -- they cast the same silhouette,
+# cut the same section, cover the same plan and hold the same materials.
+#
+# This is the reason a building with nothing in it twice gives, so that the row
+# prints a decision rather than a silence. A sentence, not a flag: `UNIFORM =
+# True` stood on two buildings and turned off the only row that looked at a wall.
+UNREPEATED: str | bool = False
+
 # How many distinct top heights a part is allowed. A parapet built at nine
 # heights along one roof passes every station it is judged at -- it is what those
 # stations were cut from -- and reads as a staircase in the first render.

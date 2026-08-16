@@ -176,6 +176,38 @@ MODEL_SCALE = 1.0
 # nothing when it does not fit.
 MAP_PALETTE = None
 
+# -- the slope the building is drawn on -------------------------------------
+#
+# A wall at an angle rasterises as a staircase, and what reads is the sequence of
+# run lengths along it: at 52.43 degrees it never repeats, at 53.13 (4:3) it runs
+# 2-1-1, 2-1-1, 2-1-1 forever. The first is what "voxelised vector" looks like;
+# the second is what somebody building by hand produces without trying.
+#
+# It is also what makes a copy possible. On a lattice slope the building's own
+# axis *is* an integer vector, so a section repeated at a whole number of periods
+# is a translation of the first -- the same cells -- rather than a second
+# rasterisation of the same shape. Off it, no such vector exists at all.
+#
+# "auto" takes the shortest period whose cost stays inside the budget below; a
+# pair like (3, 4) is that slope, chosen by hand. The cost is measured either
+# way -- degrees, and metres at the ends of the building -- and printed by
+# `derive` and carried in `derived.json`.
+LATTICE = "auto"
+
+# How far the snap may move an end of the building, in metres. None scales it
+# with the span and caps it at the section's own tolerance, which is the right
+# default: inside that, the trade is free where anything grades it.
+LATTICE_BUDGET = None
+
+# What this building repeats at, in metres, if it knows -- slopes whose period
+# cannot express it are passed over. Leave None where nothing repeats.
+LATTICE_PITCH = None
+
+# Why this building is not on a lattice at all, as a sentence: a shoreline that
+# really does wander, an azimuth that carries a measurement nothing may round.
+# None means it is.
+UNLATTICED = None
+
 # -- disagreements that are facts about the inputs --------------------------
 #
 # Two supplied sources can differ for a reason that is not a fault, and the

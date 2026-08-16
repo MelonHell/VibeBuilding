@@ -189,6 +189,20 @@ def authoring_errors() -> list[tuple[str, str]]:
         # counted from; blank, it is the pipeline guessing with a field set.
         ("placed by nothing",
          lambda: Item("a", "", "photo-01.jpg", placed="   ")),
+        # A repeat is two or more; one of something is an ordinary item, and a
+        # row that grades "one copy" would grade a copy against itself.
+        ("a repeat of one",
+         lambda: Item("a", "", "photo-01.jpg", copies=1)),
+        # Stamped without the manifest saying how many, which is the half of
+        # the mechanism that carries the source.
+        ("stamped without a count",
+         lambda: Schedule(MANIFEST).declare_repeat("tower", good, 0, 4,
+                                                   (3, 4), 3)),
+        # The manifest and the stamp disagreeing. Nothing downstream can tell
+        # which of the two is the mistake, so it stops here.
+        ("stamped a different number of times",
+         lambda: Schedule([Item("a", "", "photo-01.jpg", copies=8)])
+                 .declare_repeat("a", good, 0, 4, (3, 4), 6)),
     ):
         try:
             thunk()
@@ -260,8 +274,8 @@ def main(argv: list[str]) -> int:
     if faults:
         print(f"{faults} fault(s): the schedule is not grading what it claims to")
         return 1
-    print("the schedule sees all six failure modes and rejects all six "
-          "authoring errors")
+    print(f"the schedule sees all {len(EXPECTED)} failure modes and rejects "
+          f"all {len(authoring_errors())} authoring errors")
     return 0
 
 

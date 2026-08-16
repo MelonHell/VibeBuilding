@@ -145,6 +145,48 @@ class Edge:
         """Bearing of the face within the frame, in degrees, folded to [0, 180)."""
         return math.degrees(math.atan2(-self.a, self.b)) % 180.0
 
+    def snapped(self, frame, runs: int = 3) -> "Edge":
+        """The same face on the nearest slope the block grid can draw cleanly.
+
+        The frame's own slope makes the faces that run along u and v repeat --
+        that is what `blockwright.lattice` buys. It does nothing for the others:
+        a raked end, a splayed wing, a slab cut off by a plot boundary stands at
+        whatever angle it was measured at, and rasterises into the same
+        never-repeating staircase the whole building used to have. This is the
+        same fix applied one face at a time.
+
+        The line is turned about the **middle of its own run**, so what the snap
+        costs is `run / 2 * sin(error)` at each end and nothing in the middle --
+        the same trade, and the same shape of trade, as turning a frame about
+        the centre of a building. A face is short, so the cost is small: a
+        fifteen-metre rake turned two degrees moves its ends by a quarter of a
+        metre.
+
+        Nothing is measured away. `spread`, `worst` and the station counts still
+        describe the fit that was measured; what changes is the line drawn from
+        it, which is a decision, and `Site.faceted` prints it.
+        """
+        from . import lattice
+
+        bearing = (frame.angle + self.angle) % 180.0
+        slope = lattice.nearest(bearing, runs=runs)
+        beta = math.radians((slope.angle - frame.angle) % 180.0)
+        # Two normals to the new direction; take the one still pointing out.
+        a, b = math.sin(beta), -math.cos(beta)
+        if a * self.a + b * self.b < 0:
+            a, b = -a, -b
+        (u0, v0), (u1, v1) = self.ends
+        mid = ((u0 + u1) / 2.0, (v0 + v1) / 2.0)
+        c = a * mid[0] + b * mid[1]
+
+        def onto(u, v):
+            off = a * u + b * v - c
+            return (u - a * off, v - b * off)
+
+        return Edge(a, b, c, (onto(u0, v0), onto(u1, v1)), self.run,
+                    self.span, self.kept, self.absent, self.outliers,
+                    self.spread, self.worst, self.share)
+
     def meets(self, other: "Edge") -> tuple[float, float] | None:
         """Where this face's line crosses another's. `None` if they are parallel."""
         det = self.a * other.b - other.a * self.b
@@ -261,6 +303,108 @@ class Mask:
             if z > z1:
                 z1 = z
         return None if x1 < 0 else (x0, z0, x1, z1)
+
+    @classmethod
+    def circle(cls, width: int, length: int, cx: float, cz: float,
+               radius: float, inner: float = 0.0, snap: bool = True) -> "Mask":
+        """A disc on the world grid, drawn about a point the grid is symmetric on.
+
+        **A circle has no angle**, so drawing one through the building's frame
+        buys nothing and costs the one thing a circle has: its symmetry. The
+        frame puts the centre at an arbitrary sub-cell offset, and the arc then
+        comes back with one run length in one octant and another in its mirror
+        -- eight per cent longer on one side of a thirty-metre rotunda, which
+        reads as a dent rather than as a circle.
+
+        The lattice is symmetric about a cell corner and about a cell centre and
+        about nothing else, so `snap` puts the centre on the nearer of those
+        two -- half a cell away at the most, a quarter of a metre.
+
+        **Both coordinates go to the same kind of point**, and that is the part
+        worth stating. Snapped independently, one axis can land on a corner and
+        the other on a centre; each reflection still holds, so the shape is
+        symmetric left to right and top to bottom, and it is *not* symmetric
+        across its own diagonal -- the column runs and the row runs come back
+        different. Eight-fold is the property a drawn circle has, and it needs
+        the two axes to agree.
+
+        The run lengths then fall away monotonically without anything enforcing
+        it: the number of cells in a column is `2*sqrt(r^2 - x^2)`, which never
+        rises as `|x|` grows. `tools/lattice_selftest.py` asserts both.
+
+        Pass `snap=False` where the centre is itself a measurement being tested.
+        """
+        import math
+
+        from .frame import Frame
+
+        if snap:
+            corner = (round(cx), round(cz))
+            centre = (math.floor(cx) + 0.5, math.floor(cz) + 0.5)
+            cx, cz = min(
+                (corner, centre),
+                key=lambda p: math.hypot(p[0] - cx, p[1] - cz))
+        # A frame at zero degrees about the world origin *is* world space, and
+        # going through it keeps one rasteriser rather than two: same centre
+        # rule, same half-open radii, same fast path.
+        return Frame((0.0, 0.0), 0.0).disc(width, length, cx, cz, radius, inner)
+
+    # -- copying ------------------------------------------------------------
+
+    def shifted(self, dx: int, dz: int) -> tuple["Mask", int]:
+        """This mask moved by whole cells, and how many cells fell off the grid.
+
+        **A whole-cell translation is an automorphism of the cell lattice**, so
+        this is exact in a way that no other transform of a mask is: every cell
+        lands on a cell, nothing is resampled, and the copy is the original.
+        `Frame.flipped` explains at length why a mirror is not like this and has
+        to be done to the predicate instead; a translation is the case where the
+        block array really can be copied, and it is the one the pipeline never
+        used.
+
+        The count comes back rather than a warning, because a shift that loses
+        cells is sometimes correct -- a band walked off the end of a run on
+        purpose -- and sometimes a canvas too small, and only the caller knows
+        which.
+        """
+        dx, dz = int(dx), int(dz)
+        out = Mask(self.width, self.length)
+        lost = 0
+        w, l = self.width, self.length
+        for x, z in self.cells():
+            nx, nz = x + dx, z + dz
+            if 0 <= nx < w and 0 <= nz < l:
+                out.bits[nz * w + nx] = 1
+            else:
+                lost += 1
+        return out, lost
+
+    def stamped(self, step: tuple[int, int], count: int) -> "Mask":
+        """This mask, plus `count` more copies of it every `step` cells.
+
+        The mask half of `Canvas.stamp`, and the right way to lay out anything
+        that repeats along a wall: a run of window openings is one opening
+        stamped, not a modulo over arc length that lands each one in its own
+        sub-cell phase and rasterises each one differently.
+
+        Refuses to lose a copy off the edge of the grid. A repeat that runs out
+        of canvas is a mistake every time -- the last bay silently missing is
+        exactly the failure `Facade` documents having shipped twice.
+        """
+        if count < 0:
+            raise ValueError("a stamp repeats a whole number of times")
+        dx, dz = int(step[0]), int(step[1])
+        if count and not (dx or dz):
+            raise ValueError("a stamp steps somewhere; (0, 0) copies onto itself")
+        out = self.copy()
+        for n in range(1, count + 1):
+            moved, lost = self.shifted(dx * n, dz * n)
+            if lost:
+                raise ValueError(
+                    f"copy {n} of {count} on step ({dx}, {dz}) puts {lost} "
+                    f"cell(s) off a {self.width}x{self.length} grid")
+            out = out | moved
+        return out
 
     # -- carrying one between scripts ---------------------------------------
 
@@ -776,7 +920,7 @@ class Mask:
         return contour
 
     def edges(self, frame, tolerance: float = 1.0, least: int = 3,
-              station: float | None = None) -> list["Edge"]:
+              station: float | None = None, snap: int = 0) -> list["Edge"]:
         """This shape's outline read as a list of straight faces -- see `Edge`.
 
         The measurement `squared` is a special case of. A part that is a
@@ -841,6 +985,11 @@ class Mask:
         part. Empty when the shape is too small or too round to leave three
         faces standing, and a caller that gets fewer than three has no polygon
         and should say so rather than draw what is left.
+
+        `snap` puts every face onto a lattice slope of at most that many runs --
+        see `Edge.snapped`. The frame's slope only regularises the faces that
+        run along u and v; a rake stands at its own angle and rasterises into
+        exactly the staircase the lattice exists to remove.
         """
         if station is None:
             station = staircase(frame)
@@ -881,11 +1030,12 @@ class Mask:
             pu, pv = raw[i - 1]
             twice_area += pu * v - u * pv
         turn = 1.0 if twice_area > 0.0 else -1.0
-        return [_edge_of(fit, turn) for _, fit in faces]
+        out = [_edge_of(fit, turn) for _, fit in faces]
+        return [e.snapped(frame, snap) for e in out] if snap else out
 
     def faceted(self, frame, tolerance: float = 1.0, least: int = 3,
                 pad: float = 0.0, edges: list["Edge"] | None = None,
-                station: float | None = None) -> "Mask | None":
+                station: float | None = None, snap: int = 0) -> "Mask | None":
         """This shape redrawn as the polygon of its own fitted faces.
 
         `edges` measures; this draws. The faces are read, their neighbours are
@@ -913,7 +1063,7 @@ class Mask:
         no polygon, and quietly handing back the drawn mask would put an unpadded
         part into a build that asked for a padded one.
         """
-        faces = (self.edges(frame, tolerance, least, station)
+        faces = (self.edges(frame, tolerance, least, station, snap)
                  if edges is None else edges)
         if len(faces) < 3:
             return None

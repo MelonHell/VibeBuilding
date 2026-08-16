@@ -469,6 +469,163 @@ def opposite(direction: str) -> str:
     return _OPPOSITE[direction]
 
 
+# -- turning a block --------------------------------------------------------
+#
+# A quarter turn and an axis mirror are the only transforms of the block grid
+# that map cells onto cells, which is why `Canvas.stamp` offers those two and
+# nothing between them. Both of them move geometry, and a block's state *is*
+# geometry: a stair rotated with its `facing` left alone points the way it did
+# before, so a copied cottage comes out with its roof shedding into the hill.
+#
+# Everything below is a table, and the tables have to be complete rather than
+# best-effort. A state this does not know how to turn raises, because the
+# alternative -- carrying it across unchanged -- is a copy that is wrong in a way
+# no row of the gate reads: the blocks are all there, all of the right kind, in
+# all the right cells.
+
+_COMPASS = ("north", "east", "south", "west")
+
+# States that mean the same thing whichever way the block is turned. `shape` on
+# a stair is relative to its own facing; `half`, `type` and `layers` are
+# vertical; the rest are not geometry at all.
+_TURN_BLIND = frozenset((
+    "half", "type", "waterlogged", "open", "powered", "lit", "in_wall",
+    "persistent", "distance", "snowy", "layers", "level", "age", "stage",
+    "bites", "delay", "locked", "inverted", "has_bottle_0", "has_bottle_1",
+    "has_bottle_2", "extended", "conditional", "triggered", "signal_fire",
+    "hatch", "eggs", "leaves", "berries", "candles", "bloom", "charges",
+    "cracked", "crafting", "dusted", "hanging", "honey_level", "instrument",
+    "note", "occupied", "part", "pickles", "power", "attached", "disarmed",
+    "unstable", "drag", "enabled", "flower_amount", "moisture", "mode",
+    "sculk_sensor_phase", "thickness", "vertical_direction", "tilt",
+    "can_summon", "shrieking", "bottom", "up", "down", "slot_0_occupied",
+    "slot_1_occupied", "slot_2_occupied", "slot_3_occupied", "slot_4_occupied",
+    "slot_5_occupied",
+))
+
+# Rail shapes, which name world directions and so have to turn with them.
+_RAIL_TURN = {
+    "north_south": "east_west", "east_west": "north_south",
+    "ascending_north": "ascending_east", "ascending_east": "ascending_south",
+    "ascending_south": "ascending_west", "ascending_west": "ascending_north",
+    "north_east": "south_east", "south_east": "south_west",
+    "south_west": "north_west", "north_west": "north_east",
+}
+
+_RAIL_MIRROR = {
+    "x": {"ascending_east": "ascending_west", "ascending_west": "ascending_east",
+          "north_east": "north_west", "north_west": "north_east",
+          "south_east": "south_west", "south_west": "south_east"},
+    "z": {"ascending_north": "ascending_south",
+          "ascending_south": "ascending_north",
+          "north_east": "south_east", "south_east": "north_east",
+          "north_west": "south_west", "south_west": "north_west"},
+}
+
+# Stair and door shapes are named against their own facing, so a turn leaves
+# them alone and a mirror swaps the hands.
+_HAND = {"left": "right", "right": "left",
+         "inner_left": "inner_right", "inner_right": "inner_left",
+         "outer_left": "outer_right", "outer_right": "outer_left",
+         "straight": "straight"}
+
+
+def _turn_compass(direction: str, quarters: int) -> str:
+    if direction not in _COMPASS:
+        return direction                     # up / down: a turn does not move it
+    return _COMPASS[(_COMPASS.index(direction) + quarters) % 4]
+
+
+def turned(block: str, quarters: int) -> str:
+    """The same block, rotated `quarters` quarter turns clockwise about y.
+
+    Clockwise seen from above, which in this grid means north -> east -> south
+    -> west: the same sense `Canvas.stamp` turns the cells in, so the state and
+    the geometry stay in step.
+
+    Raises on a state it has no rule for. That is the point of it: a copy whose
+    blocks are all present, all of the right kind and all in the right cells,
+    and whose stairs face the way the original's did, is wrong in the one way
+    nothing downstream reads.
+    """
+    quarters %= 4
+    if not quarters:
+        return block
+    st = state(block)
+    if not st:
+        return block
+
+    out = {}
+    for key, value in st.items():
+        if key in _TURN_BLIND:
+            out[key] = value
+        elif key == "facing":
+            out[key] = _turn_compass(value, quarters)
+        elif key in _COMPASS:
+            out[_turn_compass(key, quarters)] = value
+        elif key == "axis":
+            out[key] = ("z" if value == "x" else "x") if quarters % 2 else value
+        elif key == "shape":
+            # A stair's shape is named against its own facing and so turns with
+            # it; a rail's names world directions and does not.
+            shape = value
+            for _ in range(quarters):
+                shape = _RAIL_TURN.get(shape, shape)
+            out[key] = shape
+        elif key == "rotation":
+            out[key] = str((int(value) + 4 * quarters) % 16)
+        elif key == "hinge":
+            out[key] = value
+        else:
+            raise ValueError(
+                f"nothing here knows which way {key!r} points, so "
+                f"{block!r} cannot be turned. Add it to blocks._TURN_BLIND if a "
+                "turn leaves it alone, or give it a rule -- carrying it across "
+                "unchanged would build a copy that is wrong in the one way no "
+                "row of the gate reads.")
+    return with_state(base(block), **out)
+
+
+def mirrored(block: str, axis: str) -> str:
+    """The same block, reflected across a world axis: "x" or "z".
+
+    "x" mirrors east against west and leaves north and south alone; "z" is the
+    other way. Those two and the quarter turns are the whole group -- a mirror
+    about any other line is not an automorphism of the cell lattice, which is
+    the argument `Frame.flipped` makes at length.
+    """
+    if axis not in ("x", "z"):
+        raise ValueError(f"a mirror is across x or z, not {axis!r}")
+    swap = {"east": "west", "west": "east"} if axis == "x" \
+        else {"north": "south", "south": "north"}
+    st = state(block)
+    if not st:
+        return block
+
+    out = {}
+    for key, value in st.items():
+        if key in _TURN_BLIND:
+            out[key] = value
+        elif key == "facing":
+            out[key] = swap.get(value, value)
+        elif key in _COMPASS:
+            out[swap.get(key, key)] = value
+        elif key == "axis":
+            out[key] = value
+        elif key == "shape":
+            out[key] = _RAIL_MIRROR[axis].get(value, _HAND.get(value, value))
+        elif key == "rotation":
+            turn = 0 if axis == "z" else 8
+            out[key] = str((turn - int(value)) % 16)
+        elif key == "hinge":
+            out[key] = _HAND.get(value, value)
+        else:
+            raise ValueError(
+                f"nothing here knows which way {key!r} points, so {block!r} "
+                "cannot be mirrored -- see `turned`.")
+    return with_state(base(block), **out)
+
+
 def boxes(block: str) -> list[tuple[float, float, float, float, float, float]]:
     """The sub-cells this block actually fills."""
     name = base(block)
