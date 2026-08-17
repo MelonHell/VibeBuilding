@@ -4,64 +4,80 @@
     {
       "id": 0,
       "subject": "Task 1: Выпилить стадию 6 — посадку",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `finish()` перестаёт принимать `layout`/`template` и вычислять мировой сдвиг; `LAYOUT_SCHEM` уходит из путей; доки перестают описывать стадию, которой нет ни у одного здания.\n\n**Files:**\n- Modify: `blockwright/finish.py` — удалить `placement_of`, параметры `layout`/`template`, поле `Finished.placement`\n- Modify: `buildings/_template/paths.py` — удалить `LAYOUT_SCHEM`\n- Modify: `buildings/_template/build.py:514-518` — убрать `template=`/`layout=` из вызова `finish()`\n- Modify: `docs/pipeline.md` — удалить главу «Стадия 6 — посадка, необязательная»\n- Modify: `docs/data-contract.md`, `.claude/commands/blockwright-new.md`, `.claude/skills/blockwright/SKILL.md`\n\n**Acceptance Criteria:**\n- [ ] `grep -rn \"LAYOUT_SCHEM|placement_of|layout.schem\" blockwright/ buildings/_template/ docs/ .claude/` ничего не находит\n- [ ] `python -m tools.pipeline_selftest` зелёный на всех четырёх ветках\n- [ ] `python -m tools.lint_buildings` не жалуется на `_template`\n\n**Verify:** `python -m tools.pipeline_selftest` → последняя строка `all four kinds passed`\n\n```json:metadata\n{\"files\": [\"blockwright/finish.py\", \"buildings/_template/paths.py\", \"buildings/_template/build.py\", \"docs/pipeline.md\", \"docs/data-contract.md\", \".claude/commands/blockwright-new.md\", \".claude/skills/blockwright/SKILL.md\"], \"verifyCommand\": \"python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"no LAYOUT_SCHEM/placement_of/layout.schem anywhere\", \"pipeline_selftest passes on all four branches\", \"lint_buildings clean on _template\"], \"modelTier\": \"mechanical\"}\n```"
     },
     {
       "id": 1,
       "subject": "Task 2: Фикстура — пристройка вне карты",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Синтетическое здание получает флигель, который есть в захвате и не нарисован на карте — дефект 009 в миниатюре. Новый селфтест `tools/coverage_selftest.py` документирует, что пайплайн о нём молчит.\n\n**Files:**\n- Modify: `tools/fixture.py` — `write_mesh` добавляет флигель; `write_map` его не рисует\n- Create: `tools/coverage_selftest.py`\n- Modify: `tools/pipeline_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] Меш фикстуры содержит второй объём 20×12 м высотой 6 м, в 15 м от главного корпуса\n- [ ] Карта фикстуры не изменилась\n- [ ] `python -m tools.coverage_selftest` падает с сообщением, что флигель не измерен ничем — красный тест для задач 3 и 5\n- [ ] `python -m tools.pipeline_selftest` остаётся зелёным\n\n**Verify:** `python -m tools.coverage_selftest` → FAIL с текстом `outbuilding is in the capture and in no part list`\n\n```json:metadata\n{\"files\": [\"tools/fixture.py\", \"tools/coverage_selftest.py\", \"tools/pipeline_selftest.py\"], \"verifyCommand\": \"python -m tools.coverage_selftest\", \"acceptanceCriteria\": [\"mesh gains a 20x12x6 outbuilding 15 m clear of the main block\", \"map unchanged\", \"coverage_selftest fails deliberately\", \"pipeline_selftest still passes\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [0]
+      "blockedBy": [
+        0
+      ]
     },
     {
       "id": 2,
       "subject": "Task 3: Происхождение у каждой части",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Каждая часть в `derived.json` несёт `provenance` — чем измерено пятно, чем измерена высота, есть ли свидетель, — и `derive` печатает таблицу покрытия.\n\n**Files:**\n- Modify: `blockwright/survey.py` — `Read.provenance`; `Survey.provenance_of`; таблица в `Survey.report`\n- Modify: `tools/coverage_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] У каждой записи `derived.json[\"parts\"]` есть `provenance` с полями `plan`, `height`, `witness`\n- [ ] `plan` — одно из `map`, `vector`, `capture`, `model`, `declared`\n- [ ] `height` — одно из `capture`, `model`, `declared`, `none`\n- [ ] `witness` — `section` или `none`\n- [ ] `derive` печатает таблицу покрытия: строка на часть, четыре колонки\n- [ ] `python -m tools.pipeline_selftest` зелёный на всех четырёх ветках\n\n**Verify:** `python -m tools.pipeline_selftest` → PASS, и вывод `derive` содержит таблицу `coverage`\n\n```json:metadata\n{\"files\": [\"blockwright/survey.py\", \"tools/coverage_selftest.py\"], \"verifyCommand\": \"python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"every part record carries provenance.plan/height/witness\", \"derive prints a coverage table\", \"pipeline_selftest passes on all four branches\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [1]
+      "blockedBy": [
+        1
+      ]
     },
     {
       "id": 3,
       "subject": "Task 4: Строка гейта «каждая часть чем-то измерена»",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Гейт краснеет, когда постройка объявила часть, у которой во всех трёх колонках происхождения прочерк.\n\n**Files:**\n- Modify: `blockwright/grading.py` — метод `coverage`, вызов из `main`\n- Modify: `buildings/_template/gate.py` — таблица `UNMEASURED`\n- Modify: `tools/coverage_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] `report.json` содержит проверку `every part is measured by something`\n- [ ] Красная, если объявленная сборкой часть не имеет ни измеренного пятна, ни измеренной высоты, ни свидетеля\n- [ ] `[----]` с перечислением, если такие части названы в `UNMEASURED` с причиной\n- [ ] Зелёная, когда таких частей нет\n- [ ] `python -m tools.pipeline_selftest` зелёный\n\n**Verify:** `python -m tools.pipeline_selftest` → PASS; строка видна в `python -m buildings._scratch.gate | grep \"every part is measured\"`\n\n```json:metadata\n{\"files\": [\"blockwright/grading.py\", \"buildings/_template/gate.py\", \"tools/coverage_selftest.py\"], \"verifyCommand\": \"python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"report.json has the row\", \"red on an unmeasured part\", \"ungraded when named in UNMEASURED with a reason\", \"green otherwise\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [2]
+      "blockedBy": [
+        2
+      ]
     },
     {
       "id": 4,
       "subject": "Task 5: Сборка плана по частям",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `plan_of` перестаёт выбирать одну ветку и собирает план из нескольких: карта отвечает за то, что рисует, захват — за остальное. Одноветочная выборка удаляется.\n\n**Files:**\n- Modify: `blockwright/survey.py` — `Survey.assemble`, `Survey.overlap`, переписанный `plan_of`\n- Modify: `buildings/_template/probes/derive.py` — `CAPTURE_PARTS`, `MATCH_FLOOR`\n- Modify: `tools/coverage_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] Часть, которую рисует карта, берёт форму, размер и угол с карты\n- [ ] Часть, которой карта не рисует, но которую покрывает захват, становится частью с `provenance.plan == \"capture\"`\n- [ ] Сопоставление по IoU с порогом `MATCH_FLOOR` (умолчание 0.30); несопоставленная часть называется в выводе\n- [ ] Части захвата именуются через `CAPTURE_PARTS`; пустая таблица даёт `capture-1` и печатает размеры\n- [ ] `python -m tools.coverage_selftest` зелёный\n- [ ] `python -m tools.pipeline_selftest` зелёный на всех четырёх ветках\n\n**Verify:** `python -m tools.coverage_selftest` → `all N part(s) measured by something`\n\n```json:metadata\n{\"files\": [\"blockwright/survey.py\", \"buildings/_template/probes/derive.py\", \"tools/coverage_selftest.py\"], \"verifyCommand\": \"python -m tools.coverage_selftest && python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"drawn parts keep the drawn shape\", \"reference-only parts arrive with provenance capture\", \"matching by IoU against MATCH_FLOOR\", \"CAPTURE_PARTS names them, empty gives capture-1\", \"single-branch selection deleted\"], \"modelTier\": \"frontier\"}\n```",
-      "blockedBy": [3]
+      "blockedBy": [
+        3
+      ]
     },
     {
       "id": 5,
       "subject": "Task 6: Пороги мусора и отчёт об отброшенном",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Разложение всего участка отсекает деревья, машины и навесы порогами по площади и высоте — и печатает, сколько и какой площади отбросило.\n\n**Files:**\n- Modify: `blockwright/survey.py` — фильтрация в `assemble`, строка в `report`\n- Modify: `buildings/_template/probes/derive.py` — `PART_LEAST_AREA`, `PART_LEAST_HEIGHT`\n\n**Acceptance Criteria:**\n- [ ] Часть эталона меньше `PART_LEAST_AREA` не становится частью плана\n- [ ] Часть эталона ниже `PART_LEAST_HEIGHT` не становится частью плана\n- [ ] `derive` печатает строку: сколько кусков отброшено и какой суммарной площади\n- [ ] `derived.json[\"assembly\"][\"dropped\"]` несёт счёт, площадь и высоту самого высокого\n- [ ] `python -m tools.coverage_selftest` и `python -m tools.pipeline_selftest` зелёные\n\n**Verify:** `python -m tools.coverage_selftest` → PASS, и вывод `derive` содержит строку `dropped`\n\n```json:metadata\n{\"files\": [\"blockwright/survey.py\", \"buildings/_template/probes/derive.py\"], \"verifyCommand\": \"python -m tools.coverage_selftest && python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"area threshold drops small pieces\", \"height threshold drops low pieces\", \"derive prints count and area dropped\", \"assembly.dropped in derived.json\"], \"modelTier\": \"mechanical\"}\n```",
-      "blockedBy": [4]
+      "blockedBy": [
+        4
+      ]
     },
     {
       "id": 6,
       "subject": "Task 7: Клип держит участок",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `ge_convert` отказывается резать ниже датума, а гейт печатает строку, которая говорит, что постройка вышла за клип, вместе с коробкой, которой хватило бы.\n\n**Files:**\n- Modify: `tools/ge_convert.py` — `--clip-up` только верхняя граница\n- Modify: `blockwright/grading.py` — метод `site_covered`, вызов из `main`\n- Modify: `blockwright/schedule.py` — `Schedule.extent()`\n- Modify: `.claude/skills/blockwright-capture/SKILL.md`\n\n**Acceptance Criteria:**\n- [ ] `--clip-up` описан как верхняя граница; попытка задать нижнюю отвергается с объяснением\n- [ ] `report.json` содержит проверку `the clip holds the site`\n- [ ] Проверка красная, когда постройка выходит за границы эталона, и печатает коробку, которой хватило бы\n- [ ] `python -m tools.pipeline_selftest` зелёный\n\n**Verify:** `python -m tools.pipeline_selftest` → PASS; `python tools/ge_convert.py --help | grep -A2 clip-up` описывает только верх\n\n```json:metadata\n{\"files\": [\"tools/ge_convert.py\", \"blockwright/grading.py\", \"blockwright/schedule.py\", \".claude/skills/blockwright-capture/SKILL.md\"], \"verifyCommand\": \"python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"clipping below the datum is refused with a reason\", \"the clip holds the site row exists\", \"row red when the build reaches past the reference, printing the box that would suffice\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [5]
+      "blockedBy": [
+        5
+      ]
     },
     {
       "id": 7,
       "subject": "Task 8: Потолок объявляемых расхождений",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `plan overlap` перестаёт быть объявляемым ключом `EXPECTED`; расхождение силуэтов ниже пола останавливает прогон, а `WITNESS = None` — законный способ сказать, что эталон свидетелем не является.\n\n**Files:**\n- Modify: `blockwright/survey.py` — `witnesses_of` отвергает `plan overlap`, читает `WITNESS`\n- Modify: `buildings/_template/probes/derive.py` — `WITNESS`, комментарий у `EXPECTED`\n- Modify: `docs/pipeline.md`\n\n**Acceptance Criteria:**\n- [ ] `EXPECTED[\"plan overlap\"]` вызывает `SystemExit` с объяснением\n- [ ] Перекрытие силуэтов ниже пола без `WITNESS = None` останавливает `derive`\n- [ ] `WITNESS = None` с причиной-фразой переводит свидетельские строки в `[----]` с этой причиной\n- [ ] `WITNESS = \"\"` отвергается\n- [ ] `python -m tools.pipeline_selftest` зелёный\n\n**Verify:** `python -m tools.pipeline_selftest` → PASS\n\n```json:metadata\n{\"files\": [\"blockwright/survey.py\", \"buildings/_template/probes/derive.py\", \"docs/pipeline.md\"], \"verifyCommand\": \"python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"plan overlap cannot be declared in EXPECTED\", \"overlap under the floor stops the run without WITNESS\", \"WITNESS with a phrase greys out the witness rows\", \"empty WITNESS refused\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [6]
+      "blockedBy": [
+        6
+      ]
     },
     {
       "id": 8,
       "subject": "Task 9: Доки под новый механизм",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `docs/pipeline.md`, `docs/sources.md`, `docs/data-contract.md`, команды и скиллы описывают участок, сборку по частям и происхождение.\n\n**Files:**\n- Modify: `docs/pipeline.md` — стадии 1-3\n- Modify: `docs/sources.md` — авторитет по частям\n- Modify: `docs/data-contract.md` — новые ключи и таблицы\n- Modify: `.claude/skills/blockwright/SKILL.md`, `.claude/skills/blockwright-measure/SKILL.md`, `.claude/commands/blockwright-run.md`, `.claude/commands/blockwright-new.md`\n\n**Acceptance Criteria:**\n- [ ] `docs/pipeline.md` описывает клип по участку и запрет резать снизу\n- [ ] `docs/pipeline.md` описывает сборку плана по частям\n- [ ] `docs/data-contract.md` перечисляет все новые ключи `derived.json` и таблицы скелета\n- [ ] `.claude/commands/blockwright-run.md` велит читать таблицу покрытия первой\n- [ ] `grep -rn \"одну ветку|одноветочн\" docs/` ничего не находит\n\n**Verify:** `python -m tools.pipeline_selftest && python -m tools.coverage_selftest && python -m tools.lint_buildings` → три PASS\n\n```json:metadata\n{\"files\": [\"docs/pipeline.md\", \"docs/sources.md\", \"docs/data-contract.md\", \".claude/skills/blockwright/SKILL.md\", \".claude/skills/blockwright-measure/SKILL.md\", \".claude/commands/blockwright-run.md\", \".claude/commands/blockwright-new.md\"], \"verifyCommand\": \"python -m tools.pipeline_selftest && python -m tools.coverage_selftest && python -m tools.lint_buildings\", \"acceptanceCriteria\": [\"pipeline.md describes the parcel clip and the floor rule\", \"pipeline.md describes per-part assembly\", \"data-contract.md lists every new key and table\", \"blockwright-run.md reads the coverage table first\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [7]
+      "blockedBy": [
+        7
+      ]
     }
   ],
   "lastUpdated": "2026-08-17"

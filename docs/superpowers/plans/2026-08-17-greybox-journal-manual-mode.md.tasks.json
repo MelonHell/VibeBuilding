@@ -4,43 +4,53 @@
     {
       "id": 0,
       "subject": "Task 1: Два списка секций и --greybox",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `build.py` объявляет `GREYBOX` и `DETAIL`; под `--greybox` собирается только первый и пишется `out/greybox.schem`.\n\n**Files:**\n- Modify: `buildings/_template/build.py` — списки секций, разбор аргумента, имя выходного файла\n- Modify: `blockwright/finish.py` — `name` управляет и схематикой, и планами\n- Modify: `buildings/_template/paths.py` — `GREYBOX`, `BUILD` вместо `SCHEM`\n- Create: `tools/greybox_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] `build --greybox` пишет `out/greybox.schem` и не пишет `out/build.schem`\n- [ ] `build` пишет `out/build.schem`\n- [ ] Грейбокс содержит объёмы каждой части и не содержит остекления, перекрытий и парапетов\n- [ ] Секция в обоих списках вызывает `SystemExit` с именем секции\n- [ ] `python -m tools.greybox_selftest` зелёный\n- [ ] `python -m tools.pipeline_selftest` зелёный\n\n**Verify:** `python -m tools.greybox_selftest` → `greybox has N block kind(s) and no detail`\n\n```json:metadata\n{\"files\": [\"buildings/_template/build.py\", \"buildings/_template/paths.py\", \"blockwright/finish.py\", \"tools/greybox_selftest.py\"], \"verifyCommand\": \"python -m tools.greybox_selftest && python -m tools.pipeline_selftest\", \"acceptanceCriteria\": [\"--greybox writes greybox.schem only\", \"full run writes build.schem\", \"no detail blocks in the greybox\", \"a section in both lists is refused by name\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 1,
       "subject": "Task 2: Заглушка высоты в грейбоксе",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Часть без измеренной и объявленной высоты в грейбоксе встаёт в один этаж и помечается; полная сборка на заглушке по-прежнему не стартует.\n\n**Files:**\n- Modify: `buildings/_template/build.py` — `Site.__init__(derived, greybox=False)`, `Site.placeholder`\n- Modify: `tools/greybox_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] В грейбоксе часть без высоты строится на `storey` метров и печатается строкой `placeholder`\n- [ ] В полном режиме та же часть даёт `SystemExit` с прежним текстом плюс подсказкой про `--greybox`\n- [ ] Список заглушек попадает в вывод сборки\n- [ ] `python -m tools.greybox_selftest` зелёный\n\n**Verify:** `python -m tools.greybox_selftest` → PASS, и вывод `build --greybox` содержит `placeholder`\n\n```json:metadata\n{\"files\": [\"buildings/_template/build.py\", \"tools/greybox_selftest.py\"], \"verifyCommand\": \"python -m tools.greybox_selftest\", \"acceptanceCriteria\": [\"greybox stands an unmeasured part one storey and marks it\", \"full build still refuses\", \"placeholder list printed\"], \"modelTier\": \"mechanical\"}\n```",
-      "blockedBy": [0]
+      "blockedBy": [
+        0
+      ]
     },
     {
       "id": 2,
       "subject": "Task 3: Планы по слоям и лист сверху",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Ворота 4 показывают горизонтальные срезы 1 px = 1 блок и лист «план | карта | орто эталона», у которого все три панели покрывают один охват.\n\n**Files:**\n- Modify: `blockwright/finish.py` — планы в `out/greybox/`, лист `top.png`\n- Modify: `blockwright/compare.py` — `aligned`, `map_panel`\n- Create: `tools/topsheet_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] `build --greybox` пишет `out/greybox/plan-<метка>.png`, по одному на слой, 1 px = 1 блок\n- [ ] `build --greybox` пишет `out/greybox/top.png` с тремя панелями\n- [ ] Все три панели покрывают одну прямоугольную область в метрах; панель с меньшими данными дополняется полем, а не растягивается\n- [ ] `python -m tools.topsheet_selftest` зелёный\n\n**Verify:** `python -m tools.topsheet_selftest` → `three panels, one extent`\n\n```json:metadata\n{\"files\": [\"blockwright/finish.py\", \"blockwright/compare.py\", \"tools/topsheet_selftest.py\"], \"verifyCommand\": \"python -m tools.topsheet_selftest && python -m tools.greybox_selftest\", \"acceptanceCriteria\": [\"layered plans at one pixel to one block\", \"top.png with three panels\", \"panels padded to a common extent, never scaled to it\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [1]
+      "blockedBy": [
+        1
+      ]
     },
     {
       "id": 3,
       "subject": "Task 4: Ревьюер грейбокса",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Отдельный агент, судящий форму и молчащий про материал, и команда, которая его запускает на воротах 4.\n\n**Files:**\n- Create: `.claude/agents/blockwright-greybox-reviewer.md`\n- Modify: `buildings/_template/review.py` — режим `--greybox`\n- Create: `.claude/commands/blockwright-greybox.md`\n\n**Acceptance Criteria:**\n- [ ] Определение агента явным абзацем запрещает судить материал, цвет и палитру\n- [ ] `review --greybox` складывает рендеры грейбокса, орто эталона с тех же камер и фотографии в `out/greybox/review/`\n- [ ] `prompt.txt` описывает только те виды картинок, которые там есть\n- [ ] Команда `/blockwright-greybox <имя>` описывает цикл: ревью → находки → починка → ревью → сошёлся\n\n**Verify:** `python -m buildings._scratch.review --greybox` → папка `out/greybox/review/` с `prompt.txt`\n\n```json:metadata\n{\"files\": [\".claude/agents/blockwright-greybox-reviewer.md\", \".claude/commands/blockwright-greybox.md\", \"buildings/_template/review.py\"], \"verifyCommand\": \"python -m tools.greybox_selftest\", \"acceptanceCriteria\": [\"agent forbidden from grading material\", \"review --greybox fills out/greybox/review/\", \"prompt names only the picture kinds present\", \"command describes the loop\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [2]
+      "blockedBy": [
+        2
+      ]
     },
     {
       "id": 4,
       "subject": "Task 5: Журнал — хроника раундов и поля починки",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Журнал переезжает в пакет здания, получает хронику раундов рядом с блоками находок, и каждая находка несёт, чем починена, откуда взялась и чем предотвратить.\n\n**Files:**\n- Modify: `blockwright/findings.py` — `HEAD`, `ROUND`, `FIELDS`, `Finding.gate/by/field`, `rounds`, два правила в `audit`\n- Modify: `buildings/_template/paths.py` — `FINDINGS = HERE / \"findings.md\"`\n- Modify: `.claude/commands/blockwright-review.md`\n- Create: `tools/findings_selftest.py`\n\n**Acceptance Criteria:**\n- [ ] Заголовок разбирается в виде `### F-04 | built | gate 4 | round 1 | seen 1 | by: human`\n- [ ] Поле `by` необязательно, по умолчанию `reviewer`\n- [ ] Хроника разбирается: `### Round N -- agent` и `### Round N -- human`\n- [ ] `audit` докладывает цикл без пустого раунда в конце как незакрытый\n- [ ] `audit` докладывает закрытую находку без поля `Prevented by`\n- [ ] Журнал читается из `buildings/<имя>/findings.md`\n- [ ] `python -m tools.findings_selftest` зелёный\n\n**Verify:** `python -m tools.findings_selftest` → `ledger parses, audit catches all four`\n\n```json:metadata\n{\"files\": [\"blockwright/findings.py\", \"buildings/_template/paths.py\", \".claude/commands/blockwright-review.md\", \"tools/findings_selftest.py\"], \"verifyCommand\": \"python -m tools.findings_selftest\", \"acceptanceCriteria\": [\"new heading with gate and by parses\", \"round headings parse\", \"audit flags a loop with no empty round\", \"audit flags a closed finding with no Prevented by\", \"journal read from the building package\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [3]
+      "blockedBy": [
+        3
+      ]
     },
     {
       "id": 5,
       "subject": "Task 6: Ручной режим",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `tools/run.py` умеет `--manual`: после того как агентский цикл ворот сошёлся, прогон останавливается и печатает, что показать человеку.\n\n**Files:**\n- Modify: `tools/run.py` — `WAITING`, `waiting_at`, флаг\n- Modify: `.claude/commands/blockwright-run.md` — человеческий цикл на трёх воротах\n- Modify: `.claude/skills/blockwright/SKILL.md` — этапы и ворота\n\n**Acceptance Criteria:**\n- [ ] `--manual` останавливается на первых воротах, у которых агентский цикл сошёлся, а человеческого раунда ещё нет\n- [ ] Код возврата `10` означает «ворота ждут человека» и отличается от `1`\n- [ ] Печатается, какие ворота, какие файлы открыть и что уже нашёл агент\n- [ ] `--auto` и отсутствие флага ведут себя как сегодня\n- [ ] Команда описывает цикл: показать → выслушать → починить → показать снова → пока человек не скажет «всё ок»\n- [ ] `python -m tools.pipeline_selftest` зелёный\n\n**Verify:** прогон на фикстуре с журналом, где есть пустой агентский раунд и нет человеческого → строка `gate 4 is waiting for you` и код возврата 10\n\n```json:metadata\n{\"files\": [\"tools/run.py\", \".claude/commands/blockwright-run.md\", \".claude/skills/blockwright/SKILL.md\"], \"verifyCommand\": \"python -m tools.pipeline_selftest && python -m tools.findings_selftest\", \"acceptanceCriteria\": [\"--manual stops at the first gate whose agent loop closed\", \"exit code 10 distinct from 1\", \"prints which gate, which files, what the agent already found\", \"--auto unchanged\"], \"modelTier\": \"standard\"}\n```",
-      "blockedBy": [4]
+      "blockedBy": [
+        4
+      ]
     }
   ],
   "lastUpdated": "2026-08-17"
