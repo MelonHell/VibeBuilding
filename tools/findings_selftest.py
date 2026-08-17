@@ -10,6 +10,9 @@ ledger into prose without saying so.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -17,6 +20,10 @@ from types import SimpleNamespace
 
 from blockwright import findings
 from blockwright.reviewing import LEFTOVER, Review
+from tools import run
+
+ROOT = Path(__file__).resolve().parent.parent
+TEMPLATE = ROOT / "buildings" / "_template"
 
 LEDGER = """\
 # fixture -- review journal
@@ -256,8 +263,155 @@ def main() -> int:
         if prove_clear(Path(tmp) / "frozen") != 0:
             return 1
 
+        if prove_waiting(path) != 0:
+            return 1
+
+    if prove_pause() != 0:
+        return 1
+
     print("ledger parses, audit catches all four")
+    print("manual mode waits at the closed agent gate and leaves --auto alone")
     return 0
+
+
+def prove_waiting(path: Path) -> int:
+    """The waiting state is read off the chronicle, per gate.
+
+    The brief's first sketch asked every gate the same rounds and always
+    answered 1. These journals are why that is a test and not a comment.
+    """
+    path.write_text(TWO_GATES, encoding="utf-8")
+    if run.waiting_at("x", path) != 4:
+        return fail(f"TWO_GATES should wait at 4, got {run.waiting_at('x', path)}")
+
+    path.write_text(CLEAN, encoding="utf-8")
+    if run.waiting_at("x", path) is not None:
+        return fail("a closed human loop should not wait")
+
+    path.write_text(UNFINISHED, encoding="utf-8")
+    if run.waiting_at("x", path) is not None:
+        return fail("an abandoned agent loop should not wait")
+
+    path.write_text(LEDGER, encoding="utf-8")
+    if run.waiting_at("x", path) != 4:
+        return fail("an open human loop should wait at 4")
+
+    path.write_text(CLOSED_BARE, encoding="utf-8")
+    if run.waiting_at("x", path) != 4:
+        return fail("an empty agent round and no human should wait at 4")
+
+    # Gate 4 fully closed, gate 5's agent closed -- the first wait is 5,
+    # not 1 and not 4. This is the case the ungated parser could not see.
+    path.write_text(
+        "# fixture -- next gate\n\n"
+        "## Gate 4 -- greybox\n\n"
+        "### Round 1 -- agent\n\n"
+        "### Round 1 -- human\n\n"
+        "## Gate 5 -- photo\n\n"
+        "### Round 1 -- agent\n\n",
+        encoding="utf-8")
+    if run.waiting_at("x", path) != 5:
+        return fail(f"closed gate 4 should expose gate 5, "
+                    f"got {run.waiting_at('x', path)}")
+    print("  waiting_at reads the gate off the chronicle")
+    return 0
+
+
+def prove_pause() -> int:
+    """`--manual` stops before the full build; `--auto` and no flag do not.
+
+    A stub building, not a fixture, so the proof does not spend a derive
+    and does not depend on one being left on disk.
+    """
+    name = "_selftest_manual"
+    where = ROOT / "buildings" / name
+    shutil.rmtree(where, ignore_errors=True)
+    where.mkdir()
+    (where / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copy(TEMPLATE / "paths.py", where / "paths.py")
+    (where / "probes").mkdir()
+    (where / "probes" / "__init__.py").write_text("", encoding="utf-8")
+    (where / "probes" / "derive.py").write_text(
+        "def main():\n"
+        "    print('derive-ran')\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n",
+        encoding="utf-8")
+    (where / "build.py").write_text(
+        "from pathlib import Path\n"
+        "HERE = Path(__file__).resolve().parent\n"
+        "def main(argv=None):\n"
+        "    (HERE / 'out').mkdir(exist_ok=True)\n"
+        "    (HERE / 'out' / 'BUILT').write_text('yes', encoding='utf-8')\n"
+        "    print('build-ran')\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n",
+        encoding="utf-8")
+    (where / "gate.py").write_text(
+        "def main():\n"
+        "    print('gate-ran')\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n",
+        encoding="utf-8")
+    (where / "findings.md").write_text(
+        "# scratch -- review journal\n\n"
+        "## Gate 4 -- greybox\n\n"
+        "### Round 1 -- agent\n\n",
+        encoding="utf-8")
+    built = where / "out" / "BUILT"
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--manual"])
+        said = buf.getvalue()
+        if code != run.WAITING:
+            return fail(f"--manual returned {code}, not WAITING")
+        if "gate 4 is waiting for you" not in said:
+            return fail("--manual did not say the gate is waiting:\n" + said)
+        if built.exists():
+            return fail("--manual ran the full build while gate 4 was waiting")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name])
+        if code == run.WAITING:
+            return fail("a normal run returned WAITING")
+        if not built.exists():
+            return fail("a normal run did not reach the build")
+
+        built.unlink()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--auto"])
+        if code == run.WAITING:
+            return fail("--auto returned WAITING")
+        if not built.exists():
+            return fail("--auto did not reach the build")
+
+        # A real failure is still 1, even under --manual: the pause is not
+        # a blanket for every stop.
+        (where / "probes" / "derive.py").write_text(
+            "import sys\n"
+            "print('derive-broke')\n"
+            "sys.exit(1)\n",
+            encoding="utf-8")
+        # An unfinished agent loop must not pause, so the failure is visible.
+        (where / "findings.md").write_text(
+            "# scratch -- abandoned\n\n"
+            "## Gate 4 -- greybox\n\n"
+            "### Round 1 -- agent\n"
+            "- F-01 still open\n",
+            encoding="utf-8")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--manual"])
+        if code != 1:
+            return fail(f"--manual on a failed derive returned {code}, not 1")
+        print("  --manual exits 10 and does not run the next stage; "
+              "--auto and a failure do not")
+        return 0
+    finally:
+        shutil.rmtree(where, ignore_errors=True)
 
 
 def prove_clear(here: Path) -> int:

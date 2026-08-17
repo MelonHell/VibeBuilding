@@ -7,6 +7,8 @@
     python -m tools.run <name> --gate       grade what is already built
     python -m tools.run <name> --remeasure  measure again even if nothing moved
     python -m tools.run <name> --review     and render the review folder after
+    python -m tools.run <name> --manual     stop when a gate is waiting for a person
+    python -m tools.run <name> --auto       the default: do not wait
 
 A round of work on a building is `derive`, `build`, `gate`, read the output,
 change one number, repeat. The three commands are cheap; reading their output is
@@ -42,6 +44,22 @@ ROOT = Path(__file__).resolve().parent.parent
 # reported to the centimetre and moves by a centimetre when nothing has changed,
 # and a delta that reports noise is a delta nobody reads.
 EPSILON = 0.01
+
+# What a run exits with when it has stopped on purpose. Distinct from 1, which
+# means something failed: a gate waiting for a person is not a failure, and a
+# caller that cannot tell the two apart will either treat every pause as a
+# breakage or every breakage as a pause.
+WAITING = 10
+
+# Stages this runner would do *after* a gate. A pause at that gate must not
+# run them -- otherwise "nothing after this gate runs until you do" is a
+# caption on a run that already did the next thing. Gate 5 is the last
+# review; nothing here sits after it, so a wait there still rebuilds.
+AFTER = {
+    1: ("probes.derive", "build", "gate", "review"),
+    4: ("build", "gate", "review"),
+    5: (),
+}
 
 
 def load(path: Path) -> dict:
@@ -198,6 +216,76 @@ def unchanged(building: str) -> bool:
     return False
 
 
+def journal_of(building: str) -> Path:
+    """The building's journal, via its own paths -- not a string kept here.
+
+    The journal lives above `out/` and is named on the skeleton as
+    `paths.FINDINGS`. A second hardcoded path would be the same mistake as a
+    state file: two stories about one fact, out of step when it matters.
+    """
+    import importlib
+
+    from blockwright import findings
+
+    try:
+        paths = importlib.import_module(f"buildings.{building}.paths")
+    except ModuleNotFoundError:
+        return ROOT / "buildings" / building / "findings.md"
+    return findings.path_of(paths)
+
+
+def waiting_at(building: str, journal: Path | None = None) -> int | None:
+    """The first gate whose agent loop has closed and whose human loop has not.
+
+    Read off the journal rather than off a state file. A state file is a second
+    account of what happened, and the two go out of step exactly when it matters
+    -- the journal already says which rounds ran and who ran them.
+
+    The agent's loop closes on an empty round. A loop with no empty round at
+    the end was abandoned rather than finished, and from outside the two look
+    identical. The human's has not closed when it has never run, or when its
+    last round still has findings -- that is the look-again after a fix.
+    """
+    from blockwright import findings
+
+    path = Path(journal) if journal is not None else journal_of(building)
+    if not path.exists():
+        return None
+    ran = findings.rounds(path)
+    for gate in (1, 4, 5):
+        # rounds() is (gate, number, who, count). Filter the gate first --
+        # asking every gate the same rounds is how this always answered 1.
+        agent = [r for r in ran if r[0] == gate and r[2] == "agent"]
+        human = [r for r in ran if r[0] == gate and r[2] == "human"]
+        if agent and not agent[-1][3] and (not human or human[-1][3]):
+            return gate
+    return None
+
+
+def announce(building: str, gate: int) -> None:
+    """What to open, and what the agent already found at this gate."""
+    from blockwright import findings
+
+    journal = journal_of(building)
+    here = ROOT / "buildings" / building / "out"
+    print()
+    print(f"gate {gate} is waiting for you. The agent loop closed; "
+          "yours has not.")
+    if gate == 1:
+        print(f"  open   {here / 'mesh-clip' / 'orthos'}")
+    elif gate == 4:
+        print(f"  open   {here / 'greybox' / 'top.png'}")
+        print(f"  and    {here / 'greybox' / 'review'}")
+    else:
+        print(f"  open   {here / 'review'}")
+    print(f"  agent findings are in {journal}")
+    for one in findings.read(journal):
+        if one.gate == gate and one.by != "human":
+            print(f"    {one.id} | {one.state} | {one.title()}")
+    print("Say what it missed, or say it is fine. Nothing after this "
+          "gate runs until you do.")
+
+
 def stage(building: str, step: str, quick: bool) -> tuple[int, str, float]:
     env = dict(os.environ)
     if quick:
@@ -221,11 +309,15 @@ def main(argv: list[str]) -> int:
     if not names:
         print(__doc__.strip().splitlines()[0])
         print("    python -m tools.run <name> [--quick] [--full] "
-              "[--build] [--gate]")
+              "[--build] [--gate] [--manual|--auto]")
         return 2
     building = names[0].strip("/\\").replace("buildings/", "")
     quick = "--quick" in argv
     full = "--full" in argv
+    # --auto is the default and changes nothing. --manual is scaffolding: the
+    # end state is auto only, and what the flag is for is measuring the gap
+    # between what the agent's eyes catch and what a person's do.
+    manual = "--manual" in argv
 
     steps = ["probes.derive", "build", "gate"]
     if "--gate" in argv:
@@ -237,6 +329,12 @@ def main(argv: list[str]) -> int:
         # gate stops the loop below before this runs: there is no sense spending
         # a reviewer on a build the numbers have already rejected.
         steps.append("review")
+
+    if manual:
+        blocked = waiting_at(building)
+        if blocked is not None:
+            later = AFTER[blocked]
+            steps = [step for step in steps if step not in later]
 
     where = ROOT / "buildings" / building / "out" / "report.json"
     before = load(where)
@@ -268,6 +366,12 @@ def main(argv: list[str]) -> int:
         print(f"-- {step} {took:.1f} s" + ("" if changed else ", same output"))
         for line in changed:
             print("   " + line)
+
+    if manual:
+        blocked = waiting_at(building)
+        if blocked is not None:
+            announce(building, blocked)
+            return WAITING
 
     after = load(where)
     if not after:
