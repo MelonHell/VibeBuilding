@@ -851,13 +851,14 @@ class Grading:
     def grounds(self, g, derived, read, sched):
         """The ground this building stands on, which nothing else grades.
 
-        The clip that makes a section honest cuts the grounds away by
-        construction. That is written down and accepted, and its consequence is
-        not: the deck, the road and the beach can be any shape and any size at
-        all, and not one row of this gate turns red. On one building the pool
-        deck was built from a height map's ragged outline and the courtyard came
-        out a blob; on another the beach sand ran the length of the avenue.
-        Both were found by a person looking at a render.
+        The clip is of the site, so the mesh can hold the deck and the road; it
+        still does not witness their shape. Without this table they can be any
+        size and any shape, and not one other row of this gate turns red. On
+        one building the pool deck was built from a height map's ragged outline
+        and the courtyard came out a blob; on another the beach sand ran the
+        length of the avenue. Both were found by a person looking at a render.
+        The clip-holds row asks a different question -- whether the mesh
+        reached the build at all.
 
         Two numbers per surface and not a shape, because a capture is no
         authority on the shape of a ground (`docs/sources.md`) and every
@@ -877,12 +878,13 @@ class Grading:
                 g.ungraded(
                     "grounds",
                     "GROUNDS is empty, so nothing grades the ground this "
-                    "building stands on. The clip the section is cut against "
-                    "throws the grounds away by construction, which means the "
-                    "deck, the road and the beach can be any size and any shape "
-                    "and every row here stays green -- it has happened twice. "
-                    "Name each surface and the height band it stands in, or set "
-                    "GROUNDLESS = True if this build lays no ground.")
+                    "building stands on. The clip is of the site, so the mesh "
+                    "can hold the deck and the road; it still does not witness "
+                    "their shape, which means the deck, the road and the beach "
+                    "can be any size and any shape and every row here stays "
+                    "green -- it has happened twice. Name each surface and the "
+                    "height band it stands in, or set GROUNDLESS = True if "
+                    "this build lays no ground.")
             return
 
         found = derived.get("grounds")
