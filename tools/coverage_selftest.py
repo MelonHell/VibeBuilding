@@ -91,6 +91,30 @@ def main() -> int:
                   f"the map into {len(drawn)}")
             return 1
 
+        # The gate row that will grade the hole this file exists to see. Built
+        # and graded here so the check reads report.json rather than the source;
+        # a method that exists and a row that was never asked look the same
+        # from the second check down. The fixture's schedule does not name the
+        # two wings, so the row is green today -- that is not this file's red.
+        subprocess.run(
+            [sys.executable, "-m", f"buildings._selftest_{KIND}.build"],
+            cwd=ROOT, check=True)
+        # check=False: report.json is written even when a later row is red, so
+        # a failing coverage row cannot hide the outbuilding check below.
+        subprocess.run(
+            [sys.executable, "-m", f"buildings._selftest_{KIND}.gate"],
+            cwd=ROOT, check=False)
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        rows = [c["name"] for c in report.get("checks", [])]
+        if "every part is measured by something" not in rows:
+            print("FAIL: report.json has no row "
+                  "'every part is measured by something'; "
+                  f"the gate asked {len(rows)} check(s)")
+            return 1
+        row = next(c for c in report["checks"]
+                   if c["name"] == "every part is measured by something")
+        print(f"gate row present: ok={row['ok']!r}: {row['detail']}")
+
         # A part the map never drew is one whose footprint misses the painted
         # fill, in the plan frame derived.json already uses. Frame.fit_mask
         # points +u east and v follows, so a signed-v test (v1 < -10) can

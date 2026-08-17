@@ -252,6 +252,7 @@ class Grading:
         self.plateaus(g, derived)
         self.grounds(g, derived, read, sched)
         self.witnesses(g, derived)
+        self.coverage(g, derived, sched)
         sections, reg = self.section(g, derived, read, reference, model, frame,
                                      parts, evidence)
 
@@ -1889,6 +1890,74 @@ class Grading:
                   f"{one['pair']}: worst {worst:.2f} {one['unit']}"
                   + (f" at {where}" if where else "")
                   + f", tolerance {one['tolerance']:.2f} {one['unit']}")
+
+    def coverage(self, g, derived, sched):
+        """Parts the build put up that nothing measured.
+
+        The row this pipeline did not have. A declaration check asks whether
+        blocks stand inside a mask the build itself drew, which is the build
+        marking its own homework; this asks whether anything outside the build
+        ever stated where that part goes or how tall it is. On the building this
+        was written after, nine parts of fourteen would have failed here, and
+        every one of them printed green.
+
+        `UNMEASURED` is the building's own list of parts it knows nothing
+        measured -- a phrase per part, not a flag. Named there, the row goes
+        ungraded with the reasons printed rather than failing: a part standing
+        on a photograph alone is a legitimate way to build and an illegitimate
+        thing to report as checked.
+        """
+        stated = {r["name"]: r.get("provenance", {})
+                  for r in derived.get("parts", [])}
+        excused = self._("UNMEASURED", {}) or {}
+        if not isinstance(excused, dict):
+            raise SystemExit(
+                "UNMEASURED is a dict of part to reason, not a flag. A part "
+                "standing on a photograph is named here with why nothing "
+                "measured it; a bare True would turn the row off.")
+
+        # A plan part is a schedule name that also appears in derived["parts"].
+        # The manifest lists podium, shell, floors, glazing, parapets; only some
+        # of those share a name with a footprint the survey wrote down. A floor
+        # or a run of glazing has no footprint of its own -- it is declared
+        # against a plan part and graded by `placement`. Walking the schedule
+        # and asking "is this name in the plan?" is the line: same name as a
+        # surveyed part means the build put that part up; any other name is an
+        # attachment and is not accused of lacking a measurement.
+        #
+        # The three columns are read independently. Today `witness` is "section"
+        # exactly when `height` was read off the reference, so the third test
+        # adds nothing; when that changes, a part whose only evidence is a
+        # section still counts as covered, and a part whose height was measured
+        # still counts if the witness column later says none.
+        blind, named = [], []
+        for name in sorted(sched.by_name):
+            p = stated.get(name)
+            if p is None:
+                continue
+            if p.get("plan") in ("map", "vector", "model", "capture"):
+                continue
+            if p.get("height") in ("capture", "model"):
+                continue
+            if p.get("witness") == "section":
+                continue
+            (named if name in excused else blind).append(name)
+
+        if blind:
+            g.add("every part is measured by something", False,
+                  f"{len(blind)} part(s) have no measured footprint, no "
+                  f"measured height and no witness: {', '.join(blind)}. Either "
+                  "widen the clip so the reference covers them, declare their "
+                  "sizes with the sheet or the phrase they came from, or name "
+                  "them in UNMEASURED with the reason they cannot be measured.")
+            return
+        if named:
+            g.ungraded("every part is measured by something",
+                       "; ".join(f"{n}: {excused[n]}" for n in named))
+            return
+        g.add("every part is measured by something", True,
+              f"all {len(stated)} plan part(s) carry a measured footprint, a "
+              "measured height or a witness")
 
     def section(self, g, derived, read, reference, model, frame, parts,
                 evidence):

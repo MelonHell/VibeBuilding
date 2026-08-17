@@ -209,6 +209,18 @@ PLATEAUS: dict[str, str] = {
     # "podium": "the chiller house on its north end",
 }
 
+# Parts nothing supplied can measure, each with the reason -- a phrase, not a
+# flag. A part named here turns `every part is measured by something` from red
+# to ungraded, which is the honest state: it was built on a photograph, and a
+# photograph settles that a thing exists and settles no dimension of it.
+#
+# Naming a part here is a decision that costs a line. Leaving it out when
+# nothing measures it is a decision that costs nothing and reads as a pass.
+UNMEASURED: dict[str, str] = {
+    # "pool_house": "photos/A11795157_35.jpeg shows it; the capture's clip
+    #                stops twelve metres short of it",
+}
+
 
 GATE = grading.Grading(paths, derive, sys.modules[__name__])
 
