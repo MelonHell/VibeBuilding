@@ -37,13 +37,11 @@ from .schem import Schematic
 
 
 
-# What the reviewer is told, and where the answer goes. The findings file is the
-# ledger for the eyes, the way `blockwright.report` is the ledger for the numbers:
-# a fault seen once and only ever said out loud cannot be tracked between runs,
-# counted, or shown to have been fixed.
+# What the reviewer is told, and where a leftover journal used to sit. The
+# journal is the building's `findings.md`, above `out/` -- nothing rebuilds it,
+# so it cannot live in a folder the method document invites you to delete.
+# `FINDINGS` is only the stale filename `clear` still deletes if one is here.
 PROMPT_FILE = "prompt.txt"
-
-
 FINDINGS = "findings.md"
 
 
@@ -720,22 +718,19 @@ class Review:
                   f"{height:.0f} m up -- {', '.join(where)}; nearest {names}")
 
     def clear(self) -> None:
-        """Empty the review folder, keeping the photo-review findings.
+        """Empty the review folder, including a leftover findings.md.
 
         A folder that accumulates is a folder where last week's render of a
         viewpoint that no longer exists sits beside this week's, gets counted in the
         prompt, and is read by a reviewer who was told that every numbered pair is
-        the same camera in two models. Photo-review `findings.md` survives: it is
-        written by hand, it carries the dispositions of earlier rounds, and
-        nothing else in here is worth keeping. A greybox review does not keep
-        one -- the journal is the building's `findings.md`, and a leftover
-        file in this folder would contradict that.
+        the same camera in two models. The journal is the building's
+        `findings.md`, above `out/`; a leftover file in this folder would
+        contradict that, so one is deleted if it is still here.
         """
         if not self.out.is_dir():
             return
-        keep = set() if self.greybox else {FINDINGS}
         for stale in self.out.iterdir():
-            if stale.is_file() and stale.name not in keep:
+            if stale.is_file():
                 stale.unlink()
         # `rounds/` is a directory and survives by being one, which is the kind
         # of accident that stops being true the day somebody makes this
@@ -903,11 +898,11 @@ class Review:
         into.mkdir()
         for image in images:
             shutil.copy2(image, into / image.name)
-        for named in (PROMPT_FILE, FINDINGS):
-            if named == FINDINGS and self.greybox:
-                continue
-            if (self.out / named).exists():
-                shutil.copy2(self.out / named, into / named)
+        # The journal is not in this folder. Copying a leftover `findings.md`
+        # would keep a second copy that nothing writes and everything used to
+        # trust.
+        if (self.out / PROMPT_FILE).exists():
+            shutil.copy2(self.out / PROMPT_FILE, into / PROMPT_FILE)
         print(f"[review] last round kept in {into.relative_to(self.repo)}")
         return into
 
@@ -1092,12 +1087,17 @@ class Review:
         if self.greybox:
             print(f"[review] read every image in that folder against {PROMPT_FILE}")
         else:
+            journal = findings.path_of(self.paths)
+            try:
+                shown = journal.relative_to(self.repo)
+            except ValueError:
+                shown = journal
             print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
-                  f"write the findings and what was done about each to {FINDINGS}")
+                  f"write the findings and what was done about each to {shown}")
             # The state of the loop, printed rather than looked up. A round that
             # leaves findings open is a round that has not closed, and the count is
             # the only thing that says so out loud.
-            for line in findings.lines(self.out / FINDINGS, rounds=self.round):
+            for line in findings.lines(journal, after=self.round):
                 print(f"[review] {line}")
 
         # What this stage renders is the schematic. What a person looks at is a

@@ -42,4 +42,9 @@ SCHEDULE = OUT / "schedule.json"
 REPORT = OUT / "report.json"
 DERIVED = OUT / "derived.json"          # what `probes/derive.py` measured
 
+# The review journal. Above `out/` on purpose: everything under `out/` is
+# derived and is deleted and rebuilt whole, and nothing rebuilds this. It is
+# written a round at a time and exists in one copy.
+FINDINGS = HERE / "findings.md"
+
 OUT.mkdir(parents=True, exist_ok=True)

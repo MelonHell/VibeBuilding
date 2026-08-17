@@ -123,9 +123,18 @@ def main(argv: list[str]) -> int:
               "anybody is asked to look at a picture.")
         return 1
 
+    import importlib
     from blockwright import findings as ledger
 
-    open_now = [one for one in ledger.read(where / "findings.md")
+    # The journal lives on the building, not in this folder. A leftover
+    # findings.md under out/review/ is a second copy that nothing writes.
+    try:
+        journal = ledger.path_of(
+            importlib.import_module(f"buildings.{building}.paths"))
+    except Exception:                                     # noqa: BLE001
+        journal = ROOT / "buildings" / building / "findings.md"
+
+    open_now = [one for one in ledger.read(journal)
                 if one.state in ("open", "built")]
     listed = ("\n".join(f"  {one.id}: {one.title()}" for one in open_now)
               or "  (findings.md carries no ledger headings; name them by hand)")
@@ -136,8 +145,6 @@ def main(argv: list[str]) -> int:
     # told about the building.
     description = ""
     try:
-        import importlib
-
         module = importlib.import_module(f"buildings.{building}.review")
         description = getattr(module, "DESCRIPTION", "")
     except Exception:                                     # noqa: BLE001
@@ -153,7 +160,7 @@ def main(argv: list[str]) -> int:
         print(f"   {view:24s} unchanged -- left out")
     print(f"   {len(open_now)} finding(s) to close")
     print("Send that folder to blockwright-fix-verifier, one request, and write "
-          "each verdict back into findings.md.")
+          f"each verdict back into {journal}.")
     return 0
 
 
