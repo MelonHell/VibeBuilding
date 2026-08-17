@@ -349,6 +349,10 @@ class Clip:
     render_meta.json report, so a box measured off a render can be passed
     straight in. The mapping onto the OBJ frame (x=east, y=up, z=south) happens
     here rather than in the caller's head.
+
+    The floor of `up` is never cut from the command line. `--clip-up` is a
+    ceiling. A keep-box that starts above the ground deletes every low
+    building on the site and deletes it silently.
     """
 
     __slots__ = ("east", "north", "up")
@@ -717,7 +721,6 @@ def main(argv: list[str]) -> int:
     for axis, meaning in (
         ("east", "+east / -west"),
         ("north", "+north / -south"),
-        ("up", "+up / -down"),
     ):
         parser.add_argument(
             f"--clip-{axis}",
@@ -730,6 +733,19 @@ def main(argv: list[str]) -> int:
                 "in metres, measured off orthos/render_meta.json"
             ),
         )
+    parser.add_argument(
+        "--clip-up",
+        type=float,
+        nargs="+",
+        metavar="CEILING",
+        default=None,
+        help=(
+            "keep vertices at or below this height in metres (+up). A ceiling "
+            "only -- the floor is never cut. A clip that starts above the "
+            "ground deletes every low building on the site and deletes it "
+            "silently"
+        ),
+    )
     args = parser.parse_args(argv)
 
     export_dir = args.export_dir.resolve()
@@ -739,7 +755,23 @@ def main(argv: list[str]) -> int:
         else export_dir.parent / f"{export_dir.name}-obj"
     )
 
-    clip = Clip(east=args.clip_east, north=args.clip_north, up=args.clip_up)
+    # The floor is the datum and nothing else. A clip that starts above the
+    # ground deletes everything low -- a four-metre clubhouse, a three-metre
+    # terrace, a pool deck -- and deletes it silently: the reference simply has
+    # no material there, so the skyline reads nothing, the section grades
+    # nothing, and the comparison sheet shows a building standing on air. On the
+    # site this rule was written after, the clip began 6.4 m up and took three
+    # quarters of the plot with it. nargs="+" so two numbers reach this refusal
+    # instead of argparse saying "unrecognized arguments".
+    if args.clip_up is not None and len(args.clip_up) != 1:
+        raise SystemExit(
+            "--clip-up takes a ceiling, not a floor. Clipping the bottom off a "
+            "capture removes every low building on the site and removes it "
+            "silently. If the terrain skirt is the problem, raise MESH_FLOOR in "
+            "the building's probe -- that drops terrain from the measurement "
+            "and keeps it in the file, so the loss is visible.")
+    clip_up = None if not args.clip_up else (float("-inf"), args.clip_up[0])
+    clip = Clip(east=args.clip_east, north=args.clip_north, up=clip_up)
     meta = convert(
         export_dir,
         out_dir,

@@ -29,7 +29,8 @@ from types import SimpleNamespace
 from blockwright import model as model3d
 from blockwright.frame import Frame
 from blockwright.gate import Gate
-from blockwright.grading import COVERAGE_SHARE, COVERAGE_STOREYS, Grading
+from blockwright.grading import (
+    CLIP_HOLDS_WITHIN, COVERAGE_SHARE, COVERAGE_STOREYS, Grading)
 from blockwright.mask import Mask
 from blockwright.plan import Part, decompose
 from blockwright.schedule import Declaration, Item, Schedule
@@ -40,6 +41,7 @@ from tools.pipeline_selftest import make
 ROOT = Path(__file__).resolve().parent.parent
 KIND = "coverage"
 ROW = "every part is measured by something"
+SITE_ROW = "the clip holds the site"
 
 # How far a face of an assembled part may stand from where the fixture drew it.
 # Four metres, which is the sum of the four things that legitimately move a face
@@ -354,6 +356,119 @@ def prove_thresholds() -> str | None:
     return None
 
 
+def _site_grade(built_rect, mesh_bounds, frame=None):
+    """Run `site_covered` on a tiny schedule. `built_rect` is (x0, x1, z0, z1)."""
+    w, l = 40, 40
+    frame = frame or Frame((0.0, 0.0), 0.0, float(w), float(l))
+    mask = _rect(w, l, built_rect[0], built_rect[1], built_rect[2], built_rect[3])
+    sched = Schedule((Item("podium", "what", "source"),))
+    sched.built["podium"] = Declaration(mask, 0, 1)
+    sched.width, sched.length = w, l
+    if mesh_bounds is None:
+        derived = {"mesh": {"read": False, "why": "no reference"}}
+    elif mesh_bounds is False:
+        derived = {"mesh": {"read": True}}
+    else:
+        derived = {"mesh": {"read": True, "bounds": mesh_bounds}}
+    g = Gate("prove")
+    read = SimpleNamespace(frame=frame)
+    Grading(None, None, SimpleNamespace()).site_covered(g, derived, sched, read)
+    if len(g.checks) != 1:
+        raise SystemExit(f"FAIL: site_covered wrote {len(g.checks)} row(s)")
+    return g.checks[0], sched
+
+
+def prove_site_covered() -> str | None:
+    """The clip-holds-the-site row in both states, and the ungraded one.
+
+    Lives here so a reviewer can see it fail. Returns a FAIL line, or None.
+    """
+    wide = {"u0": 0.0, "u1": 30.0, "v0": 0.0, "v1": 30.0}
+    green, sched = _site_grade((5, 15, 5, 15), wide)
+    if green.name != SITE_ROW or green.ok is not True:
+        return f"FAIL: a build inside the reference should be green, got {green.line()}"
+    if "inside the reference" not in green.detail:
+        return f"FAIL: green detail does not say the build is inside: {green.detail}"
+
+    identity = Frame((0.0, 0.0), 0.0, 40.0, 40.0)
+    west = sched.extent(identity)[0]
+    just_in, _ = _site_grade(
+        (5, 15, 5, 15),
+        {"u0": west + CLIP_HOLDS_WITHIN - 0.01, "u1": 30.0, "v0": 0.0, "v1": 30.0})
+    if just_in.ok is not True:
+        return (f"FAIL: {CLIP_HOLDS_WITHIN - 0.01:g} m past the clip should "
+                f"still be green, got {just_in.line()}")
+    just_out, _ = _site_grade(
+        (5, 15, 5, 15),
+        {"u0": west + CLIP_HOLDS_WITHIN + 0.01, "u1": 30.0, "v0": 0.0, "v1": 30.0})
+    if just_out.ok is not False or "west" not in just_out.detail:
+        return (f"FAIL: {CLIP_HOLDS_WITHIN + 0.01:g} m past the clip should "
+                f"be red on the west, got {just_out.line()}")
+    if "Re-clip to hold u" not in just_out.detail:
+        return f"FAIL: red row does not print the union box: {just_out.detail}"
+    hold_u = min(west, west + CLIP_HOLDS_WITHIN + 0.01)
+    if f"{hold_u:.0f}" not in just_out.detail:
+        return (f"FAIL: red row hid the union west edge {hold_u:.0f}: "
+                + just_out.detail)
+
+    blank, _ = _site_grade((5, 15, 5, 15), None)
+    if blank.ok is not None or "no reference" not in blank.detail:
+        return f"FAIL: no mesh should be ungraded, got {blank.line()}"
+    stale, _ = _site_grade((5, 15, 5, 15), False)
+    if stale.ok is not None:
+        return f"FAIL: a mesh with no plan bounds should be ungraded, got {stale.line()}"
+
+    # A building off the axes: the world AABB is larger than the plan AABB.
+    # Comparing world cells to plan bounds would go red; converting through
+    # the frame must not. And the two extents must actually differ, or the
+    # conversion is dead and this case is the identity case again.
+    angled = Frame((0.0, 0.0), 30.0, 40.0, 40.0)
+    _, turned = _site_grade((5, 15, 5, 15), wide, frame=angled)
+    world = turned.extent()
+    plan = turned.extent(angled)
+    if world == plan:
+        return ("FAIL: extent() at 30 deg matches world cells; "
+                "the plan conversion is dead")
+    boxed = {"u0": plan[0], "u1": plan[1], "v0": plan[2], "v1": plan[3]}
+    aligned, _ = _site_grade((5, 15, 5, 15), boxed, frame=angled)
+    if aligned.ok is not True:
+        return (f"FAIL: a 30 deg build inside its own plan box went red: "
+                f"{aligned.line()} (world {world}, plan {plan})")
+
+    print("the clip holds the site: green, red, ungraded, and the 30 deg box hold",
+          flush=True)
+    return None
+
+
+def prove_clip_up() -> str | None:
+    """`--clip-up` is a ceiling, and a floor is refused with the cost named."""
+    help_out = subprocess.run(
+        [sys.executable, "tools/ge_convert.py", "--help"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    text = (help_out.stdout or "") + (help_out.stderr or "")
+    if help_out.returncode != 0:
+        return f"FAIL: ge_convert --help exited {help_out.returncode}: {text}"
+    idx = text.find("--clip-up")
+    if idx < 0:
+        return "FAIL: --help does not mention --clip-up"
+    block = text[idx:idx + 500]
+    if "CEILING" not in block and "ceiling" not in block.lower():
+        return f"FAIL: --clip-up help is not a ceiling: {block!r}"
+    if "MIN" in block and "MAX" in block:
+        return f"FAIL: --clip-up help still describes a MIN MAX pair: {block!r}"
+
+    refused = subprocess.run(
+        [sys.executable, "tools/ge_convert.py", "nowhere", "--clip-up", "1", "2"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    said = (refused.stdout or "") + (refused.stderr or "")
+    if refused.returncode == 0:
+        return "FAIL: --clip-up 1 2 was accepted"
+    if "ceiling" not in said.lower() or "silently" not in said:
+        return f"FAIL: refusal did not say what clipping the floor costs: {said!r}"
+    print("clip-up: ceiling only, a floor is refused", flush=True)
+    return None
+
+
 def build() -> Path:
     """Make the fixture building and measure it. Returns its out/ directory."""
     # Mapped inputs: the map draws the two wings, the mesh also has the
@@ -394,7 +509,8 @@ def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
         missed = (prove_coverage_row() or prove_orientation()
-                  or prove_thresholds())
+                  or prove_thresholds() or prove_site_covered()
+                  or prove_clip_up())
         if missed:
             print(missed)
             return 1
@@ -410,6 +526,12 @@ def main() -> int:
         if gone.get("count"):
             print("FAIL: the fixture outbuilding is 240 m2 and 6 m, "
                   f"above both bars, but assembly.dropped={gone!r}")
+            return 1
+        mesh_bounds = (derived.get("mesh") or {}).get("bounds")
+        if not isinstance(mesh_bounds, dict) or not all(
+                k in mesh_bounds for k in ("u0", "u1", "v0", "v1")):
+            print("FAIL: derived.json mesh has no plan bounds; "
+                  f"mesh={derived.get('mesh')!r}")
             return 1
 
         layout = where / "input" / "layout.png"
@@ -451,6 +573,15 @@ def main() -> int:
         if "carry a measured footprint" in row["detail"]:
             print("FAIL: fixture pass text still counts unexamined parts: "
                   + row["detail"])
+            return 1
+        if SITE_ROW not in rows:
+            print("FAIL: report.json has no row "
+                  f"{SITE_ROW!r}; the gate asked {len(rows)} check(s)")
+            return 1
+        site = next(c for c in report["checks"] if c["name"] == SITE_ROW)
+        print(f"site row present: ok={site['ok']!r}: {site['detail']}")
+        if site["ok"] is not True:
+            print("FAIL: the fixture clip should hold the site")
             return 1
 
         # A part the map never drew is one whose footprint misses the painted

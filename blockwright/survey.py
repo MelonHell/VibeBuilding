@@ -434,6 +434,34 @@ def fits_clip_box(mesh, frame, within: float = CLIP_BOX_SAME) -> dict:
     }
 
 
+def mesh_plan_bounds(mesh, frame, registration=None) -> dict:
+    """The mesh's full reach in plan (u, v).
+
+    Registration records only the high points above REGISTER_FLOOR, which
+    is the wrong box for whether the clip holds the site: a wide clip that
+    still holds the clubhouse would look short if only the tower were
+    measured. The four XZ corners of the AABB are the clip's own reach
+    (or the file's, when nothing was clipped) and they cost nothing extra
+    -- `fits_clip_box` already asks `mesh.bounds()`.
+    """
+    (x0, _y0, z0), (x1, _y1, z1) = mesh.bounds()
+    us: list[float] = []
+    vs: list[float] = []
+    for x, z in ((x0, z0), (x0, z1), (x1, z0), (x1, z1)):
+        u, v = frame.to_local(x, z)
+        if registration is not None:
+            u = registration.to_build_u(u)
+            v = registration.to_build_v(v)
+        us.append(u)
+        vs.append(v)
+    return {
+        "u0": round(min(us), 1),
+        "u1": round(max(us), 1),
+        "v0": round(min(vs), 1),
+        "v1": round(max(vs), 1),
+    }
+
+
 def levels_from(spacing: float, top: float, base: float = 0.0) -> list[float]:
     """Floor lines at a declared spacing, from the ground to the highest part."""
     if spacing <= 0:
@@ -1039,7 +1067,6 @@ class Survey:
         if gap <= self.t.DATUM_AGREEMENT:
             return cheap
 
-        top = max(mesh.y)
         raise SystemExit(
             f"the datum of {Path(path).name} is not the ground.\n"
             f"    a low quantile of the height says {cheap:.2f} m\n"
@@ -1051,10 +1078,13 @@ class Survey:
             "from the datum, so leaving it there puts 'above the ground' "
             "inside the ground, and fits the registration to the clip box "
             "rather than to the building.\n"
-            "Cut them off in the vertical clip and convert again:\n"
-            f"    --clip-up {real - 1:.0f} {top - real + 5:.0f}\n"
-            "If this capture really does have that much below grade -- a "
-            "basement the export modelled, a site that steps down -- raise "
+            "Do not clip the floor off the capture: that deletes every low "
+            "building on the site and deletes it silently. If the terrain "
+            "skirt is the problem, raise MESH_FLOOR in the building's "
+            "probe -- that drops terrain from the measurement and keeps "
+            "it in the file, so the loss is visible. If this capture "
+            "really does have that much below grade -- a basement the "
+            "export modelled, a site that steps down -- raise "
             "DATUM_AGREEMENT and say why.")
 
     def link_to(self, read: Read, reference, out: dict, record: bool = True) -> Link:
@@ -1085,6 +1115,7 @@ class Survey:
                           "angle": round(model_frame.angle, 2),
                           "extent": [round(read.frame.extent_u, 1),
                                      round(read.frame.extent_v, 1)]},
+                "bounds": mesh_plan_bounds(mesh, model_frame),
             }
             note["registration"] = {"needed": False,
                                    "why": "the plan and the section come from the "
@@ -1156,6 +1187,7 @@ class Survey:
                       "extent": [round(mesh_frame.extent_u, 1),
                                  round(mesh_frame.extent_v, 1)],
                       "clip_box": fits_clip_box(mesh, mesh_frame)},
+            "bounds": mesh_plan_bounds(mesh, mesh_frame, reg),
         }
         note["registration"] = {
             "needed": True,

@@ -311,6 +311,34 @@ class Schedule:
         """
         return [i for i in self.items if i.placed]
 
+    def extent(self, frame=None) -> tuple[float, float, float, float]:
+        """The bounding box of every declaration.
+
+        What the build actually occupies, as opposed to what the plan drew: the
+        two differ exactly where the build put something the plan never had, and
+        that difference is what `site_covered` grades. World cells if no frame
+        is given -- the schedule does not carry one -- and plan (u, v) when it
+        is, because that is the space the reference is recorded in. A world
+        AABB compared to a plan AABB is a false red on any building that is
+        not already axis-aligned.
+        """
+        cells = [i for d in self.built.values()
+                 for i, v in enumerate(d.mask.bits) if v]
+        if not cells:
+            return (0.0, 0.0, 0.0, 0.0)
+        width = self.width
+        if frame is None:
+            xs = [i % width for i in cells]
+            zs = [i // width for i in cells]
+            return (float(min(xs)), float(max(xs)), float(min(zs)), float(max(zs)))
+        us: list[float] = []
+        vs: list[float] = []
+        for i in cells:
+            u, v = frame.to_local(i % width + 0.5, i // width + 0.5)
+            us.append(u)
+            vs.append(v)
+        return (min(us), max(us), min(vs), max(vs))
+
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps({
             "width": self.width,

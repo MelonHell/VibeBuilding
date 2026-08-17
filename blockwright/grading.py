@@ -158,6 +158,13 @@ COVERAGE_STOREYS = 1.0
 # every part does not.
 COVERAGE_SHARE = 0.5
 
+# How far the build may reach past the reference before the clip is too
+# small. One metre is one cell, and it is the noise of a lattice snap and
+# a staircase at the end of an axis -- not the tens of metres a clip cut
+# around the tower leaves of the clubhouse. A bare 1.0 in the comparison
+# would be the same number with none of that.
+CLIP_HOLDS_WITHIN = 1.0
+
 
 class Grading:
     """One building's gate, run in the order that makes its answers readable."""
@@ -266,6 +273,7 @@ class Grading:
         self.grounds(g, derived, read, sched)
         self.witnesses(g, derived)
         self.coverage(g, derived, sched, read)
+        self.site_covered(g, derived, sched, read)
         sections, reg = self.section(g, derived, read, reference, model, frame,
                                      parts, evidence)
 
@@ -2166,6 +2174,53 @@ class Grading:
                         "what would make it an outside check."))
 
         return sections, reg
+
+    def site_covered(self, g, derived, sched, read):
+        """Whether the reference reaches as far as the build does.
+
+        The clip is a decision made at stage one, when the only thing anybody
+        has looked at is an ortho of the capture, and it is the decision that
+        quietly bounded everything after it. Clipped around the building, the
+        reference holds nothing of the grounds, so every part standing on them
+        is graded by nothing and no row says so.
+
+        This is that row. It compares the extent of what the build declared
+        against the extent of the reference, in the plan's (u, v), and prints
+        the box that would have covered both, so that a re-clip is a copy of
+        two numbers rather than a second look at an ortho. World cells are
+        the wrong space: the fixture sits thirty degrees off the axes, and
+        a world AABB compared to a plan AABB is a false red.
+        """
+        rec = derived.get("mesh") or {}
+        mesh = rec.get("bounds") if rec.get("read") else None
+        if not mesh:
+            g.ungraded("the clip holds the site",
+                       "no reference: nothing states how far the site reaches")
+            return
+        built = sched.extent(read.frame)
+        over = [
+            ("west", mesh["u0"] - built[0]),
+            ("east", built[1] - mesh["u1"]),
+            ("north", mesh["v0"] - built[2]),
+            ("south", built[3] - mesh["v1"]),
+        ]
+        worst = [(side, gap) for side, gap in over if gap > CLIP_HOLDS_WITHIN]
+        if not worst:
+            g.add("the clip holds the site", True,
+                  f"the build stands u {built[0]:.0f}..{built[1]:.0f}, "
+                  f"v {built[2]:.0f}..{built[3]:.0f}, all of it inside the "
+                  "reference")
+            return
+        g.add("the clip holds the site", False,
+              "the build reaches past the reference by "
+              + ", ".join(f"{gap:.0f} m {side}" for side, gap in worst)
+              + f". Re-clip to hold u {min(built[0], mesh['u0']):.0f}.."
+                f"{max(built[1], mesh['u1']):.0f}, "
+                f"v {min(built[2], mesh['v0']):.0f}.."
+                f"{max(built[3], mesh['v1']):.0f} and re-measure: everything "
+                "out there is graded by nothing. The plan canvas is sized to "
+                "the drawn building, not the site -- that is a different "
+                "decision, and this row does not widen it.")
 
     def clip_box(self, g, derived):
         """Whether the frame the section is cut in is the building or the box.
