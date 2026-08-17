@@ -199,13 +199,15 @@ class Read:
     Every branch ends up with the same three things -- a frame, named parts, and
     the order to report them in -- so that nothing after this point has to ask
     where the plan came from. `massing` is set only on the model branch, where
-    the same file also holds the heights.
+    the same file also holds the heights. `provenance` is per part because an
+    assembled plan mixes sources; a single branch fills it with its own kind.
     """
 
     __slots__ = ("source", "frame", "named", "order", "massing", "mass",
-                 "slope", "unlatticed")
+                 "slope", "unlatticed", "provenance")
 
-    def __init__(self, source, frame, named, order, mass=None, massing=None):
+    def __init__(self, source, frame, named, order, mass=None, massing=None,
+                 provenance=None):
         self.source = source
         self.frame = frame
         self.named = named
@@ -218,6 +220,10 @@ class Read:
         # sentence rather than a flag.
         self.slope = None
         self.unlatticed = None
+        # Where each part's footprint came from, by name. One branch fills this
+        # with its own kind for every part; the assembled plan (see
+        # `plan_of`) fills it per part, which is the whole reason it exists.
+        self.provenance = provenance or {}
 
     @property
     def parts(self) -> list:
@@ -438,7 +444,8 @@ class Survey:
                     "residual": round(part.residual, 2),
                 }
         return Read(source, layout.frame, layout.parts, layout.order,
-                    mass=layout.mass)
+                    mass=layout.mass,
+                    provenance={name: source.name for name in layout.order})
 
     def from_map(self, out: dict, source) -> Read:
         """A flat map, decomposed along the lines somebody drew inside it."""
@@ -490,7 +497,8 @@ class Survey:
              "cells": g.mask.count()}
             for g in guides(self.paths.LAYOUT, frame, palette=self.t.MAP_PALETTE)
         ]
-        return Read(source, frame, named, order, mass=template)
+        return Read(source, frame, named, order, mass=template,
+                    provenance={name: source.name for name in order})
 
     def from_model(self, out: dict, source) -> Read:
         """A 3D model or a capture, split at its roof steps.
@@ -512,7 +520,8 @@ class Survey:
                 + "\n  ".join(massing.lines()))
         out["guides"] = []
         return Read(source, massing.frame, dict(zip(names, massing.parts)), names,
-                    mass=massing.mass, massing=massing)
+                    mass=massing.mass, massing=massing,
+                    provenance={name: source.name for name in names})
 
     def from_declared(self, out: dict, source) -> Read:
         """A table somebody typed after reading the brief or an unscaled drawing."""
@@ -530,7 +539,8 @@ class Survey:
         out["declared_plan"] = [
             {"name": s.name, "source": s.source} for s in layout.shapes]
         return Read(source, layout.frame, layout.parts, layout.order,
-                    mass=layout.mass)
+                    mass=layout.mass,
+                    provenance={name: "declared" for name in layout.order})
 
     def plan_of(self, out: dict | None = None) -> Read:
         """The plan, whichever kind of input turned out to state it.
@@ -626,7 +636,8 @@ class Survey:
         out = Read(read.source, frame,
                    {name: Part(part.mask, frame)
                     for name, part in read.named.items()},
-                   read.order, mass=read.mass, massing=read.massing)
+                   read.order, mass=read.mass, massing=read.massing,
+                   provenance=read.provenance)
         out.slope = slope
         return out
 
@@ -1440,6 +1451,41 @@ class Survey:
             "read_off": read.order[read.parts.index(edge)],
         }
 
+    def provenance_of(self, out: dict, read: Read) -> None:
+        """Three words per part: what measured its footprint, its height, and
+        what can contradict either.
+
+        Written for the reader rather than for the code: everything here is
+        already knowable from other keys in the file, and nobody ever worked it
+        out, so a part built freehand read exactly like a part set out on a
+        survey. Stating it costs a dictionary and removes the whole class.
+        """
+        skyline = out.get("skyline", {})
+        # Sections are the gate's, computed later -- there is no `sections` key
+        # here. What derive can know is whether this part's height was read off
+        # the reference rather than declared. A part whose skyline came from the
+        # mesh has something that can contradict it; a declared height does not.
+        measured_by = (out.get("mesh") or {}).get("kind")
+        for record in out["parts"]:
+            name = record["name"]
+            entry = skyline.get(name)
+            if not isinstance(entry, dict):
+                entry = {}
+            if entry.get("declared"):
+                height = "declared"
+            elif entry.get("median") is not None and entry.get("stations"):
+                height = (measured_by if measured_by in ("capture", "model")
+                          else "capture")
+            elif name in (self.t.DECLARED_HEIGHTS or {}):
+                height = "declared"
+            else:
+                height = "none"
+            record["provenance"] = {
+                "plan": read.provenance.get(name, "declared"),
+                "height": height,
+                "witness": "section" if height in ("capture", "model") else "none",
+            }
+
     def declarations_of(self, out: dict, read: Read) -> None:
         """The photograph-read facts, and what follows from them.
 
@@ -1550,6 +1596,7 @@ class Survey:
 
         self.storeys_of(out, read, link)
         self.skyline_of(out, read, link)
+        self.provenance_of(out, read)
         self.roof_of(out, read, link)
         self.witnesses_of(out, evidence, read, link)
 
@@ -1576,6 +1623,15 @@ class Survey:
                 f"  {question:9s} {answer['how']:8s} from {answer['by']}"
                 + (", checked against " + ", ".join(answer["witnesses"])
                    if answer["witnesses"] else ", nothing to check it against"))
+        lines.append("")
+        lines.append("coverage: what measured each part")
+        lines.append(f"  {'part':22s} {'footprint':10s} {'height':10s} "
+                     f"witness")
+        for record in out.get("parts", []):
+            p = record.get("provenance", {})
+            lines.append(
+                f"  {record['name']:22s} {p.get('plan', '-'):10s} "
+                f"{p.get('height', '-'):10s} {p.get('witness', '-')}")
         lines.append("")
 
         f = out["frame"]

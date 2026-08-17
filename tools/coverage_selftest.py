@@ -110,8 +110,19 @@ def main() -> int:
                   f"the survey found {len(parts)} part(s): {', '.join(parts)}")
             return 1
 
+        # Three words, and each one has to be a word the survey is allowed to
+        # say. A missing key used to be the whole failure; now the values are
+        # what this half is for, and a part whose plan is "declared" because
+        # nobody filled the field must not read the same as one that really
+        # was declared.
+        allowed = {
+            "plan": {"map", "vector", "capture", "model", "declared"},
+            "height": {"capture", "model", "declared", "none"},
+            "witness": {"section", "none"},
+        }
         missing = [p for p in derived["parts"]
-                   if not p.get("provenance", {}).get("plan")]
+                   if any(p.get("provenance", {}).get(key) not in values
+                          for key, values in allowed.items())]
         if missing:
             print("FAIL: parts with no stated provenance: "
                   + ", ".join(p["name"] for p in missing))
