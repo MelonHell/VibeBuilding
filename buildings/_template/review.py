@@ -4,11 +4,11 @@
     python -m buildings.<name>.review --mesh     # and the reference, via Blender
     python -m buildings.<name>.review --greybox  # the volumes, into out/greybox/review/
 
-Two tables and a call. Everything else -- solving where a camera has to stand,
-rendering the reference from the same viewpoints through Blender, collecting the
-photographs and the drawings, writing the prompt that names what is actually in
-the folder -- is `blockwright.reviewing`, because it is the same on every
-building.
+Two descriptions, one camera table and a call. Everything else -- solving where a
+camera has to stand, rendering the reference from the same viewpoints through
+Blender, collecting the photographs and the drawings, writing the prompt that
+names what is actually in the folder -- is `blockwright.reviewing`, because it is
+the same on every building.
 
 The folder it leaves in `out/review/` is the whole of the review's evidence, and
 it is read by the model driving the session. There is no second model, no
@@ -31,9 +31,9 @@ from blockwright.reviewing import Outside, Review, Shot
 from . import paths
 from .probes import derive
 
-# What this building is. It is the only building-specific text in the prompt --
-# everything else the reviewer needs it can see -- and it is the whole of what a
-# reviewer given pictures and nothing else knows.
+# What this building is. It is the only building-specific text in gate 5's
+# prompt -- everything else the reviewer needs it can see -- and it is the whole
+# of what a reviewer given pictures and nothing else knows.
 #
 # **The review refuses to run while this is still the placeholder**, because
 # three buildings went to a reviewer with these angle brackets in the prompt and
@@ -41,8 +41,38 @@ from .probes import derive
 # volumes, what they are made of, and how they stand to each other; where two
 # parts differ deliberately -- one tower balconied and one blank -- say so, since
 # that is exactly what a build makes identical and no number catches.
+#
+# This one goes to gate 5, whole. Gate 4 gets `FORM` below and never this.
 DESCRIPTION = "<what this building is, in a sentence or two: the volumes, what " \
               "they are made of, and how they stand relative to each other>"
+
+# The same building with the finish taken off: how many volumes, what shape each
+# is in plan, how tall against each other, how they stand and what abuts what.
+# This is the whole of what the *greybox* reviewer is told, and `--greybox`
+# refuses to run until it is written.
+#
+# Two fields rather than one filtered field, and that is the point. A greybox has
+# no material by construction, and a single sentence naming granite is a more
+# specific instruction than the three general forbids in the prompt: the reviewer
+# follows the specific one and reports the missing windows instead of the missing
+# wing. Cutting the finish sentences out of `DESCRIPTION` automatically was tried
+# and abandoned -- it needs a word list that is complete in every language a
+# building might be described in, and no such list exists.
+#
+# So say the same thing twice, deliberately:
+#
+#     DESCRIPTION = "Three slabs in a row, the middle one taller. Clad in white
+#                    concrete with glazed bays along the long face."
+#     FORM        = "Three slabs in a row along one street front, the middle one
+#                    about half again the height of its neighbours. All three are
+#                    plain rectangles in plan and stand shoulder to shoulder with
+#                    no gap."
+#
+# `FORM` is allowed to be longer and more exact than the sentence it mirrors:
+# proportion and adjacency are what gate 4 argues about, and nothing else in that
+# folder states them.
+FORM = "<the volumes with no material: how many, what shape in plan, how tall " \
+       "against each other, how they stand and what touches what>"
 
 # Four corners, two of them low. Enough to see the whole of a building from
 # outside, and no more: a fifth exterior angle mostly reports the same faults a
@@ -114,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     greybox = "--greybox" in argv
     schematic = paths.GREYBOX if greybox else paths.BUILD
     where = paths.OUT / "greybox" / "review" if greybox else paths.OUT / "review"
-    return Review(paths, PLAN, DESCRIPTION,
+    return Review(paths, PLAN, DESCRIPTION, form=FORM,
                   schematic=schematic, where=where, greybox=greybox).run(
                       derive.plan_of(), argv)
 

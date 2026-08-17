@@ -1,9 +1,10 @@
 """The photo review, as apparatus: cameras, renders, the folder, the prompt.
 
-Every line in this module is the same on every building. What differs is two
-tables -- where the cameras stand, and what the building is in a sentence -- and
-those stay in `buildings/<name>/review.py`, which is now those tables and a call
-to `Review(...).run(...)`.
+Every line in this module is the same on every building. What differs is where
+the cameras stand and what the building is -- twice, once with its material for
+gate 5 and once without for gate 4 -- and those stay in
+`buildings/<name>/review.py`, which is now those three and a call to
+`Review(...).run(...)`.
 
 It used to be one file, copied whole into every building, six hundred lines a
 copy. That is the argument `gate.py` makes about itself in its own docstring --
@@ -21,7 +22,6 @@ import argparse
 import itertools
 import json
 import math
-import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -296,7 +296,7 @@ GREYBOX_PROMPT = """You are reviewing a greybox of a real building -- the volume
 and their standing, with no windows, no balconies, no roof covering and no
 materials. Those absences are not defects. Do not report them.
 
-{description}
+{form}
 
 You are given {count} images, each labelled before it:
 
@@ -354,11 +354,20 @@ Be specific and be brief.
 # reviewer follows the more specific one -- it goes looking for the windows the
 # greybox does not have and reports them missing.
 #
-# The list can only ever be approximate, and that is survivable because of
-# which way it fails: a sentence wrongly dropped costs the reviewer some
-# context it could have used, and a sentence wrongly kept costs a round of
-# findings about nothing. So it is written wide, and substrings rather than
-# words -- "balcon" catches balcony, balconied and balconies.
+# This guards ONE sentence: the first of a camera's `reading`, which usually
+# names where the camera stands and occasionally names what to look at there.
+# The building's own text is not filtered at all any more -- gate 4 has its own
+# written field, because a denylist that has to be complete to be safe is not
+# safe, and this one was not complete: it misses `glazed`, `granite`, `marble`,
+# `mullion`, and every word in a language that is not English.
+#
+# It survives here because the shape of the risk is different. The sentence it
+# guards is written in this repository, in the skeleton, in English, by an
+# author who has this list's subject in front of them -- not by a building's
+# author describing a building. A word that slips through costs one caption;
+# there is no path by which it becomes the reviewer's whole idea of the
+# building. Substrings rather than words: "balcon" catches balcony, balconied
+# and balconies.
 _FORM_POISON = (
     "glazing", "bays", "rhythm", "material", "colour", "color",
     "palette", "window", "finish", "cladding", "glass", "balcon",
@@ -369,15 +378,6 @@ _FORM_POISON = (
 
 _FORM_LOOK = ("The volumes, their proportions, the shape in plan, and "
               "where the parts stand")
-
-
-# Printed where the building's own sentence would go, when every sentence of it
-# named finish. Saying nothing there would leave the reviewer unable to tell a
-# building nobody described from one whose description did not survive.
-_FORM_NO_DESCRIPTION = (
-    "Nothing here describes this building. What was written for it names "
-    "material and finish, which a greybox has none of, so it was left out. "
-    "Read the volumes off the images.")
 
 
 def form_reading(shot) -> str:
@@ -394,35 +394,6 @@ def form_reading(shot) -> str:
     if first and not any(word in lowered for word in _FORM_POISON):
         return f"{first}. {_FORM_LOOK}."
     return f"{_FORM_LOOK}."
-
-
-def form_description(text: str) -> str:
-    """The building's own description, with anything about finish taken out.
-
-    The greybox prompt carried no description at all for a while, and that was
-    the wrong half of the trade. The reviewer's first question is how many
-    parts the build has against how many the reference has, and answering it
-    off a photogrammetry capture without being told what the building IS means
-    guessing which blobs are the building and which are its neighbours. That
-    is exactly what `check_written` refuses an unwritten `DESCRIPTION` for.
-
-    What could not go in as written is the rest of it: the skeleton asks an
-    author for the volumes, **what they are made of**, and how they stand -- so
-    a description written to that instruction names material, and a material
-    sentence in this prompt beats three general forbids, the same way a camera
-    caption did.
-
-    So it goes in a sentence at a time, and only the sentences that name no
-    finish. A sentence naming both -- "two towers of white concrete stand
-    either side of a low wing" -- is lost whole, which loses form the reviewer
-    could have used and leaks nothing, and that is the trade being made on
-    purpose.
-    """
-    text = (text or "").strip()
-    kept = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text)
-            if part.strip()
-            and not any(word in part.lower() for word in _FORM_POISON)]
-    return " ".join(kept) if kept else _FORM_NO_DESCRIPTION
 
 
 @dataclass(frozen=True)
@@ -624,6 +595,13 @@ class Review:
     told about the building. Everything else here is the same for every building
     there has ever been, which is why it lives in the library and not in a copy.
 
+    `form` is the second sentence, and it exists because the two gates need
+    different halves of the same paragraph. Gate 5 wants the whole of it,
+    material included. Gate 4 must not see material at all: a greybox has none,
+    and one sentence naming granite beats three general forbids in the prompt
+    below it. Filtering the first field down to the second was tried and does
+    not work -- see `_FORM_POISON` -- so the author writes both.
+
     `schematic`, `where` and `greybox` are how a greybox review leaves the
     finished build's folder alone. Defaults keep the photo review: the
     finished schematic, `out/review/`, drawings and the colour prompt.
@@ -631,12 +609,14 @@ class Review:
 
     def __init__(self, paths, plan, description: str,
                  size: tuple[int, int] = SIZE, *,
+                 form: str = "",
                  schematic: Path | None = None,
                  where: Path | None = None,
                  greybox: bool = False):
         self.paths = paths
         self.plan = tuple(plan)
         self.description = description
+        self.form = form or ""
         self.size = size
         self.schematic = Path(schematic) if schematic is not None else None
         self.out = Path(where) if where is not None else paths.OUT / "review"
@@ -877,6 +857,11 @@ class Review:
         A `reading` left as the template's is checked too but only warned about:
         the shot still renders, and a generic reading blinds one viewpoint
         rather than the whole round.
+
+        `FORM` is refused on the same terms, but only on the greybox path,
+        because that is the only prompt that reads it. Refusing a photo review
+        over a field it never interpolates would block gate 5 on gate 4's
+        homework.
         """
         if self.description.lstrip().startswith("<"):
             raise SystemExit(
@@ -888,6 +873,24 @@ class Review:
                 "Three buildings were reviewed without it and every one came "
                 "back with findings about the wrong things.\n"
                 "Write it -- two or three sentences -- and run this again.")
+
+        form = self.form.strip()
+        if self.greybox and (not form or form.startswith("<")):
+            raise SystemExit(
+                "FORM in review.py is not written, and it is the whole of what "
+                "the greybox prompt says about this building.\n"
+                "The first of the four questions is how many parts this build "
+                "has against how many the reference has. Answering it off a "
+                "photogrammetry capture means deciding which blobs are the "
+                "building and which are its neighbours, its trees and its "
+                "cars, and that cannot be done without being told what the "
+                "building is.\n"
+                "DESCRIPTION does not serve here. It names material by "
+                "instruction, a greybox has none, and one sentence naming "
+                "granite outweighs three general forbids: the reviewer goes "
+                "and reports the missing windows instead of the missing wing.\n"
+                "Write FORM -- the volumes and how they stand, no material -- "
+                "and run this again.")
 
         blind = [s.name for s in self.plan
                  if getattr(s, "reading", "").lstrip().startswith("<")]
@@ -1130,8 +1133,7 @@ class Review:
         pairing = ("" if not has_ref else (PAIRING if paired else UNPAIRED))
         if self.greybox:
             text = GREYBOX_PROMPT.format(
-                count=len(images), views=views,
-                description=form_description(self.description),
+                count=len(images), views=views, form=self.form.strip(),
                 kinds="\n".join(kinds), noise=noise, pairing=pairing)
         else:
             text = PROMPT.format(
@@ -1325,4 +1327,4 @@ class Review:
 
 
 __all__ = ["FINDINGS", "LEFTOVER", "Outside", "PROMPT_FILE", "Review", "Shot",
-           "form_description", "form_reading"]
+           "form_reading"]

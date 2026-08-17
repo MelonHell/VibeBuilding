@@ -5,6 +5,11 @@ never runs, and the greybox comes back missing a wing that the full build has --
 so the form gets agreed on a building that is not the one being made. A section
 in both lists runs twice, and the second call wins wherever they disagree.
 
+The review the volumes go to is checked here too, on the same fixture: that its
+folder holds no textured reference pass, and that its prompt is built from the
+form-only field and refuses when that field is unwritten. A greybox with a
+prompt that says "glazing" is the same defect one step later.
+
     python -m tools.greybox_selftest
 """
 
@@ -34,6 +39,17 @@ DETAIL_BLOCKS = ("stained_glass", "_pane", "_stairs", "_slab")
 # The skeleton's own detail, which is not glass: a deck and a parapet stay
 # invisible to the marks above if they leak into the greybox.
 SKELETON_DETAIL = ("light_gray_concrete", "smooth_quartz")
+
+# What a filled-in pair of fields looks like. The skeleton asks for material in
+# the first and forbids it in the second, so these are written to be told apart:
+# no phrase is in both, and only the first names a finish. A greybox prompt
+# holding any part of DESCRIBED is a greybox prompt holding DESCRIPTION.
+DESCRIBED = ("Three boxes stand in a row, the middle one taller than its "
+             "neighbours. They are clad in white concrete with glazed bays "
+             "along the long face.")
+FORMED = ("Three plain rectangles stand in a row along one face, the middle "
+          "one about half again the height of its neighbours. They touch at "
+          "their short ends with no gap.")
 
 
 def run(*args: str) -> str:
@@ -185,6 +201,52 @@ def prove_placeholder(where: Path) -> str | None:
     return None
 
 
+def plant(where: Path, name: str, value: str) -> bool:
+    """Fill one of the skeleton's placeholder constants in `review.py`.
+
+    A lambda for the replacement, not a string: the planted text is prose and
+    `re.sub` would read a backslash or a `\\g` in it as a group reference.
+    """
+    recipe = where / "review.py"
+    source = recipe.read_text(encoding="utf-8")
+    swapped = re.sub(rf'{name} = "<.*?>"', lambda _: f'{name} = "{value}"',
+                     source, flags=re.S)
+    if swapped == source:
+        return False
+    recipe.write_text(swapped, encoding="utf-8")
+    return True
+
+
+def prove_form_refusal(where: Path) -> str | None:
+    """`--greybox` refuses while FORM is unwritten, and says what it is for.
+
+    The same refusal `DESCRIPTION` already carries, for the same reason: the
+    unfilled case and the filled case look identical from the outside, and
+    only one of them is a review. It is asserted separately from the
+    description's because the two fire on different runs -- this one only on
+    the greybox path, since gate 5 never interpolates FORM.
+
+    DESCRIPTION is planted first so that the refusal under test is reached at
+    all: `check_written` asks about the description before it asks about the
+    form, and a fixture with neither written would prove the wrong one.
+    """
+    if not plant(where, "DESCRIPTION", DESCRIBED):
+        return "FAIL: could not plant a DESCRIPTION in the fixture's review.py"
+
+    done = subprocess.run(
+        [sys.executable, "-m", f"buildings._selftest_{KIND}.review", "--greybox"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
+    if done.returncode == 0:
+        return ("FAIL: the greybox review ran with FORM still the skeleton's "
+                "placeholder")
+    text = (done.stdout or "") + (done.stderr or "")
+    if "FORM" not in text or "how many parts" not in text:
+        return ("FAIL: the refusal did not name FORM or say what it is for, "
+                "which is the half a reader acts on:\n" + text)
+    return None
+
+
 def prove_textured_skip(where: Path) -> str | None:
     """The reference's textured pass does not reach the greybox reviewer.
 
@@ -200,20 +262,17 @@ def prove_textured_skip(where: Path) -> str | None:
     for -- the solid pass copied, the textured pass not -- plus the prompt
     around it, since a folder with no windows in it and a prompt that says
     "glazing" is the same defect one step later.
+
+    The prompt half also asserts which field it was built from. FORM's own
+    sentence has to be there and DESCRIPTION's has to be absent, so a prompt
+    that went back to interpolating the description fails here even if the
+    description it was handed happened to be clean.
+
+    Runs after `prove_form_refusal`, which is what leaves DESCRIPTION filled
+    in: the review refuses on that field before it looks at this one.
     """
-    recipe = where / "review.py"
-    text = recipe.read_text(encoding="utf-8")
-    # A description with one clean sentence and one about finish. The
-    # skeleton asks an author for both, so this is what a filled-in
-    # DESCRIPTION actually looks like.
-    planted = ('DESCRIPTION = "Three boxes stand in a row, the middle one '
-               'taller than its neighbours. " \\\n'
-               '              "They are clad in white concrete with glazed '
-               'bays along the long face."')
-    swapped = re.sub(r'DESCRIPTION = "<.*?>"', planted, text, flags=re.S)
-    if swapped == text:
-        return "FAIL: could not plant a DESCRIPTION in the fixture's review.py"
-    recipe.write_text(swapped, encoding="utf-8")
+    if not plant(where, "FORM", FORMED):
+        return "FAIL: could not plant a FORM in the fixture's review.py"
 
     module = importlib.import_module(f"buildings._selftest_{KIND}.review")
     importlib.reload(module)
@@ -243,9 +302,12 @@ def prove_textured_skip(where: Path) -> str | None:
     if leaked:
         return ("FAIL: the greybox prompt points at finish: "
                 + ", ".join(leaked))
-    if "three boxes stand in a row" not in prompt:
-        return ("FAIL: the greybox prompt dropped the whole description; the "
-                "reviewer is left to guess how many parts it should see")
+    if "three plain rectangles stand in a row" not in prompt:
+        return ("FAIL: the greybox prompt does not carry FORM; the reviewer is "
+                "left to guess how many parts it should see")
+    if "three boxes stand in a row" in prompt:
+        return ("FAIL: the greybox prompt carries DESCRIPTION, which is written "
+                "to name material and belongs to gate 5")
     return None
 
 
@@ -315,12 +377,18 @@ def main() -> int:
             print(failed)
             return 1
 
+        failed = prove_form_refusal(where)
+        if failed:
+            print(failed)
+            return 1
+        print("  the greybox review refuses an unwritten FORM")
+
         failed = prove_textured_skip(where)
         if failed:
             print(failed)
             return 1
         print("  the greybox review takes the solid reference pass and not "
-              "the textured one, and its prompt names no finish")
+              "the textured one, and its prompt carries FORM and no finish")
 
         n_parts = len(json.loads(
             (where / "out" / "derived.json").read_text(encoding="utf-8"))["parts"])
