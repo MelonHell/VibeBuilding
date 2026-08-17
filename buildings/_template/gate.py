@@ -191,9 +191,10 @@ FACADES: dict[str, tuple[str, ...]] = {
 UNIFORM = False
 
 # The ground this building stands on, by surface and the height band it lies in.
-# The clip the section is cut against throws the grounds away by construction, so
-# without this the deck, the road and the beach can be any size and any shape and
-# every other row stays green. It has happened twice.
+# The clip is of the site, so the mesh can hold the deck and the road; it still
+# does not witness their shape. Without this table they can be any size and any
+# shape and every other row stays green. It has happened twice. The clip-holds
+# row asks a different question -- whether the mesh reached the build at all.
 GROUNDS: dict[str, tuple[float, float]] = {
     # "deck": (1.5, 3.0),
 }
@@ -219,6 +220,8 @@ PLATEAUS: dict[str, str] = {
 UNMEASURED: dict[str, str] = {
     # "pool_house": "photos/A11795157_35.jpeg shows it; the capture's clip
     #                stops twelve metres short of it",
+    # "planting": "trees twenty metres tall, placed by a colour class; the
+    #              capture holds the canopy and the plan never drew them",
 }
 
 

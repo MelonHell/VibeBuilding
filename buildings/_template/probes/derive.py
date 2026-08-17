@@ -179,7 +179,11 @@ MATCH_FLOOR = 0.30
 # Both are stated rather than guessed, and both are printed with what they threw
 # away. A threshold that quietly ate a wing reads exactly like one that quietly
 # ate a hedge, and the only defence is the count.
-PART_LEAST_AREA = 40.0        # square metres
+#
+# Area is cells on the plan grid after the reference footprint is resampled
+# through the registration -- not cells on the reference's own grid. One cell
+# is one metre.
+PART_LEAST_AREA = 40.0
 PART_LEAST_HEIGHT = 2.5       # metres above the datum
 
 # The model's own axes and units. An OBJ carries neither, so both are stated
