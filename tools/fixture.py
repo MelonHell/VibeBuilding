@@ -79,10 +79,25 @@ def unrotate(x: float, z: float) -> tuple[float, float]:
 
 
 def extent() -> tuple[float, float, int, int]:
-    """Where to put the origin, and how big the crop has to be."""
-    u1 = max(p[2] for p in PARTS)
-    v1 = max(p[4] for p in PARTS)
-    corners = [rotate(u, v) for u in (0.0, u1) for v in (0.0, v1)]
+    """Where to put the origin, and how big the crop has to be.
+
+    Sized to the **site** and not to the two wings the map draws. The crop used
+    to stop `MARGIN` past the building, which left the outbuilding hanging over
+    its north edge -- eleven cells of a three-hundred-cell footprint -- and a
+    footprint the plan's canvas cannot hold is a footprint `Survey.assemble`
+    now refuses outright, because a build redraws a part as a rectangle on its
+    measured extent. Widening the canvas is the fixture taking its own advice:
+    the refusal says "widen the crop the plan was drawn on".
+
+    The map still paints only `PARTS`. What grew is the sheet, not the drawing,
+    and the case the fixture exists for -- a building in the capture that the
+    map never drew -- is intact.
+    """
+    boxes = [(p[1], p[2], p[3], p[4]) for p in PARTS]
+    boxes.append(OUTBUILDING[:4])
+    corners = [rotate(u, v)
+               for u0, u1, v0, v1 in boxes
+               for u in (u0, u1) for v in (v0, v1)]
     x0 = min(x for x, _ in corners) - MARGIN
     z0 = min(z for _, z in corners) - MARGIN
     width = int(max(x for x, _ in corners) - x0) + MARGIN + 1
@@ -192,13 +207,12 @@ def write_mesh(path: Path) -> None:
             out.write(f"v {x - x0:.3f} {y:.3f} {z - z0:.3f}\n")
 
         # The ground the capture brought with it, which every reader has to
-        # discard for itself. The crop is sized to the two wings so the map
-        # stays a crop of the building; the outbuilding sits north of that
-        # box (negative z after the origin shift). A capture of the site
-        # still brings the ground that outbuilding stands on -- without it
-        # the mesh AABB stops at the outbuilding's skin, and a modelled
-        # build's apron sits past the reference for want of a clip, not
-        # for want of a building.
+        # discard for itself. It reaches `MARGIN` past the outbuilding as well
+        # as past the wings: without that the mesh AABB stops at the
+        # outbuilding's skin, and a modelled build's apron sits past the
+        # reference for want of a clip rather than for want of a building.
+        # `extent` already covers the outbuilding, so this is only the margin
+        # on top of it.
         gx0, gz0 = 0.0, 0.0
         gx1, gz1 = float(width), float(length)
         ou0, ou1, ov0, ov1, _ = OUTBUILDING

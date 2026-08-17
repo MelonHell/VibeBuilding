@@ -396,18 +396,6 @@ def _texture_lines(what: str, found: dict, against: float | None) -> list[str]:
 
 CLIP_BOX_SAME = 1.0
 
-# How much of a reference part has to land on the plan's grid before what
-# landed is that part. The grid is the drawn source's own canvas -- a map crop,
-# a vector plan's extent -- and a capture of a site regularly reaches past it.
-#
-# Half, and the reason is not the missing half: it is what the surviving half
-# claims to be. A build redraws a part as a rectangle on its measured
-# `u0..u1, v0..v1`, so a footprint cut down to a fifteen-cell sliver at the edge
-# of the crop arrives as a fifteen-cell *building*, correctly named, with a
-# provenance saying the capture measured it. Every row then grades that. The
-# part is better refused and named, which is what `off_plan` is for.
-ON_THE_PLAN = 0.5
-
 # How far the two frames' bearings may stand apart before the canonical fits
 # stop settling which way round they are. `gate.Registration` says it in its own
 # docstring: `Frame.fit` points +u into the eastern half-plane, "which settles
@@ -816,18 +804,37 @@ class Survey:
         loose, gone = [], []
         for piece, top, (mask, off) in zip(extra.parts, extra.tops, here):
             here_cells = mask.count()
-            # A piece the drawn source's canvas has eaten. Not only one that
-            # missed it entirely: a piece reduced to a sliver at the edge of the
-            # crop would be named, built and graded at the size of the sliver.
-            # See `ON_THE_PLAN`.
-            if here_cells < ON_THE_PLAN * (here_cells + off):
+            # A piece the drawn source's canvas has bitten, by any amount.
+            #
+            # The grid is the drawn source's own canvas -- a map crop, a vector
+            # plan's extent -- and a capture of a site regularly reaches past
+            # it. What matters is not the missing part but what the surviving
+            # part then claims to be: a build redraws a part as a rectangle on
+            # its measured `u0..u1, v0..v1`, so a footprint cut down at the edge
+            # of the crop arrives as a *building* of that size, correctly named,
+            # with a provenance saying the capture measured it, and every row
+            # below grades it. That is the fault this whole plan exists to
+            # abolish -- built and graded against a plan that is itself wrong,
+            # with nothing saying so.
+            #
+            # There used to be a half-way bar here, admitting a part with 51 per
+            # cent of its cells and marking the rest in `assembly.added[]`,
+            # where no row reads it. A mark is the same defect at half strength.
+            # So: refused and named, which is what `off_plan` is for, and the
+            # two exits that make the number right are the crop and the clip --
+            # widen the one the plan was drawn on, or clip the reference to what
+            # that crop covers. There is deliberately no table for admitting a
+            # truncated part: `UNMEASURED` admits a *missing* measurement and
+            # says so, while this would admit a measurement known to be wrong,
+            # and a piece refused here has no name to key such a table by.
+            if off:
                 gone.append((piece, top, here_cells, off))
                 continue
             best = max((iou(mask, part.mask) for part in drawn), default=0.0)
             if best >= floor:
                 record["matched"] += 1
             else:
-                loose.append((mask, top, best, off))
+                loose.append((mask, top, best))
 
         # Named rather than dropped. There is nowhere on this plan to put one,
         # and the canvas is what the schematic is cut to, so saying how much of
@@ -842,7 +849,7 @@ class Survey:
         # part's cells on the plan. One cell is one metre.
         kept, dropped = [], []
         for item in loose:
-            mask, top, _, _ = item
+            mask, top, _ = item
             area = mask.count()
             if area < self.t.PART_LEAST_AREA or top < self.t.PART_LEAST_HEIGHT:
                 dropped.append((area, top))
@@ -891,7 +898,7 @@ class Survey:
                 f"draw, and CAPTURE_PARTS names {len(names)}.\n"
                 + "".join(f"    {m.count()} cells, {t:.1f} m tall, best overlap "
                           f"with anything drawn {b:.2f}\n"
-                          for m, t, b, _ in loose)
+                          for m, t, b in loose)
                 + "Name them all in the order printed, largest first, or empty "
                   "the table to have them called capture-1 and so on. A partial "
                   "list would put the wrong name on the wrong part.")
@@ -909,14 +916,16 @@ class Survey:
         provenance = dict(read.provenance)
         site = read.site
         added = []
-        for name, (mask, top, best, off) in zip(names, loose):
+        for name, (mask, top, best) in zip(names, loose):
             named[name] = Part(mask, read.frame)
             order.append(name)
             provenance[name] = reference.name
             site = mask if site is None else site | mask
+            # No `clipped` here: a piece the canvas bit is refused above, so
+            # every part that gets this far is whole. The key it used to carry
+            # was a number no row read.
             added.append({"name": name, "cells": mask.count(),
-                          "top": round(top, 1), "overlap": round(best, 2),
-                          "clipped": off})
+                          "top": round(top, 1), "overlap": round(best, 2)})
         record["added"] = added
 
         joined = Read(read.source, read.frame, named, order,
@@ -2245,15 +2254,14 @@ class Survey:
             for one in a.get("added", []):
                 lines.append(
                     f"  {one['name']:15s} {one['cells']:5d} cells to "
-                    f"{one['top']:5.1f} m, best overlap {one['overlap']:.2f}"
-                    + (f", {one['clipped']} cell(s) past the plan's canvas"
-                       if one["clipped"] else ""))
+                    f"{one['top']:5.1f} m, best overlap {one['overlap']:.2f}")
             for one in a.get("off_plan", []):
                 lines.append(
                     f"  {'':15s} {one['cells']:5d} cells to {one['top']:5.1f} m "
                     f"reach the plan's canvas at {one['on_the_plan']} cell(s), "
-                    f"{one['past']} past it -- too little of it is on this plan "
-                    "to be a part of it. Widen the crop the plan was drawn on, "
+                    f"{one['past']} past it -- a part the canvas bit is a part "
+                    "the build would redraw at the size of what survived. "
+                    "Widen the crop the plan was drawn on, "
                     "or clip the reference to what that crop covers")
             lines.append("")
 

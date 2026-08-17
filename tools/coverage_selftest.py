@@ -66,23 +66,29 @@ ANNEX = (30.0, 50.0, -27.0, -15.0, 7.0)
 ANNEX_FLOOR = 7.5
 
 # How far a face of an assembled part may stand from where the fixture drew it.
-# Four metres, which is the sum of the four things that legitimately move a face
-# here and not a metre more:
+# Five metres. The five things that legitimately move the worst face -- the one
+# nearest the main block -- add up to about 4.2:
 #
 #   0.5   the capture's surface stands `fixture.SKIN` outside the drawn face,
-#         on each face, the way photogrammetry stands on the outside of a wall
-#   1.4   the registration is fitted on the two wings and this part sits
-#         fifteen metres past them. Its v scale is 1.035 -- which is mostly
-#         that same skin, read as a scale over a 35 m depth -- and carrying it
-#         27 m out moves the far face about 0.9, with 0.45 more across the
-#         part's own depth
+#         the way photogrammetry stands on the outside of a wall
+#   1.5   the registration, extrapolated. It is fitted on the two wings, over
+#         mesh v -0.7..35.6 against plan v 0.3..35.3, and this part sits
+#         fifteen metres beyond that span; carrying a 1.035 scale and a
+#         one-metre offset out there pulls the near face about 1.5 inward
+#   1.0   the plan grid, whose cells are a metre and whose mask extent is
+#         measured over whole ones
+#   0.5   `on_the_plan` samples backwards by cell centre, so a boundary cell
+#         is in or out by half a cell
 #   0.7   the lattice snap, at the ends of the building
-#   1.4   a cell of the frame's own staircase, at each end of each axis
 #
-# The run comes in at 3.7 on the far v face, inside the sum rather than fitted
-# to it. The failure this bounds is a part at the wrong end of an eighty-metre
-# building, which is sixty metres out -- fifteen times this.
-PLACED_WITHIN = 4.0
+# The run comes in at 4.2, and the bar is over the sum rather than on it
+# because the fixture's own rasterisation moves the answer: widening the crop
+# to hold the site re-sampled the painted mass at a different sub-pixel offset
+# and shifted this face by half a metre without anything else changing.
+#
+# The failure this bounds is a part at the wrong end of an eighty-metre
+# building, which is sixty metres out -- twelve times this.
+PLACED_WITHIN = 5.0
 
 
 def _rect(width: int, length: int, x0: int, x1: int, z0: int, z1: int) -> Mask:
@@ -445,6 +451,51 @@ def prove_orientation_stop() -> str | None:
             shutil.rmtree(tmp, ignore_errors=True)
 
     print("orientation stop: refuses a part it cannot place, and only then",
+          flush=True)
+    return None
+
+
+def prove_canvas_bite() -> str | None:
+    """A part the plan's canvas bit is refused, whatever fraction survived.
+
+    A build redraws a part as a rectangle on its measured `u0..u1, v0..v1`, so a
+    footprint cut at the edge of the crop arrives as a *building* of that size,
+    correctly named, with a provenance saying the capture measured it -- and
+    every row below grades it. There used to be a half-way bar: over half its
+    cells on the canvas and the part was admitted with the remainder written to
+    `assembly.added[].clipped`, which no gate row reads. A mark is the same
+    defect at half strength.
+
+    The block here keeps about three fifths of its footprint, which is what the
+    old bar admitted, so this case fails the moment the bar comes back.
+    """
+    tmp = ROOT / "buildings" / "_selftest_canvasbite"
+    try:
+        joined, out = _assembled(tmp, [(5.0, 25.0, 5.0, 15.0, 12.0),
+                                       (45.0, 70.0, 20.0, 32.0, 6.0)], 0.0)
+        record = out.get("assembly") or {}
+        bitten = record.get("off_plan") or []
+        if len(bitten) != 1:
+            return (f"FAIL: one piece should have been refused for reaching "
+                    f"past the canvas, got {record!r}")
+        one = bitten[0]
+        if not one.get("past") or not one.get("on_the_plan"):
+            return (f"FAIL: the case needs a piece that is partly on the "
+                    f"canvas and partly past it -- a total miss proves nothing "
+                    f"about the bar this replaces -- got {one!r}")
+        if one["on_the_plan"] < one["past"]:
+            return (f"FAIL: this piece keeps {one['on_the_plan']} cells against "
+                    f"{one['past']} past, which the old half-way bar would have "
+                    "refused too; the case has stopped testing the change")
+        if record.get("extra") or record.get("added"):
+            return (f"FAIL: a bitten piece was admitted anyway: {record!r}")
+        if len(joined.order) != 1:
+            return (f"FAIL: the bitten piece reached the plan: {joined.order}")
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    print("canvas bite: a footprint the canvas cut is refused, not marked",
           flush=True)
     return None
 
@@ -830,9 +881,9 @@ def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
         missed = (prove_coverage_row() or prove_orientation()
-                  or prove_orientation_stop() or prove_register_floor()
-                  or prove_thresholds() or prove_site_covered()
-                  or prove_clip_up())
+                  or prove_orientation_stop() or prove_canvas_bite()
+                  or prove_register_floor() or prove_thresholds()
+                  or prove_site_covered() or prove_clip_up())
         if missed:
             print(missed)
             return 1
