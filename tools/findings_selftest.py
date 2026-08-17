@@ -13,8 +13,10 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from blockwright import findings
+from blockwright.reviewing import LEFTOVER, Review
 
 LEDGER = """\
 # fixture -- review journal
@@ -235,15 +237,71 @@ def main() -> int:
             return fail("audit invented a stale rejection")
         if any("no ledger headings" in line for line in said):
             return fail("audit did not read a well-formed ledger")
+        if any("no gate sections" in line for line in said):
+            return fail("audit invented a missing gate on a journal that has one")
 
         # A round with no gate heading over it is not a thing, and must not
-        # be counted under every gate the next reader asks about.
+        # be counted under every gate the next reader asks about. The audit
+        # has to say so: dropping the rounds and staying silent is how a
+        # loop that never closed looks finished.
         path.write_text(
             "### Round 1 -- agent\n- F-01 stray\n", encoding="utf-8")
         if findings.rounds(path):
             return fail("rounds() accepted a round outside a gate")
+        said = findings.audit(path)
+        if not any("no gate sections, so the loops cannot be judged" in line
+                   for line in said):
+            return fail("audit was silent about a chronicle with no gate")
+
+        if prove_clear(Path(tmp) / "frozen") != 0:
+            return 1
 
     print("ledger parses, audit catches all four")
+    return 0
+
+
+def prove_clear(here: Path) -> int:
+    """What `clear` does to a directory that still holds an old-form journal.
+
+    The freeze is that the text is not rewritten and is not the new file.
+    Destroying it is not the freeze.
+    """
+    review = here / "out" / "review"
+    review.mkdir(parents=True)
+    old = ("# 009 -- review ledger\n\n"
+           "### F-01 | built | round 1 | seen 1\n"
+           "**The open two-storey base is missing.**\n")
+    leftover = review / "findings.md"
+    leftover.write_text(old, encoding="utf-8")
+    (review / "01-high-front.build.png").write_bytes(b"png")
+    (review / "prompt.txt").write_text("old prompt", encoding="utf-8")
+
+    paths = SimpleNamespace(HERE=here, OUT=here / "out",
+                            FINDINGS=here / "findings.md")
+    Review(paths, (), "a building", where=review).clear()
+
+    aside = here / LEFTOVER
+    if not aside.is_file():
+        return fail("clear() did not move the leftover journal out of out/")
+    if aside.read_text(encoding="utf-8") != old:
+        return fail("clear() rewrote the leftover journal")
+    if (here / "findings.md").exists():
+        return fail("clear() migrated the leftover onto the new journal path")
+    if leftover.exists():
+        return fail("clear() left findings.md in the review folder after a move")
+    if (review / "01-high-front.build.png").exists():
+        return fail("clear() left a render in the review folder")
+    if (review / "prompt.txt").exists():
+        return fail("clear() left prompt.txt in the review folder")
+    print(f"  leftover journal moved to {aside.name}, text unchanged")
+
+    leftover.write_text(old, encoding="utf-8")
+    Review(paths, (), "a building", where=review).clear()
+    if aside.read_text(encoding="utf-8") != old:
+        return fail("a second clear() overwrote the copy already moved aside")
+    if not leftover.is_file() or leftover.read_text(encoding="utf-8") != old:
+        return fail("a second clear() unlinked the leftover it no longer owns")
+    print("  second clear() left both copies alone")
     return 0
 
 

@@ -37,12 +37,14 @@ from .schem import Schematic
 
 
 
-# What the reviewer is told, and where a leftover journal used to sit. The
-# journal is the building's `findings.md`, above `out/` -- nothing rebuilds it,
-# so it cannot live in a folder the method document invites you to delete.
-# `FINDINGS` is only the stale filename `clear` still deletes if one is here.
+# What the reviewer is told, and the stale filename a leftover journal
+# still has in this folder. The journal is the building's `findings.md`,
+# above `out/` -- nothing rebuilds it, so this folder no longer owns one.
+# `clear` must not unlink the name: for two frozen buildings it is the
+# only copy.
 PROMPT_FILE = "prompt.txt"
 FINDINGS = "findings.md"
+LEFTOVER = "findings.leftover.md"
 
 
 SIZE = (1280, 720)
@@ -717,20 +719,49 @@ class Review:
             print(f"           {shot.name}: eye at u {fu:+.2f}, v {fv:+.2f}, "
                   f"{height:.0f} m up -- {', '.join(where)}; nearest {names}")
 
+    def _shown(self, path: Path) -> Path:
+        try:
+            return path.relative_to(self.repo)
+        except ValueError:
+            return path
+
+    def _set_aside(self, leftover: Path) -> None:
+        """Move a leftover journal out of `out/` once, without reading it.
+
+        The freeze is that the old text is not rewritten and is not the new
+        journal. Putting it above `out/` is the cheap half of that: `out/` is
+        the folder the method document invites you to delete, and leaving the
+        only copy there is how it dies on the next tidy.
+        """
+        aside = Path(self.paths.HERE) / LEFTOVER
+        if aside.exists():
+            print(f"[review] leftover journal still at {self._shown(leftover)}; "
+                  f"{self._shown(aside)} already holds the copy that was moved "
+                  "out of this folder, so this file is left alone")
+            return
+        leftover.replace(aside)
+        print(f"[review] moved {self._shown(leftover)} to {self._shown(aside)} "
+              "-- this folder no longer owns the journal, and the text was "
+              "not rewritten")
+
     def clear(self) -> None:
-        """Empty the review folder, including a leftover findings.md.
+        """Empty the review folder. Does not unlink a leftover findings.md.
 
         A folder that accumulates is a folder where last week's render of a
         viewpoint that no longer exists sits beside this week's, gets counted in the
         prompt, and is read by a reviewer who was told that every numbered pair is
-        the same camera in two models. The journal is the building's
-        `findings.md`, above `out/`; a leftover file in this folder would
-        contradict that, so one is deleted if it is still here.
+        the same camera in two models. The journal used to live here. It does
+        not any more, and for two frozen buildings this file is the only copy.
+        Deleting it is not leaving the freeze alone -- it is destroying the
+        freeze. Move it out of `out/` once and leave the text as it is.
         """
         if not self.out.is_dir():
             return
+        leftover = self.out / FINDINGS
+        if leftover.is_file():
+            self._set_aside(leftover)
         for stale in self.out.iterdir():
-            if stale.is_file():
+            if stale.is_file() and stale.name != FINDINGS:
                 stale.unlink()
         # `rounds/` is a directory and survives by being one, which is the kind
         # of accident that stops being true the day somebody makes this
@@ -1227,4 +1258,4 @@ class Review:
         return 0
 
 
-__all__ = ["FINDINGS", "Outside", "PROMPT_FILE", "Review", "Shot"]
+__all__ = ["FINDINGS", "LEFTOVER", "Outside", "PROMPT_FILE", "Review", "Shot"]

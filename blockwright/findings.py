@@ -202,12 +202,18 @@ def audit(path: str | Path, after: int = 0) -> list[str]:
     if not path.exists():
         return ["  no findings yet"]
 
+    text = path.read_text(encoding="utf-8")
+    gateless = bool(ROUND.search(text) and not GATE.search(text))
+
     found = read(path)
     if not found:
-        return ["  findings.md has no ledger headings, so nothing in it can be "
-                "tracked between rounds.",
-                "  Give each finding a heading: "
-                "`### F-01 | open | gate 4 | round 1 | seen 1`"]
+        out = ["  findings.md has no ledger headings, so nothing in it can be "
+               "tracked between rounds.",
+               "  Give each finding a heading: "
+               "`### F-01 | open | gate 4 | round 1 | seen 1`"]
+        if gateless:
+            out.append("  no gate sections, so the loops cannot be judged")
+        return out
 
     tally = {state: 0 for state in DISPOSITIONS}
     unknown = []
@@ -238,6 +244,8 @@ def audit(path: str | Path, after: int = 0) -> list[str]:
     # Checked per gate: a finished gate 4 followed by an abandoned gate 5 is
     # two facts, and a chronicle that forgot which heading a round sat under
     # would collapse them into one.
+    if gateless:
+        out.append("  no gate sections, so the loops cannot be judged")
     chronicle = rounds(path)
     seen_gates: list[int] = []
     for rec in chronicle:
