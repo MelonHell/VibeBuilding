@@ -134,6 +134,7 @@ def prove_coverage_row() -> str | None:
     away = _rect(w, l, 14, 18, 14, 18)
     measured = {"plan": "map", "height": "capture", "witness": "section"}
     blank = {"plan": "declared", "height": "none", "witness": "none"}
+    typed = {"plan": "declared", "height": "declared", "witness": "none"}
     front = {"name": "front", "provenance": measured, "mask": plan}
     skeleton = ["podium", "shell", "floors", "glazing", "parapets"]
     short = {
@@ -149,15 +150,29 @@ def prove_coverage_row() -> str | None:
         return f"FAIL: skeleton should be green, got {green.line()}"
     if "carry a measured footprint" in green.detail or "all 2 plan" in green.detail:
         return f"FAIL: pass text still counts unexamined parts: {green.detail}"
-    if "nothing stands unmeasured" not in green.detail:
+    if "nothing this row examined stands unmeasured" not in green.detail:
         return f"FAIL: green detail does not say what was found: {green.detail}"
+    # The pass sentence has to name what it did not look at. `podium` at one
+    # course and `parapets` at one course are both under a storey, and a
+    # genuinely single-storey pool house built freehand would print here too.
+    if "Not examined" not in green.detail:
+        return (f"FAIL: the pass text claims more than the row examined -- it "
+                f"skipped two declarations under a storey and said nothing: "
+                f"{green.detail}")
+    for name in ("podium", "parapets"):
+        if name not in green.detail.split("Not examined")[1]:
+            return (f"FAIL: {name} stands under a storey and is not named as "
+                    f"unexamined: {green.detail}")
 
     red = _grade([front], skeleton + ["villas"],
                  {**short, "villas": (away, 0, 14)})
     if red.ok is not False or "villas" not in red.detail:
         return f"FAIL: villas 14 m off the plan should be red, got {red.line()}"
+    # The accusation, not the aside: a name in "Not examined" is the row
+    # saying it did not look, which is the opposite of an accusation.
+    accused = red.detail.split("Not examined")[0]
     for name in skeleton:
-        if name in red.detail:
+        if name in accused:
             return f"FAIL: {name} was accused: {red.detail}"
     if "declare their sizes" in red.detail:
         return f"FAIL: fail text still sends the reader to DECLARED_*: {red.detail}"
@@ -207,6 +222,43 @@ def prove_coverage_row() -> str | None:
                      ["front"], {})
         if one.ok is not True:
             return f"FAIL: {cover} should cover, got {one.line()}"
+
+    # The same facts through each entrance. A part whose footprint and height
+    # are both declarations is neither measured nor unaccounted for, and the
+    # two entrances used to disagree about which: red when the schedule shared
+    # its name, green when the schedule called it something else and the
+    # geometric test found its footprint on "the plan".
+    by_name = _grade([{"name": "front", "provenance": typed, "mask": plan}],
+                     ["front"], {})
+    by_shape = _grade([{"name": "front", "provenance": typed, "mask": plan}],
+                      ["hall"], {"hall": (on_plan, 0, 12)})
+    if by_name.ok is not None or by_shape.ok is not None:
+        return (f"FAIL: a wholly declared part should be ungraded by both "
+                f"entrances; by name {by_name.line()} / by shape "
+                f"{by_shape.line()}")
+    for one in (by_name, by_shape):
+        if "declarations" not in one.detail:
+            return f"FAIL: the ungraded row does not say why: {one.detail}"
+    # And the measured counterpart of the second, so the geometric entrance is
+    # not simply refusing everything.
+    on_measured = _grade([front], ["hall"], {"hall": (on_plan, 0, 12)})
+    if on_measured.ok is not True:
+        return (f"FAIL: a section standing on a measured part of the plan "
+                f"should be green, got {on_measured.line()}")
+
+    # A storey nothing states. `storeys_of` writes spacing 0.0 for a described
+    # building with no DECLARED_STOREY, and the height gate then read "taller
+    # than 0 m" and printed "taller than 1 storey (0.00 m here)".
+    unknown = _grade([front], ["villas"], {"villas": (away, 0, 14)},
+                     spacing=0.0)
+    if unknown.ok is not None:
+        return (f"FAIL: with no storey stated the geometric test cannot run "
+                f"and the row must say so, got {unknown.line()}")
+    if "0.00 m" in unknown.detail:
+        return (f"FAIL: the row still prints a storey of zero as a threshold: "
+                f"{unknown.detail}")
+    if "storey height" not in unknown.detail:
+        return f"FAIL: the row does not name the missing storey: {unknown.detail}"
 
     print("coverage row: green, red, ungraded, and the geometric line hold",
           flush=True)
