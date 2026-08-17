@@ -22,6 +22,16 @@ build; how they were arrived at is the building's business.
 The one thing this class insists on is that the plan being built is the plan that
 was measured. That check used to be copied by hand, and a copy that goes stale
 is worse than no check at all.
+
+**Which `Site` a new building gets is not this one.** The frozen packages under
+`buildings/` subclass this class; `buildings/_template` owns a fork of it, and a
+new building is copied from the template, so the fork is what a new building
+inherits and this file is what fourteen buildings that no longer run inherited.
+The two have drifted -- `CLOSE` here is a half-metre morphological closing and
+`CLOSE` there is a nanometre against a half-open edge, one name for two things --
+and they are not being merged: a mechanical merge moves every part of every
+building by half a metre. See `docs/backlog.md`, "`CLOSE` -- одно имя, два
+смысла". Read the template's `Site` when the question is what a build does now.
 """
 
 from __future__ import annotations
