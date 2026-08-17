@@ -87,8 +87,14 @@ DECLARED_PLAN = [
 
 # Same floors as the mapped branch, and for the same reason: the 6 m
 # outbuilding is not on the vector plan, and a floor below its roof would
-# register that extra mass as a stretched axis. The hole that documents is
-# coverage_selftest's, not this harness's.
+# register that extra mass as a stretched axis.
+#
+# `coverage_selftest.prove_register_floor` is where that is proved rather than
+# assumed. It puts a 7 m block on the parcel that the map never drew, watches
+# the fit stretch and the run stop, and watches both accessory volumes stay
+# measured once the two floors are raised over it. Until that existed nothing
+# covered it anywhere: this harness sets the floors so the case cannot arise,
+# and `coverage_selftest` runs the same mapped fixture on the same defaults.
 VECTOR = """
 MODEL_PARTS = ("front", "back")
 MESH_FLOOR = 6.0
@@ -187,11 +193,24 @@ def make(kind: str, extra: str, wants: tuple[str, ...]) -> Path:
     derive.write_text(text.replace(anchor, extra + "\n\n" + anchor, 1),
                       encoding="utf-8")
     if kind == "modelled":
-        # Same-file registration is skipped, so the gate falls back to
-        # REGISTER_AT. At the template's 0.5 that floor is 6 m -- exactly the
-        # outbuilding's roof -- and the mesh side of the fit drops it while
-        # the build still has it. A storey lower keeps both sides on the
-        # same three volumes.
+        # Same-file registration, so `derive` wrote none and the gate falls back
+        # to `Registration.fit`, whose ceiling is REGISTER_AT times the build's
+        # own top.
+        #
+        # The template's top is 13 m: the 12 m front plus the parapet course
+        # this skeleton lays over every part. So 0.5 puts the ceiling at 6.5,
+        # and 6.5 falls between the reference's outbuilding roof at 6.0 and the
+        # parapet the same skeleton lays over that outbuilding at 7.0. The mesh
+        # side of the fit then drops the outbuilding and the build side keeps
+        # it -- measured, mesh v 27.4..63.8 against build v -0.7..62.4, v scale
+        # 0.618 -- and the run fails on registration and on scale. 0.4 puts the
+        # ceiling at 5.2, under the roof, and both sides carry the same three
+        # volumes.
+        #
+        # This used to blame the roof for sitting "exactly at" the ceiling. It
+        # does not: the ceiling is 6.5 and the roof is 6.0. The parapet is what
+        # makes the two sides disagree, and it is also what raises the top the
+        # ceiling is a fraction of.
         gate_py = where / "gate.py"
         gtext = gate_py.read_text(encoding="utf-8")
         if "REGISTER_AT = 0.5" not in gtext:
