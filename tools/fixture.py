@@ -5,7 +5,9 @@
 Writes a map crop and a mesh of the same imaginary two-wing building: a long
 block twelve metres high, a lower wing eight metres high, a court between them,
 the whole thing turned thirty degrees off the axes so that every rasterisation
-question is live.
+question is live. The mesh also carries an outbuilding the map does not draw
+-- twenty by twelve, six metres high, fifteen metres clear of the main block
+-- so a survey that only reads the map can be caught missing it.
 
 It exists because the pipeline's own failure modes are hard to provoke on a real
 building and trivial to provoke here. A fixture that passes every stage proves
@@ -34,6 +36,14 @@ PARTS = (
     ("front", 0.0, 80.0, 0.0, 14.0, 12.0),
     ("back", 0.0, 80.0, 24.0, 34.0, 8.0),
 )
+
+# An outbuilding the map does not draw. It is the whole point of
+# `coverage_selftest`: a real site has a clubhouse, a pool house, a row of
+# villas that the plan crop never showed, and until something says so they are
+# built freehand and graded by nothing. Fifteen metres clear of the main block
+# so that no closing operation joins the two into one mass.
+OUTBUILDING = (0.0, 20.0, -27.0, -15.0, 6.0)   # u0, u1, v0, v1, top
+
 STOREY = 3.0            # metres floor to floor, what the rhythm should read
 
 # The map's palette, which `blockwright.template` reads back.
@@ -120,7 +130,10 @@ def write_mesh(path: Path) -> None:
             for j in range(0, length, 2):
                 out.write(f"v {float(i)} 0.000 {float(j)}\n")
 
-        for _, u0, u1, v0, v1, top in PARTS:
+        # PARTS is what the map draws. The outbuilding is written the same way
+        # -- a surface shell, not a solid -- so it still reads as a capture.
+        shells = [*PARTS, ("outbuilding",) + OUTBUILDING]
+        for _, u0, u1, v0, v1, top in shells:
             a, b = u0 - SKIN, u1 + SKIN
             c, d = v0 - SKIN, v1 + SKIN
             floors = [i * STOREY for i in range(int(top / STOREY) + 1)]

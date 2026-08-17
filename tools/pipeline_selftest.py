@@ -43,15 +43,17 @@ TEMPLATE = ROOT / "buildings" / "_template"
 
 # What each branch has to have written into its `derive.py` before it can run.
 # The fixture is 80 x 14 at 12 m and 80 x 10 at 8 m, thirty degrees off the
-# axes, with a floor line every 3 m -- see `tools/fixture.py`. Everything below
-# either names those parts or declares those numbers with a source, exactly as a
-# real building would.
+# axes, with a floor line every 3 m -- see `tools/fixture.py`. The mesh also
+# carries a 20 x 12 outbuilding at 6 m that the map and the vector plan do
+# not draw. The modelled branch names it, because there the mesh is the plan.
+# Everything below either names those parts or declares those numbers with a
+# source, exactly as a real building would.
 MAPPED = """
 STRIPS = ("front", "back")
 """
 
 MODELLED = """
-MODEL_PARTS = ("front", "back")
+MODEL_PARTS = ("front", "back", "outbuilding")
 MESH_FLOOR = 2.0
 REGISTER_FLOOR = 2.0
 """
@@ -77,10 +79,14 @@ DECLARED_STOREY = {
 }
 """
 
+# Same floors as the mapped branch, and for the same reason: the 6 m
+# outbuilding is not on the vector plan, and a floor below its roof would
+# register that extra mass as a stretched axis. The hole that documents is
+# coverage_selftest's, not this harness's.
 VECTOR = """
 MODEL_PARTS = ("front", "back")
-MESH_FLOOR = 2.0
-REGISTER_FLOOR = 2.0
+MESH_FLOOR = 6.0
+REGISTER_FLOOR = 6.0
 """
 
 BRIEF = """# The fixture
@@ -174,6 +180,20 @@ def make(kind: str, extra: str, wants: tuple[str, ...]) -> Path:
                          "this harness patches the file just above that line")
     derive.write_text(text.replace(anchor, extra + "\n\n" + anchor, 1),
                       encoding="utf-8")
+    if kind == "modelled":
+        # Same-file registration is skipped, so the gate falls back to
+        # REGISTER_AT. At the template's 0.5 that floor is 6 m -- exactly the
+        # outbuilding's roof -- and the mesh side of the fit drops it while
+        # the build still has it. A storey lower keeps both sides on the
+        # same three volumes.
+        gate_py = where / "gate.py"
+        gtext = gate_py.read_text(encoding="utf-8")
+        if "REGISTER_AT = 0.5" not in gtext:
+            raise SystemExit("the template's gate.py no longer sets "
+                             "REGISTER_AT = 0.5; this harness patches that line")
+        gate_py.write_text(
+            gtext.replace("REGISTER_AT = 0.5", "REGISTER_AT = 0.4", 1),
+            encoding="utf-8")
     build_inputs(where, wants)
     return where
 
