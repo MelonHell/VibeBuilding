@@ -2057,6 +2057,9 @@ class Grading:
             answer = _covering(p)
             if part is None or answer is None:
                 continue
+            if (part.mask.width, part.mask.length) != (whole.width,
+                                                       whole.length):
+                continue        # a part off this canvas cannot cover anything
             by_cover[answer] = by_cover[answer] | part.mask
         slack = self.slack(read)
         measured_plan = by_cover["measured"].dilate(slack)
