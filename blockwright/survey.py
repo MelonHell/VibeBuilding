@@ -532,6 +532,13 @@ class Survey:
             return
         if not any(self.paths.GE_EXPORT.iterdir()):
             return
+        if sources.witness_sentence(self.t.WITNESS) is not None:
+            # WITNESS drops both OBJ kinds from the evidence, so the converted
+            # file would be read by nothing. Ordering twenty minutes of
+            # conversion on a capture the building has already declared to be of
+            # a different building is this refusal working against its own
+            # purpose.
+            return
         raise SystemExit(
             f"{self.paths.GE_EXPORT} is here but {self.paths.MESH} is not: the capture has "
             "not been converted yet, so nothing can be measured off it.\n"

@@ -404,8 +404,29 @@ def prove_witness_ceiling(keep: bool = False) -> str | None:
             row = checks[name]
             if row.get("ok") is not None or reason not in (row.get("detail") or ""):
                 return f"FAIL: gate row {name} was not greyed with the sentence: {row}"
+    finally:
+        if not keep:
+            shutil.rmtree(where, ignore_errors=True)
+
+    # An unconverted ge-export beside a WITNESS that drops it. `unconverted`
+    # exists to tell "you did not supply a capture" from "you did not convert
+    # one", and under WITNESS it was ordering twenty minutes of conversion on a
+    # file the same building had already declared to be of something else.
+    where = make("witness", extra, ("layout.png",))
+    try:
+        (where / "input" / "ge-export").mkdir(parents=True, exist_ok=True)
+        (where / "input" / "ge-export" / "scene.xml").write_text(
+            "<not really a capture/>", encoding="utf-8")
+        code, said = run("witness", "probes.derive")
+        if "has not been converted" in said:
+            return ("FAIL: derive demanded conversion of a capture WITNESS "
+                    "drops:\n" + said[-1200:])
+        if code != 0:
+            return ("FAIL: witness-set derive with an unconverted export "
+                    "died:\n" + said[-1500:])
         print("witness ceiling: refusals hold; greying holds; "
-              "WITNESS drops the reference (section ungraded, heights declared)",
+              "WITNESS drops the reference (section ungraded, heights "
+              "declared) and stops demanding it be converted first",
               flush=True)
     finally:
         if not keep:

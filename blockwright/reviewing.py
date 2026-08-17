@@ -986,6 +986,20 @@ class Review:
         # a dropped reference stays dropped here too.
         reference = sources.survey(self.paths).reference
         if args.mesh:
+            dropped = derived.get("witness")
+            if reference is None and dropped:
+                # The files are on disk and are not evidence. Saying "there is
+                # none" here sends a reader to look for a missing OBJ they are
+                # standing on, and the honest sentence is the building's own.
+                raise SystemExit(
+                    "--mesh renders the reference geometry, and this building "
+                    "dropped its reference: WITNESS in probes/derive.py says "
+                    f"{dropped!r}\n"
+                    "The capture or the model may well be on disk; it is not "
+                    "evidence for this building, so rendering it beside the "
+                    "build would put two different buildings on one sheet. Run "
+                    "without --mesh, and the review is the build against the "
+                    "photographs and the drawings.")
             if reference is None:
                 raise SystemExit(
                     "--mesh renders the reference geometry, and there is none: no "
