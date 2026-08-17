@@ -175,13 +175,16 @@ class Site:
     def __init__(self, derived: dict):
         self.d = derived
         read = derive.plan_of()
-        # `site` and not `mass`: the plan is assembled, so it holds whatever the
-        # reference had and the drawn source did not -- a clubhouse, a pool
-        # house, a row of villas. `mass` is only what the drawn source painted,
-        # and building off it would put those parts up with no ground under
-        # them and nothing joining them to the rest.
-        self.mass, self.frame = read.site, read.frame
-        self.width, self.length = self.mass.width, self.mass.length
+        # Two masks, and which one a section wants is a real question.
+        #
+        #   `mass`  what the drawn source painted -- the building itself.
+        #   `site`  every cell the plan holds, including whatever the reference
+        #           had and the drawn source did not: a clubhouse, a pool house,
+        #           a row of villas. Ground laid to `mass` alone leaves those
+        #           standing in the air, joined to nothing.
+        self.mass, self.frame = read.mass, read.frame
+        self.site = read.site
+        self.width, self.length = self.site.width, self.site.length
         self.parts = read.named
 
         # Read the same way `probes/derive.py` read it, and checked against what
@@ -352,7 +355,15 @@ def ground(canvas: Canvas, site: Site, sched: Schedule) -> None:
     # half the building as blocks adrift from the main mass, which is true of
     # the schematic and false about the building. Closing by `COURT` bridges any
     # gap up to twice that and leaves every real opening alone.
-    pad = site.mass.dilate(COURT).erode(COURT).dilate(APRON)
+    #
+    # Over `site.site` and not `site.mass`: an assembled part -- one the
+    # reference held and the drawn source never drew -- is on the plan and has
+    # to be stood on. That is also what makes the closing bridge to it, and the
+    # bridging is the decision `COURT` states: a pool house fifteen metres off
+    # is inside "still one site" and comes out with paving between. A building
+    # that wants the lawn to stay a lawn lowers `COURT` below half the gap and
+    # answers `strays` some other way.
+    pad = site.site.dilate(COURT).erode(COURT).dilate(APRON)
     build.solid(canvas, pad, site.ground, site.ground + 1, PAVING)
     sched.declare("podium", pad, site.ground, site.ground + 1)
 

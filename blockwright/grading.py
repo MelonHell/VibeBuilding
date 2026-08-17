@@ -583,7 +583,13 @@ class Grading:
         `UNIFORM = True` was one word. The two now cost about the same to write
         and only one of them is checkable, which is the right way round.
         """
-        mask = self.drawn_mass(read) if hasattr(read, "named") else None
+        # The drawn mass, and this is the one row here that wants it. A facade
+        # mix is tallied over the outline of this mask inside a u span, and an
+        # assembled part sitting inside another part's u span puts its own wall
+        # columns into that part's facade -- on the fixture, a pool house at
+        # u 59..81 inside a block that runs u 0..80. The same reason
+        # `storeys_of` reads its bands off the drawn building.
+        mask = read.mass if hasattr(read, "mass") else None
         spans, source = self.facade_spans(read, derived)
         mixes = ({name: checks.facade_mix(model, mask, read.frame, u0, u1)
                   for name, (u0, u1) in spans.items()}
@@ -922,15 +928,21 @@ class Grading:
                   "bitten where the pool is, and every one of those is the "
                   "reading rather than the thing")
 
-    def drawn_mass(self, read) -> Mask:
+    def site_mass(self, read) -> Mask:
         """Every cell the plan holds, however this plan came to be read.
 
         `Read.site` and not `Read.mass`: the two differ by whatever
-        `Survey.assemble` put on the plan that the drawn source never drew, and
-        every use here wants the whole of it. A floor plate is clipped to this
-        before it is compared with a part, so a pool house left out of it comes
-        back as a hundred per cent of its own drawing unbuilt -- the loudest
-        possible failure, about a part standing there the whole time.
+        `Survey.assemble` put on the plan that the drawn source never drew. A
+        floor plate is clipped to this before it is compared with a part, so a
+        pool house left out of it comes back as a hundred per cent of its own
+        drawing unbuilt -- the loudest possible failure, about a part standing
+        there the whole time.
+
+        Named for the site and not for the drawing on purpose. It was
+        `drawn_mass` while the two were the same thing, and a helper called
+        `drawn` that answers with more than what was drawn is how the next
+        reader puts the wrong mask into the next row -- see `facades`, which
+        wants the drawn mass and says so.
         """
         mass = getattr(read, "site", None) or getattr(read, "mass", None)
         if mass is None:
@@ -946,7 +958,7 @@ class Grading:
         both a filled level -- and outside, the ground is laid to the edge of
         the plot and a storey is sky.
         """
-        mass = self.drawn_mass(read)
+        mass = self.site_mass(read)
         u0 = min(p.u0 for p in read.named.values())
         u1 = max(p.u1 for p in read.named.values())
         v0 = min(p.v0 for p in read.named.values())
@@ -1111,7 +1123,7 @@ class Grading:
         # plate disagrees in ones and twos and the wedge that shipped was 44.
         blob = self._("PLAN_BLOB", 12)
         beyond = self._("PLAN_OUTSIDE", None)
-        mass = self.drawn_mass(read)
+        mass = self.site_mass(read)
 
         plates, best = self.plates(
             model, read, {n: p.mask for n, p in read.named.items()})
@@ -1363,7 +1375,7 @@ class Grading:
         for name, part in read.named.items():
             keep(name, part.mask, "the map's own part")
 
-        mass = self.drawn_mass(read)
+        mass = self.site_mass(read)
         runs = (derived.get("wings") or {}).get("found") or []
         if runs:
             v0 = min(p.v0 for p in read.named.values()) - 8.0
@@ -1954,7 +1966,7 @@ class Grading:
                 "measured it; a bare True would turn the row off.")
 
         storey = float((derived.get("storeys") or {}).get("spacing") or 0.0)
-        mass = self.drawn_mass(read)
+        mass = self.site_mass(read)
         if mass and (mass.width, mass.length) != (0, 0):
             covered = mass.dilate(self.slack(read))
         else:

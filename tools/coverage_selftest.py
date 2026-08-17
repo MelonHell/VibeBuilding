@@ -41,6 +41,25 @@ ROOT = Path(__file__).resolve().parent.parent
 KIND = "coverage"
 ROW = "every part is measured by something"
 
+# How far a face of an assembled part may stand from where the fixture drew it.
+# Five metres, and every one of them is accounted for rather than allowed:
+#
+#   0.5   the capture's surface stands `fixture.SKIN` outside the drawn face,
+#         on each face, the way photogrammetry stands on the outside of a wall
+#   1.4   the registration is fitted on the two wings and this part sits
+#         fifteen metres past them. Its v scale is 1.035 -- which is mostly
+#         that same skin, read as a scale over a 35 m depth -- and carrying it
+#         27 m out moves the far face about 0.9, with 0.45 more across the
+#         part's own depth
+#   0.7   the lattice snap, at the ends of the building
+#   1.4   a cell of the frame's own staircase, at each end of each axis
+#
+# What is left over is not any of those. The failure this bounds is a part at
+# the wrong end of an eighty-metre building, which is sixty metres out -- twelve
+# times this -- and a part that arrived the wrong size by more than its own
+# depth.
+PLACED_WITHIN = 5.0
+
 
 def _rect(width: int, length: int, x0: int, x1: int, z0: int, z1: int) -> Mask:
     mask = Mask(width, length)
@@ -276,6 +295,38 @@ def main() -> int:
         if not covered:
             print(f"FAIL: outbuilding is in the capture and in no part list; "
                   f"the survey found {len(parts)} part(s): {', '.join(parts)}")
+            return 1
+
+        # And that it landed where the fixture put it, which existence alone
+        # cannot say. The plan frame and the fixture's own (u, v) run the same
+        # way to within the lattice snap, so the outbuilding's box is a number
+        # this can check against `fixture.OUTBUILDING` directly.
+        #
+        # The half of this file that matters most. Every row downstream reads
+        # the reference through one registration, so a part placed through a
+        # flip that registration guessed is a part every check agrees with:
+        # the section maps its mask back onto the real outbuilding and finds
+        # the right height, `stands where the plan says` compares a build and a
+        # plan that are wrong together, and the map-fill test above passes
+        # because a u flip leaves v alone. That is exactly what happened once --
+        # `orient` read the flip off a width profile flat to within the
+        # rasterisation, and the part came back sixty metres away with two
+        # green selftests over it.
+        u0, u1, v0, v1 = fixture.OUTBUILDING[:4]
+        placed = min(covered, key=lambda p: abs(p["v"][0] - v0))
+        off = max(abs(placed["u"][0] - u0), abs(placed["u"][1] - u1),
+                  abs(placed["v"][0] - v0), abs(placed["v"][1] - v1))
+        if off > PLACED_WITHIN:
+            print(f"FAIL: {placed['name']} stands at "
+                  f"u {placed['u'][0]}..{placed['u'][1]}, "
+                  f"v {placed['v'][0]}..{placed['v'][1]}; the fixture puts the "
+                  f"outbuilding at u {u0}..{u1}, v {v0}..{v1} -- out by "
+                  f"{off:.1f} m against {PLACED_WITHIN} m. An assembled part is "
+                  "placed through the registration, so this is where a flip "
+                  "read off jitter, a scale fitted to the wrong material or a "
+                  "frame turned the wrong way shows up. Nothing else here can "
+                  "see it: every other row reads the reference through the "
+                  "same fit and agrees with whatever it says.")
             return 1
 
         # Three words, and each one has to be a word the survey is allowed to

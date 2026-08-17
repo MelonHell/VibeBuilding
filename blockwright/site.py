@@ -108,12 +108,21 @@ class Site:
     def __init__(self, derived: dict, read, pad: float = 0.5):
         self.d = derived
         self.read = read
-        # `site` and not `mass`: the plan is assembled, so it holds whatever the
-        # reference had and the drawn source did not. `mass` is only what the
-        # drawn source painted, and building off it would put those parts up
-        # with no ground under them.
-        self.mass, self.frame = read.site, read.frame
-        self.width, self.length = self.mass.width, self.mass.length
+        # Two masks, because two questions are asked of them and the answers
+        # part company the moment the plan is assembled.
+        #
+        #   `mass`  what the drawn source painted. The building that stands
+        #           between two grounds -- see `across` and `side`, which split
+        #           a street from a beach on its middle line, and would move
+        #           that line onto a pool house across the lawn if handed the
+        #           site.
+        #   `site`  every cell the plan holds, the drawn mass and whatever
+        #           `Survey.assemble` put beside it. What the build stands on:
+        #           ground laid to `mass` alone leaves an assembled part in the
+        #           air, joined to nothing.
+        self.mass, self.frame = read.mass, read.frame
+        self.site = getattr(read, "site", None) or read.mass
+        self.width, self.length = self.site.width, self.site.length
         self.parts = read.named
 
         # The plan being built has to be the plan that was measured. Everything
@@ -149,10 +158,17 @@ class Site:
         # building was computing for itself with the same one-line comprehension,
         # and one of them -- `grid` -- was already reading them off `self`
         # without anything here ever setting them.
-        self.u0 = min(p.u0 for p in self.parts.values())
-        self.u1 = max(p.u1 for p in self.parts.values())
-        self.v0 = min(p.v0 for p in self.parts.values())
-        self.v1 = max(p.v1 for p in self.parts.values())
+        #
+        # Over the drawn parts, which is what the comment above has always said
+        # and what every consumer means: a grid of planting laid between `u0`
+        # and `u1` follows the building, and taking the assembled extent would
+        # stretch it across the lawn to a pool house.
+        stated = [self.parts[name] for name in getattr(read, "drawn", ())
+                  or read.order]
+        self.u0 = min(p.u0 for p in stated)
+        self.u1 = max(p.u1 for p in stated)
+        self.v0 = min(p.v0 for p in stated)
+        self.v1 = max(p.v1 for p in stated)
 
         # Filled by `across` on first use: how far the drawn mass reaches across
         # the plot at each station along it.

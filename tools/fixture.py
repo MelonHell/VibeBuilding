@@ -40,8 +40,17 @@ PARTS = (
 # An outbuilding the map does not draw. It is the whole point of
 # `coverage_selftest`: a real site has a clubhouse, a pool house, a row of
 # villas that the plan crop never showed, and until something says so they are
-# built freehand and graded by nothing. Fifteen metres clear of the main block
-# so that no closing operation joins the two into one mass.
+# built freehand and graded by nothing.
+#
+# Fifteen metres clear of the main block, which is far enough that nothing
+# measuring the site joins the two: `model3d.read` splits the reference into
+# three pieces, and `Read.mass` and `Read.site` are unions and never closings,
+# so the gap is intact in the plan and in `derived.json`. It is *not* far enough
+# to survive the skeleton's podium, which closes by `COURT = 8` and therefore
+# bridges up to sixteen -- deliberately, because that closing is what stops the
+# `strays` row calling a detached pool house blocks adrift. Paving between the
+# two is a build decision; the fifteen metres are a measurement, and they
+# survive as one.
 OUTBUILDING = (0.0, 20.0, -27.0, -15.0, 6.0)   # u0, u1, v0, v1, top
 
 STOREY = 3.0            # metres floor to floor, what the rhythm should read

@@ -372,6 +372,15 @@ def _texture_lines(what: str, found: dict, against: float | None) -> list[str]:
 
 CLIP_BOX_SAME = 1.0
 
+# How far the two frames' bearings may stand apart before the canonical fits
+# stop settling which way round they are. `gate.Registration` says it in its own
+# docstring: `Frame.fit` points +u into the eastern half-plane, "which settles
+# the ambiguity whenever the two bearings are close. It does not settle it when
+# they are not." Two degrees is the bar the squareness row already prints its
+# warning at, and it is what `Survey.assemble` leans on when a width profile is
+# too flat for `orient` to read a flip off.
+ORIENT_SQUARE = 2.0
+
 
 def fits_clip_box(mesh, frame, within: float = CLIP_BOX_SAME) -> dict:
     """Whether the frame fitted to the reference is the building or the box.
@@ -662,11 +671,25 @@ class Survey:
         with nothing over it has no height at all.
 
         What that inherits is the fit's own answer about which way round the two
-        frames stand. On a drawn plan symmetric end to end the four ways score
-        alike and `Registration.orient` picks between them on noise -- the report
-        prints the margin -- and until now that genuinely did not matter, because
-        both readings drew the same building. It matters here: the part this adds
-        is the asymmetry, and it lands at whichever end the fit chose.
+        frames stand, and **that answer has to have been decided on something**.
+        A drawn plan whose width does not vary along its length -- two strips
+        running the whole way, a plain slab, a square tower -- gives
+        `Registration.orient` a flat profile on that axis, and a flip read off a
+        flat profile is read off the rasterisation. It costs nothing while both
+        ways round draw the same building, and it costs sixty metres the moment
+        the plan grows a part the drawn source never drew: the part lands at the
+        wrong end, and every row downstream agrees with it, because every row
+        reads the reference through this same fit.
+
+        `orient` now leaves such an axis alone and says so, which leaves the
+        two canonical fits to settle it -- both frames point +u into the eastern
+        half-plane, so two fits of one building at one bearing agree. That
+        reasoning holds while the bearings agree and not otherwise, so this
+        refuses rather than places a part when an axis is undetermined *and* the
+        two frames stand more than `ORIENT_SQUARE` apart. Refuses, and does not
+        place it marked: a marked part is still a real building put up sixty
+        metres from where it stands, and every check would still agree with it.
+        The thing a reader could act on is the stop.
         """
         reference = evidence.reference
         drawn = [read.named[name] for name in read.drawn]
@@ -688,12 +711,46 @@ class Survey:
                              "already drawn")
             return read
 
-        # Read at `model3d`'s own floor and not at `MESH_FLOOR`. The register
-        # floor is chosen to keep a road, parked cars and a hedge out of a
-        # *fit*, and it leaves a single-storey wing out with them; what is
-        # wanted here is everything standing on the site.
-        extra = model3d.read(reference.path, up=self.t.MODEL_UP,
-                             scale=self.t.MODEL_SCALE)
+        # Which way round the two frames stand, and whether anything decided it.
+        # `orient` names the axes its profiles were too flat to read; where the
+        # bearings also disagree, nothing at all places a part and this stops.
+        turn = (out.get("registration") or {}).get("orientation") or {}
+        blind = turn.get("undetermined") or ""
+        bearing = abs(read.frame.angle - read.link.frame.angle)
+        record["orientation"] = {"margin": turn.get("margin"),
+                                 "undetermined": blind,
+                                 "shape": turn.get("shape"),
+                                 "bearing": round(bearing, 2)}
+        if blind and bearing > ORIENT_SQUARE:
+            raise SystemExit(
+                f"nothing states which way round the reference and the plan "
+                f"stand on {' and '.join(blind)}.\n"
+                f"    the plan's width profile varies by "
+                f"{turn.get('shape')} m along u and across v, against a floor "
+                f"of {turn.get('shape_floor')} m, so `orient` read no shape "
+                f"there\n"
+                f"    and the two frames stand {bearing:.1f} deg apart, over "
+                f"the {ORIENT_SQUARE:.1f} deg within which two canonical fits "
+                f"of one building settle it between them\n"
+                "So a part the reference holds and the plan does not could be "
+                "placed at either end, and every row below would agree with "
+                "whichever was picked. Draw the part on the plan and it is "
+                "drawn rather than assembled; or lower REGISTER_FLOOR until "
+                "the reference's own asymmetry is inside the fit, knowing that "
+                "it enters the scale fit with it.")
+
+        # Read the reference exactly the way `link_to` read it, which on this
+        # branch is raw. `MODEL_UP` and `MODEL_SCALE` describe the file the
+        # *plan* came from, and this is the other file: transforming it here
+        # while the link reads it flat would put `extra.grid` and `link.frame`
+        # in different spaces, and every footprint would map to nowhere --
+        # reported as a canvas too small, about a canvas that is fine.
+        #
+        # At `model3d`'s own floor and not at `MESH_FLOOR`. The register floor
+        # is chosen to keep a road, parked cars and a hedge out of a *fit*, and
+        # it leaves a single-storey wing out with them; what is wanted here is
+        # everything standing on the site.
+        extra = model3d.read(reference.path)
         record["reference_parts"] = len(extra.parts)
         here = self.on_the_plan(extra, read.link, read)
 
@@ -1708,7 +1765,13 @@ class Survey:
             return
 
         step = out["frame"]["staircase"]
-        edge = max(read.parts, key=lambda p: p.u1 - p.u0)
+        # The longest *drawn* edge. The guard above is about the plan's source
+        # and the selection was not: an assembled part's outline is a
+        # photogrammetric silhouette, which is exactly the kind of edge this row
+        # exists to keep out -- "the map and the model have edges somebody else
+        # made", and a capture's are edges nobody made.
+        edge = max((read.named[name] for name in read.drawn),
+                   key=lambda p: p.u1 - p.u0)
         profile = measure.edge_profile(edge.mask, read.frame, self.t.PROFILE_BIN)
         series = measure.detrend(
             measure.median_filter(profile.trim(self.t.PROFILE_TRIM).series("high"),
@@ -1923,6 +1986,19 @@ class Survey:
                 f"into {a['reference_parts']}, of which {a['matched']} overlap "
                 f"one that is drawn and {a['extra']} do not "
                 f"(floor {a['floor']:.2f})")
+            # The number that decides where an assembled part lands, on the run
+            # that decides it. A margin means nothing on an axis whose profile
+            # was flat, so the flat axes are named beside it rather than left
+            # for a reader to infer from a decimal.
+            o = a.get("orientation") or {}
+            if o:
+                lines.append(
+                    f"  which way round: margin {o.get('margin')}, profile "
+                    f"varies {o.get('shape')} m along u and across v, frames "
+                    f"{o.get('bearing')} deg apart"
+                    + (f" -- {' and '.join(o['undetermined'])} carries no "
+                       "shape, so the canonical fits settle it"
+                       if o.get("undetermined") else ""))
             for one in a.get("added", []):
                 lines.append(
                     f"  {one['name']:15s} {one['cells']:5d} cells to "
@@ -2030,6 +2106,9 @@ class Survey:
         if r.get("turned") and r["turned"] != "the same way round":
             scores = dict(r.get("orientation") or {})
             margin = scores.pop("margin", None)
+            shape = scores.pop("shape", None)
+            blind = scores.pop("undetermined", "")
+            scores.pop("shape_floor", None)
             lines.append(f"    the reference stands {r['turned']} to the plan; "
                          f"fit {scores}")
             if margin is not None and margin < 0.15:
@@ -2038,6 +2117,14 @@ class Survey:
                     "symmetric building either way round is the same building "
                     "and it does not matter; on one with a short wing or a "
                     "round end, check it.")
+            # And which of the two axes had a profile to decide it with. A
+            # margin says how far apart the four scored; it does not say
+            # whether the thing they scored was shape.
+            lines.append(
+                f"    decided on a width profile varying {shape} m along u and "
+                f"across v"
+                + (f"; {' and '.join(blind)} carries none, so that flip is the "
+                   "canonical fits' and not the profile's" if blind else ""))
 
         sq = r.get("square") if r else None
         if sq:

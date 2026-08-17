@@ -81,6 +81,16 @@ CLUTTER = 2.0
 # features; few enough that photogrammetry noise averages out inside one.
 PROFILE_BINS = 24
 
+# How much a width profile has to vary before it is the building's shape rather
+# than the rasterisation of its own two edges. One cell: every profile here is
+# the span between two traced faces, each of which lands within a cell of where
+# the drawing put it, so a profile flatter than that describes a uniform bar
+# however it is read -- and `orient` reading a flip off it is reading the
+# jitter. Measured on the fixture: the profile that decides the u flip there
+# varies by 0.69 m end to end, a *half* of the frame's own 1.37 m staircase,
+# and its correlation still swings by 0.54 between the two ways round.
+ORIENT_SHAPE = 1.0
+
 # How far either way to turn the reference when checking that the two frames
 # agree about which way the building points, and how finely. Five degrees is
 # past anything a good fit produces and short of the half-turn `orient` handles;
@@ -516,6 +526,28 @@ class Registration:
         every building with a wing shorter than the other, or anything round at
         one end -- separates them clearly.
 
+        **A flip is only taken from a profile that carries shape.** The two
+        terms are independent -- mirroring u reverses the order of the `along`
+        bins and leaves every `across` span untouched, and the other way round
+        -- so each axis is decided by exactly one profile, and a profile that is
+        flat is deciding nothing. On a plan whose two strips both run the whole
+        length, `along` is the same width at every station to within the
+        rasterisation of its own edges, and correlating that jitter against the
+        reference's jitter returns a number with a sign and no meaning. It came
+        back at +0.402 one way round and -0.136 the other on the fixture, which
+        reads in the table as a margin of 0.537 and is not a margin at all.
+        Below `ORIENT_SHAPE` the flip therefore stays where the two canonical
+        fits put it -- `Frame.fit` points +u into the eastern half-plane, which
+        settles the ambiguity whenever the two bearings are close -- and the
+        table says which axis was left undetermined.
+
+        That mattered nothing while a symmetric building was read the same
+        building either way round. It stopped being nothing when the plan grew
+        parts the drawn source never drew: `Survey.assemble` places those
+        through this correspondence, and a flip taken off jitter puts a pool
+        house at the far end of the site with every row downstream agreeing,
+        because every row reads the reference through this same fit.
+
         Returns the flips and the whole score table, so that a close call is
         visible rather than decided in silence.
         """
@@ -547,14 +579,28 @@ class Registration:
                     + _agreement(across, _profile([(v, u) for u, v in put],
                                                   self.build_v, PROFILE_BINS)))
         best = max(scores, key=scores.get)
+        # Each axis kept only where its own profile has something to say. The
+        # spread is taken over every station, zeros included: a station the
+        # plan does not reach is the shape of a court and not a gap in the
+        # reading.
+        shape = (max(along) - min(along), max(across) - min(across))
+        blind = ("u" if shape[0] < ORIENT_SHAPE else "") + \
+                ("v" if shape[1] < ORIENT_SHAPE else "")
+        best = (best[0] and "u" not in blind, best[1] and "v" not in blind)
         ranked = sorted(scores.values(), reverse=True)
         table = {f"{'u' if k[0] else '-'}{'v' if k[1] else '-'}": round(s, 3)
                  for k, s in scores.items()}
-        # How far ahead the winner is. A symmetric building scores its four the
-        # same and the answer genuinely does not matter -- both ways round are
-        # the same building. An asymmetric one separates them clearly. A narrow
-        # margin on a building that is *not* symmetric is the case worth seeing,
-        # so the number is reported rather than swallowed.
+        # Which axes the profiles could not decide, and by how much they missed
+        # -- carried into `derived.json` because `Survey.assemble` refuses to
+        # place a part on an axis nothing settled.
+        table["undetermined"] = blind
+        table["shape"] = [round(shape[0], 2), round(shape[1], 2)]
+        table["shape_floor"] = ORIENT_SHAPE
+        # How far ahead the winner is, over all four. Read it beside
+        # `undetermined` and not on its own: a margin is only evidence about an
+        # axis whose profile carries shape, and the one this used to be trusted
+        # for is the one it cannot speak to. A wide margin between two ways
+        # round that differ only on a flat axis is jitter with a decimal point.
         table["margin"] = round(ranked[0] - ranked[1], 3)
         return best[0], best[1], table
 
