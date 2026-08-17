@@ -90,6 +90,19 @@ KIND_INK = """  <n>-<view>.ink     the same build from the same camera, drawn as
                      picture for this."""
 
 
+# Photo-review ink names rhythm. A greybox prompt that repeats that word
+# tells a naive reviewer to count bays on a building that has none.
+KIND_INK_FORM = """  <n>-<view>.ink     the same build from the same camera, drawn as lines: a
+                     line wherever one part meets another, a surface turns, or
+                     something stands in front of something else. No colour, no
+                     shading, no block grid. This is the image to judge SHAPE on
+                     -- silhouette, proportion, how many volumes there are and
+                     where each one stops. The shaded render's sun is
+                     deliberately hard so that a roof and a wall never take the
+                     same brightness, which is exactly what makes it a poor
+                     picture for this."""
+
+
 KIND_PARTS = """  <n>-<view>.parts   the same build from the same camera, with each declared part
                      of the building in one flat colour and black between them.
                      One colour is one part throughout the set, so the same
@@ -143,8 +156,8 @@ KIND_PHOTO = """  90-photo-<nn>      a photograph of the real building, from a v
 # are trustworthy for colour reports that the greybox has no colour.
 KIND_PHOTO_FORM = """  90-photo-<nn>      a photograph of the real building, from a viewpoint of its
                      own. Trustworthy for volume, proportion, the shape of the
-                     plan and where the parts stand. Not for material, colour,
-                     glazing or finish -- those are absent from the greybox on
+                     plan and where the parts stand. Not for material, colour
+                     or finish -- those are absent from the greybox on
                      purpose."""
 
 
@@ -277,8 +290,6 @@ GREYBOX_PROMPT = """You are reviewing a greybox of a real building -- the volume
 and their standing, with no windows, no balconies, no roof covering and no
 materials. Those absences are not defects. Do not report them.
 
-{description}
-
 You are given {count} images, each labelled before it:
 
 {kinds}
@@ -305,9 +316,9 @@ A part that stands conspicuously lower than its neighbours is a placeholder
 whose height has not been measured yet. Do not discuss its height. Its
 footprint and position are fair game.
 
-Do not report on material, colour, palette, glazing, facade rhythm or any
-finish. They are not there by construction. A finding of "no windows" on a
-greybox is a finding that you are looking at a greybox.
+Do not report on material, colour, palette or any finish. They are not there
+by construction. A finding of "no windows" on a greybox is a finding that you
+are looking at a greybox.
 
 Report each fault once, at the viewpoint that shows it best -- do not repeat a
 finding for every image it appears in. For each finding give:
@@ -328,6 +339,35 @@ between a render and a photographic lens.{noise}
 
 Be specific and be brief.
 """
+
+
+# Words a photo-review camera caption uses to point at finish. Any one of
+# them in a greybox prompt is a more specific instruction than the four
+# questions, and a naive reviewer follows the more specific one.
+_FORM_POISON = (
+    "glazing", "bays", "rhythm", "material", "colour", "color",
+    "palette", "window", "windows", "finish", "cladding", "glass",
+)
+
+
+_FORM_LOOK = ("The volumes, their proportions, the shape in plan, and "
+              "where the parts stand")
+
+
+def form_reading(shot) -> str:
+    """A viewpoint caption that names only form.
+
+    The photo-review `reading` is written to point at glazing, bays and
+    rhythm. Pasting it into a greybox prompt tells a naive reviewer to
+    look at exactly what is forbidden. The first sentence usually names
+    the camera; it is kept when it is clean. The question is replaced.
+    """
+    text = (getattr(shot, "reading", None) or "").strip()
+    first = text.split(".", 1)[0].strip() if text else ""
+    lowered = first.lower()
+    if first and not any(word in lowered for word in _FORM_POISON):
+        return f"{first}. {_FORM_LOOK}."
+    return f"{_FORM_LOOK}."
 
 
 @dataclass(frozen=True)
@@ -680,19 +720,22 @@ class Review:
                   f"{height:.0f} m up -- {', '.join(where)}; nearest {names}")
 
     def clear(self) -> None:
-        """Empty the review folder, keeping the findings.
+        """Empty the review folder, keeping the photo-review findings.
 
         A folder that accumulates is a folder where last week's render of a
         viewpoint that no longer exists sits beside this week's, gets counted in the
         prompt, and is read by a reviewer who was told that every numbered pair is
-        the same camera in two models. `findings.md` survives: it is written by
-        hand, it carries the dispositions of earlier rounds, and nothing else in
-        here is worth keeping.
+        the same camera in two models. Photo-review `findings.md` survives: it is
+        written by hand, it carries the dispositions of earlier rounds, and
+        nothing else in here is worth keeping. A greybox review does not keep
+        one -- the journal is the building's `findings.md`, and a leftover
+        file in this folder would contradict that.
         """
         if not self.out.is_dir():
             return
+        keep = set() if self.greybox else {FINDINGS}
         for stale in self.out.iterdir():
-            if stale.is_file() and stale.name != FINDINGS:
+            if stale.is_file() and stale.name not in keep:
                 stale.unlink()
         # `rounds/` is a directory and survives by being one, which is the kind
         # of accident that stops being true the day somebody makes this
@@ -861,6 +904,8 @@ class Review:
         for image in images:
             shutil.copy2(image, into / image.name)
         for named in (PROMPT_FILE, FINDINGS):
+            if named == FINDINGS and self.greybox:
+                continue
             if (self.out / named).exists():
                 shutil.copy2(self.out / named, into / named)
         print(f"[review] last round kept in {into.relative_to(self.repo)}")
@@ -920,8 +965,11 @@ class Review:
         # shots had no reason to be different.
         meshes = solids = 0
         for shot in shots:
+            # A textured photogrammetry pass is the windows the greybox does
+            # not have. Greybox review takes only the solid pass -- form,
+            # no photograph glued on.
             mesh = self.paths.ORTHOS / f"{shot.name}_tex.png"
-            if mesh.exists():
+            if mesh.exists() and not self.greybox:
                 Image.open(mesh).convert("RGB").save(
                     self.out / f"{shot.name}.mesh.jpg", quality=90)
                 meshes += 1
@@ -969,11 +1017,11 @@ class Review:
         # not made for a build that declared no manifest.
         inks = any(n.endswith(".ink.png") for n in images)
         parts = any(n.endswith(".parts.png") for n in images)
+        has_ref = bool(meshes or solids)
         if self.greybox:
             kinds = ([KIND_BUILD]
-                     + [KIND_INK] * inks
+                     + [KIND_INK_FORM] * inks
                      + [KIND_PARTS] * parts
-                     + [KIND_MODEL if is_model else KIND_MESH] * bool(meshes)
                      + [KIND_SOLID_FORM] * bool(solids)
                      + [KIND_PHOTO_FORM] * bool(photos))
         else:
@@ -984,18 +1032,20 @@ class Review:
                      + [KIND_SOLID] * bool(solids)
                      + [KIND_DRAWING] * bool(drawings)
                      + [KIND_PHOTO] * bool(photos))
-        if not meshes:
+        if not has_ref:
             noise = ""
         elif is_model:
             noise = NOISE_MODEL_FORM if self.greybox else NOISE_MODEL
         else:
             noise = NOISE_CAPTURE
-        views = "\n".join(f"  {s.name}  {s.reading}" for s in shots)
-        pairing = ("" if not meshes else (PAIRING if paired else UNPAIRED))
+        if self.greybox:
+            views = "\n".join(f"  {s.name}  {form_reading(s)}" for s in shots)
+        else:
+            views = "\n".join(f"  {s.name}  {s.reading}" for s in shots)
+        pairing = ("" if not has_ref else (PAIRING if paired else UNPAIRED))
         if self.greybox:
             text = GREYBOX_PROMPT.format(
                 count=len(images), views=views,
-                description=self.description,
                 kinds="\n".join(kinds), noise=noise, pairing=pairing)
         else:
             text = PROMPT.format(
@@ -1013,7 +1063,7 @@ class Review:
         # fabricated one: the only thing left to grade against is the reviewer's idea
         # of what the building ought to look like. Say so, and do not ask for one.
         # Drawings do not count for a greybox: they are not in the folder.
-        if not meshes and not photos and (self.greybox or not drawings):
+        if not has_ref and not photos and (self.greybox or not drawings):
             if self.greybox:
                 print("[review] nothing to compare against: no reference renders "
                       f"(pass --mesh), no photographs in {self.paths.PHOTOS}.")
@@ -1024,7 +1074,7 @@ class Review:
                   "at, but do not send them to a reviewer on their own")
             return
 
-        if not meshes:
+        if not has_ref:
             if self.greybox:
                 print("[review] ! no reference renders; whatever else is here has to "
                       "carry volume and proportion")
@@ -1039,14 +1089,16 @@ class Review:
                 print(f"[review] ! no photographs in {self.paths.PHOTOS}; nothing states the "
                       "material, and a capture cannot see under a roof")
 
-        print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
-              f"write the findings and what was done about each to {FINDINGS}")
-
-        # The state of the loop, printed rather than looked up. A round that
-        # leaves findings open is a round that has not closed, and the count is
-        # the only thing that says so out loud.
-        for line in findings.lines(self.out / FINDINGS, rounds=self.round):
-            print(f"[review] {line}")
+        if self.greybox:
+            print(f"[review] read every image in that folder against {PROMPT_FILE}")
+        else:
+            print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
+                  f"write the findings and what was done about each to {FINDINGS}")
+            # The state of the loop, printed rather than looked up. A round that
+            # leaves findings open is a round that has not closed, and the count is
+            # the only thing that says so out loud.
+            for line in findings.lines(self.out / FINDINGS, rounds=self.round):
+                print(f"[review] {line}")
 
         # What this stage renders is the schematic. What a person looks at is a
         # world somebody pasted it into, and the pipeline does not own that
@@ -1073,6 +1125,8 @@ class Review:
                                  "Blender")
         parser.add_argument("--greybox", action="store_true",
                             help="review the greybox into out/greybox/review/")
+        parser.add_argument("--no-mesh", action="store_true",
+                            help="skip the reference geometry (the command's fallback)")
         args = parser.parse_args(argv)
         if args.greybox:
             self.greybox = True

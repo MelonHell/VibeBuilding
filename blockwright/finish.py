@@ -274,7 +274,7 @@ def finish(canvas, out, frame, *, schedule=None,
         panels = [compare.mesh_panel(orthos, ortho),
                   compare.build_panel(image, scale, label=f"build {view.name}")]
         panels.extend(compare.photo(p) for p in photos)
-        path = out / "compare" / f"{ortho}.png"
+        path = where / "compare" / f"{ortho}.png"
         # Elevations stay unaligned. `aligned()` equalises their heights, and
         # then `align="bottom"` has nothing left to do -- the shorter façade
         # floats. The three-panel plan sheet above is the one that wants one
@@ -292,7 +292,7 @@ def finish(canvas, out, frame, *, schedule=None,
         else:
             done.overlap[f"{ortho} vs {view.name}"] = score
 
-    # The compare loop writes `out/compare/top.png` under the same key. That
+    # The compare loop writes compare/top.png under the same key. That
     # file stays on disk; the dict names the three-panel sheet, because that
     # is the one this function just made a point of writing.
     if topsheet is not None:

@@ -140,6 +140,9 @@ def prove_sheet(where: Path) -> str | None:
     leaked = where / "out" / "views"
     if leaked.exists():
         return "FAIL: greybox wrote views into out/views/"
+    leaked_compare = where / "out" / "compare"
+    if leaked_compare.exists():
+        return "FAIL: greybox wrote compare into out/compare/"
     return None
 
 
