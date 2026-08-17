@@ -134,9 +134,24 @@ def write_mesh(path: Path) -> None:
             out.write(f"v {x - x0:.3f} {y:.3f} {z - z0:.3f}\n")
 
         # The ground the capture brought with it, which every reader has to
-        # discard for itself.
-        for i in range(0, width, 2):
-            for j in range(0, length, 2):
+        # discard for itself. The crop is sized to the two wings so the map
+        # stays a crop of the building; the outbuilding sits north of that
+        # box (negative z after the origin shift). A capture of the site
+        # still brings the ground that outbuilding stands on -- without it
+        # the mesh AABB stops at the outbuilding's skin, and a modelled
+        # build's apron sits past the reference for want of a clip, not
+        # for want of a building.
+        gx0, gz0 = 0.0, 0.0
+        gx1, gz1 = float(width), float(length)
+        ou0, ou1, ov0, ov1, _ = OUTBUILDING
+        for u, v in ((ou0, ov0), (ou1, ov0), (ou1, ov1), (ou0, ov1)):
+            x, z = rotate(u, v)
+            gx0 = min(gx0, x - x0 - MARGIN)
+            gx1 = max(gx1, x - x0 + MARGIN)
+            gz0 = min(gz0, z - z0 - MARGIN)
+            gz1 = max(gz1, z - z0 + MARGIN)
+        for i in range(int(math.floor(gx0)), int(math.ceil(gx1)) + 1, 2):
+            for j in range(int(math.floor(gz0)), int(math.ceil(gz1)) + 1, 2):
                 out.write(f"v {float(i)} 0.000 {float(j)}\n")
 
         # PARTS is what the map draws. The outbuilding is written the same way

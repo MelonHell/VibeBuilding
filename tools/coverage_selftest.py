@@ -32,6 +32,7 @@ from blockwright.gate import Gate
 from blockwright.grading import (
     CLIP_HOLDS_WITHIN, COVERAGE_SHARE, COVERAGE_STOREYS, Grading)
 from blockwright.mask import Mask
+from blockwright.model import Grid
 from blockwright.plan import Part, decompose
 from blockwright.schedule import Declaration, Item, Schedule
 
@@ -356,22 +357,35 @@ def prove_thresholds() -> str | None:
     return None
 
 
-def _site_grade(built_rect, mesh_bounds, frame=None):
+def _site_grade(built_rect, mesh_bounds, frame=None, mesh_frame=None,
+                declared=True, massing=None):
     """Run `site_covered` on a tiny schedule. `built_rect` is (x0, x1, z0, z1)."""
     w, l = 40, 40
     frame = frame or Frame((0.0, 0.0), 0.0, float(w), float(l))
-    mask = _rect(w, l, built_rect[0], built_rect[1], built_rect[2], built_rect[3])
+    mesh_frame = mesh_frame or frame
     sched = Schedule((Item("podium", "what", "source"),))
-    sched.built["podium"] = Declaration(mask, 0, 1)
     sched.width, sched.length = w, l
+    if declared and built_rect is not None:
+        mask = _rect(w, l, built_rect[0], built_rect[1],
+                     built_rect[2], built_rect[3])
+        sched.built["podium"] = Declaration(mask, 0, 1)
     if mesh_bounds is None:
         derived = {"mesh": {"read": False, "why": "no reference"}}
     elif mesh_bounds is False:
         derived = {"mesh": {"read": True}}
     else:
-        derived = {"mesh": {"read": True, "bounds": mesh_bounds}}
+        derived = {
+            "mesh": {
+                "read": True,
+                "bounds": mesh_bounds,
+                "frame": {"origin": list(mesh_frame.origin),
+                          "angle": mesh_frame.angle,
+                          "extent": [mesh_frame.extent_u, mesh_frame.extent_v]},
+            },
+            "registration": {"needed": False},
+        }
     g = Gate("prove")
-    read = SimpleNamespace(frame=frame)
+    read = SimpleNamespace(frame=frame, massing=massing)
     Grading(None, None, SimpleNamespace()).site_covered(g, derived, sched, read)
     if len(g.checks) != 1:
         raise SystemExit(f"FAIL: site_covered wrote {len(g.checks)} row(s)")
@@ -379,64 +393,91 @@ def _site_grade(built_rect, mesh_bounds, frame=None):
 
 
 def prove_site_covered() -> str | None:
-    """The clip-holds-the-site row in both states, and the ungraded one.
+    """The clip-holds-the-site row in both states, and the hole it used to miss.
 
     Lives here so a reviewer can see it fail. Returns a FAIL line, or None.
     """
-    wide = {"u0": 0.0, "u1": 30.0, "v0": 0.0, "v1": 30.0}
+    # Identity frames: schematic (x, z) is mesh world, east=x, north=-z.
+    wide = {"east0": 0.0, "east1": 30.0, "north0": -30.0, "north1": 0.0}
     green, sched = _site_grade((5, 15, 5, 15), wide)
     if green.name != SITE_ROW or green.ok is not True:
         return f"FAIL: a build inside the reference should be green, got {green.line()}"
     if "inside the reference" not in green.detail:
         return f"FAIL: green detail does not say the build is inside: {green.detail}"
 
-    identity = Frame((0.0, 0.0), 0.0, 40.0, 40.0)
-    west = sched.extent(identity)[0]
+    # Cell centres at identity: east starts at 5.5.
+    west = 5.5
     just_in, _ = _site_grade(
         (5, 15, 5, 15),
-        {"u0": west + CLIP_HOLDS_WITHIN - 0.01, "u1": 30.0, "v0": 0.0, "v1": 30.0})
+        {"east0": west + CLIP_HOLDS_WITHIN - 0.01, "east1": 30.0,
+         "north0": -30.0, "north1": 0.0})
     if just_in.ok is not True:
         return (f"FAIL: {CLIP_HOLDS_WITHIN - 0.01:g} m past the clip should "
                 f"still be green, got {just_in.line()}")
     just_out, _ = _site_grade(
         (5, 15, 5, 15),
-        {"u0": west + CLIP_HOLDS_WITHIN + 0.01, "u1": 30.0, "v0": 0.0, "v1": 30.0})
+        {"east0": west + CLIP_HOLDS_WITHIN + 0.01, "east1": 30.0,
+         "north0": -30.0, "north1": 0.0})
     if just_out.ok is not False or "west" not in just_out.detail:
         return (f"FAIL: {CLIP_HOLDS_WITHIN + 0.01:g} m past the clip should "
                 f"be red on the west, got {just_out.line()}")
-    if "Re-clip to hold u" not in just_out.detail:
-        return f"FAIL: red row does not print the union box: {just_out.detail}"
-    hold_u = min(west, west + CLIP_HOLDS_WITHIN + 0.01)
-    if f"{hold_u:.0f}" not in just_out.detail:
-        return (f"FAIL: red row hid the union west edge {hold_u:.0f}: "
-                + just_out.detail)
+    if "--clip-east" not in just_out.detail or "--clip-north" not in just_out.detail:
+        return f"FAIL: red row is not a pasteable clip: {just_out.detail}"
 
     blank, _ = _site_grade((5, 15, 5, 15), None)
     if blank.ok is not None or "no reference" not in blank.detail:
         return f"FAIL: no mesh should be ungraded, got {blank.line()}"
     stale, _ = _site_grade((5, 15, 5, 15), False)
     if stale.ok is not None:
-        return f"FAIL: a mesh with no plan bounds should be ungraded, got {stale.line()}"
+        return f"FAIL: a mesh with no clip bounds should be ungraded, got {stale.line()}"
 
-    # A building off the axes: the world AABB is larger than the plan AABB.
-    # Comparing world cells to plan bounds would go red; converting through
-    # the frame must not. And the two extents must actually differ, or the
-    # conversion is dead and this case is the identity case again.
+    empty, empty_sched = _site_grade(None, wide, declared=False)
+    if empty_sched.extent() is not None:
+        return "FAIL: empty extent should be nothing, not a box at the origin"
+    if empty.ok is not None or "nothing was declared" not in empty.detail:
+        return f"FAIL: an empty schedule should say so, got {empty.line()}"
+
+    # The hole the plan AABB used to hide: a world-square clip at 30°, and a
+    # cell that sits in the AABB of the rotated corners but outside the
+    # square itself. Plan-space comparison goes green; world-space must not.
     angled = Frame((0.0, 0.0), 30.0, 40.0, 40.0)
-    _, turned = _site_grade((5, 15, 5, 15), wide, frame=angled)
-    world = turned.extent()
-    plan = turned.extent(angled)
-    if world == plan:
-        return ("FAIL: extent() at 30 deg matches world cells; "
-                "the plan conversion is dead")
-    boxed = {"u0": plan[0], "u1": plan[1], "v0": plan[2], "v1": plan[3]}
-    aligned, _ = _site_grade((5, 15, 5, 15), boxed, frame=angled)
-    if aligned.ok is not True:
-        return (f"FAIL: a 30 deg build inside its own plan box went red: "
-                f"{aligned.line()} (world {world}, plan {plan})")
+    clip = {"east0": 0.0, "east1": 10.0, "north0": -10.0, "north1": 0.0}
+    hole, _ = _site_grade((7, 8, 12, 13), clip,
+                          frame=angled, mesh_frame=angled)
+    if hole.ok is not False:
+        return (f"FAIL: a cell in the plan AABB of a 30 deg clip but "
+                f"outside the clip itself went {hole.line()}")
+    if "--clip-east" not in hole.detail or "--clip-north" not in hole.detail:
+        return f"FAIL: the 30 deg miss is not a pasteable clip: {hole.detail}"
+    inside, _ = _site_grade((5, 6, 5, 6), clip,
+                            frame=angled, mesh_frame=angled)
+    if inside.ok is not True:
+        return f"FAIL: a cell inside the 30 deg clip went red: {inside.line()}"
 
-    print("the clip holds the site: green, red, ungraded, and the 30 deg box hold",
-          flush=True)
+    # Same-file: the schematic is the model grid. A latticed plan frame
+    # whose origin is not the grid origin must not shift the build -- that
+    # pairing is what put the modelled fixture 6 m north of its own mesh.
+    # Cell (5, 5) on a grid at (10, -10) is model (15.5, -4.5):
+    # east 15.5, north 4.5.
+    grid = Grid(40, 40, 10.0, -10.0)
+    massing = SimpleNamespace(grid=grid)
+    snapped = Frame((5.0, 3.0), 30.0, 40.0, 40.0)
+    turned = Frame((15.0, -7.0), 30.96, 40.0, 40.0)
+    held = {"east0": 10.0, "east1": 20.0, "north0": 0.0, "north1": 15.0}
+    grid_in, _ = _site_grade((5, 6, 5, 6), held, frame=snapped,
+                             mesh_frame=turned, massing=massing)
+    if grid_in.ok is not True:
+        return (f"FAIL: same-file grid cell inside the clip went "
+                f"{grid_in.line()}")
+    missed = {"east0": 10.0, "east1": 20.0, "north0": 0.0, "north1": 3.0}
+    grid_out, _ = _site_grade((5, 6, 5, 6), missed, frame=snapped,
+                              mesh_frame=turned, massing=massing)
+    if grid_out.ok is not False or "north" not in grid_out.detail:
+        return (f"FAIL: same-file grid cell past the clip should be red "
+                f"on the north, got {grid_out.line()}")
+
+    print("the clip holds the site: green, red, ungraded, empty, and the "
+          "30 deg corner is red", flush=True)
     return None
 
 
@@ -529,8 +570,8 @@ def main() -> int:
             return 1
         mesh_bounds = (derived.get("mesh") or {}).get("bounds")
         if not isinstance(mesh_bounds, dict) or not all(
-                k in mesh_bounds for k in ("u0", "u1", "v0", "v1")):
-            print("FAIL: derived.json mesh has no plan bounds; "
+                k in mesh_bounds for k in ("east0", "east1", "north0", "north1")):
+            print("FAIL: derived.json mesh has no clip bounds; "
                   f"mesh={derived.get('mesh')!r}")
             return 1
 

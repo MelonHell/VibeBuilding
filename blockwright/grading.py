@@ -46,6 +46,7 @@ from pathlib import Path
 
 from . import checks, gate, measure, report, sources, style, survey
 from . import model as model3d
+from .frame import Frame
 from .mask import Mask, iou
 from .mesh import Mesh
 from .schedule import Schedule
@@ -2184,43 +2185,108 @@ class Grading:
         reference holds nothing of the grounds, so every part standing on them
         is graded by nothing and no row says so.
 
-        This is that row. It compares the extent of what the build declared
-        against the extent of the reference, in the plan's (u, v), and prints
-        the box that would have covered both, so that a re-clip is a copy of
-        two numbers rather than a second look at an ortho. World cells are
-        the wrong space: the fixture sits thirty degrees off the axes, and
-        a world AABB compared to a plan AABB is a false red.
+        Compared in the converter's own frame -- east and north, the axes
+        `--clip-east` / `--clip-north` take -- because that is where the clip
+        is a rectangle. Taking the AABB of its corners in plan (u, v) inflates
+        the box by |cos θ| + |sin θ| and waves through a clubhouse in the
+        empty corner. The printed union is those two flags, so a re-clip is
+        a paste rather than a second look at an ortho.
         """
         rec = derived.get("mesh") or {}
         mesh = rec.get("bounds") if rec.get("read") else None
-        if not mesh:
+        if not mesh or not all(k in (mesh or {})
+                               for k in ("east0", "east1", "north0", "north1")):
             g.ungraded("the clip holds the site",
                        "no reference: nothing states how far the site reaches")
             return
-        built = sched.extent(read.frame)
+        if sched.extent() is None:
+            g.ungraded("the clip holds the site", "nothing was declared")
+            return
+        built = self._build_in_clip(sched, read, derived)
+        if built is None:
+            g.ungraded("the clip holds the site",
+                       "no reference frame: cannot put the build in the clip")
+            return
         over = [
-            ("west", mesh["u0"] - built[0]),
-            ("east", built[1] - mesh["u1"]),
-            ("north", mesh["v0"] - built[2]),
-            ("south", built[3] - mesh["v1"]),
+            ("west", mesh["east0"] - built[0]),
+            ("east", built[1] - mesh["east1"]),
+            ("south", mesh["north0"] - built[2]),
+            ("north", built[3] - mesh["north1"]),
         ]
         worst = [(side, gap) for side, gap in over if gap > CLIP_HOLDS_WITHIN]
+        hold = (
+            f"--clip-east {min(built[0], mesh['east0']):.0f} "
+            f"{max(built[1], mesh['east1']):.0f} "
+            f"--clip-north {min(built[2], mesh['north0']):.0f} "
+            f"{max(built[3], mesh['north1']):.0f}"
+        )
         if not worst:
             g.add("the clip holds the site", True,
-                  f"the build stands u {built[0]:.0f}..{built[1]:.0f}, "
-                  f"v {built[2]:.0f}..{built[3]:.0f}, all of it inside the "
-                  "reference")
+                  f"the build stands east {built[0]:.0f}..{built[1]:.0f}, "
+                  f"north {built[2]:.0f}..{built[3]:.0f}, all of it inside "
+                  "the reference")
             return
         g.add("the clip holds the site", False,
               "the build reaches past the reference by "
               + ", ".join(f"{gap:.0f} m {side}" for side, gap in worst)
-              + f". Re-clip to hold u {min(built[0], mesh['u0']):.0f}.."
-                f"{max(built[1], mesh['u1']):.0f}, "
-                f"v {min(built[2], mesh['v0']):.0f}.."
-                f"{max(built[3], mesh['v1']):.0f} and re-measure: everything "
-                "out there is graded by nothing. The plan canvas is sized to "
+              + f". Re-clip with {hold} and re-measure: everything out "
+                "there is graded by nothing. The plan canvas is sized to "
                 "the drawn building, not the site -- that is a different "
                 "decision, and this row does not widen it.")
+
+    def _build_in_clip(self, sched, read, derived):
+        """The build's occupation as (east0, east1, north0, north1).
+
+        Schedule cells live on the schematic. The clip lives in the mesh's
+        render frame (x east, z south).
+
+        Same-file -- the plan was read off this model -- is one fit and a
+        translation (`Massing.model_frame`). The schematic *is* the model's
+        grid. Walking the latticed plan frame and then the turned mesh frame
+        does not invert: `on_a_lattice` moves the plan origin, `with_the_plan`
+        only turns the mesh, and the build comes back metres off the model
+        it was read from. Two-file still goes plan (u, v), then the
+        registration, then the mesh frame.
+        """
+        width = sched.width
+        easts: list[float] = []
+        norths: list[float] = []
+        grid = getattr(getattr(read, "massing", None), "grid", None)
+        reg = gate.Registration.measured(derived)
+        if grid is not None and reg is None:
+            for d in sched.built.values():
+                for i, bit in enumerate(d.mask.bits):
+                    if not bit:
+                        continue
+                    x, z = grid.to_model(i % width, i // width)
+                    easts.append(x)
+                    norths.append(-z)
+            if not easts:
+                return None
+            return (min(easts), max(easts), min(norths), max(norths))
+
+        rec = derived.get("mesh") or {}
+        doc = rec.get("frame") or {}
+        origin = doc.get("origin")
+        if not origin or len(origin) != 2:
+            return None
+        extent = doc.get("extent") or (0.0, 0.0)
+        mesh_frame = Frame((float(origin[0]), float(origin[1])),
+                           float(doc.get("angle") or 0.0),
+                           float(extent[0]), float(extent[1]))
+        for d in sched.built.values():
+            for i, bit in enumerate(d.mask.bits):
+                if not bit:
+                    continue
+                u, v = read.frame.to_local(i % width + 0.5, i // width + 0.5)
+                if reg is not None:
+                    u, v = reg.to_mesh_u(u), reg.to_mesh_v(v)
+                x, z = mesh_frame.to_world(u, v)
+                easts.append(x)
+                norths.append(-z)
+        if not easts:
+            return None
+        return (min(easts), max(easts), min(norths), max(norths))
 
     def clip_box(self, g, derived):
         """Whether the frame the section is cut in is the building or the box.

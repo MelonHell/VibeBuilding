@@ -434,31 +434,26 @@ def fits_clip_box(mesh, frame, within: float = CLIP_BOX_SAME) -> dict:
     }
 
 
-def mesh_plan_bounds(mesh, frame, registration=None) -> dict:
-    """The mesh's full reach in plan (u, v).
+def mesh_clip_bounds(mesh) -> dict:
+    """The mesh's reach in the converter's frame: east and north.
 
-    Registration records only the high points above REGISTER_FLOOR, which
-    is the wrong box for whether the clip holds the site: a wide clip that
-    still holds the clubhouse would look short if only the tower were
-    measured. The four XZ corners of the AABB are the clip's own reach
-    (or the file's, when nothing was clipped) and they cost nothing extra
-    -- `fits_clip_box` already asks `mesh.bounds()`.
+    The clip is axis-aligned here. Recording it in plan (u, v) and taking
+    the AABB of the four corners inflates the box by |cos θ| + |sin θ| on
+    each side -- tens of metres of empty corner on a rotated clip -- and a
+    clubhouse sitting in that corner stays green. World space has no such
+    AABB, and it is the frame `--clip-east` / `--clip-north` argue in.
+
+    Registration's high-point extents are the wrong box for a different
+    reason: they drop everything at or below REGISTER_FLOOR.
     """
     (x0, _y0, z0), (x1, _y1, z1) = mesh.bounds()
-    us: list[float] = []
-    vs: list[float] = []
-    for x, z in ((x0, z0), (x0, z1), (x1, z0), (x1, z1)):
-        u, v = frame.to_local(x, z)
-        if registration is not None:
-            u = registration.to_build_u(u)
-            v = registration.to_build_v(v)
-        us.append(u)
-        vs.append(v)
+    # OBJ: x=east, z=south, so north = -z. Sorted so north0 < north1.
+    north0, north1 = sorted((-z1, -z0))
     return {
-        "u0": round(min(us), 1),
-        "u1": round(max(us), 1),
-        "v0": round(min(vs), 1),
-        "v1": round(max(vs), 1),
+        "east0": round(x0, 1),
+        "east1": round(x1, 1),
+        "north0": round(north0, 1),
+        "north1": round(north1, 1),
     }
 
 
@@ -1115,7 +1110,7 @@ class Survey:
                           "angle": round(model_frame.angle, 2),
                           "extent": [round(read.frame.extent_u, 1),
                                      round(read.frame.extent_v, 1)]},
-                "bounds": mesh_plan_bounds(mesh, model_frame),
+                "bounds": mesh_clip_bounds(mesh),
             }
             note["registration"] = {"needed": False,
                                    "why": "the plan and the section come from the "
@@ -1187,7 +1182,7 @@ class Survey:
                       "extent": [round(mesh_frame.extent_u, 1),
                                  round(mesh_frame.extent_v, 1)],
                       "clip_box": fits_clip_box(mesh, mesh_frame)},
-            "bounds": mesh_plan_bounds(mesh, mesh_frame, reg),
+            "bounds": mesh_clip_bounds(mesh),
         }
         note["registration"] = {
             "needed": True,

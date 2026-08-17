@@ -311,21 +311,19 @@ class Schedule:
         """
         return [i for i in self.items if i.placed]
 
-    def extent(self, frame=None) -> tuple[float, float, float, float]:
-        """The bounding box of every declaration.
+    def extent(self, frame=None) -> tuple[float, float, float, float] | None:
+        """The bounding box of every declaration, or None if nothing was declared.
 
         What the build actually occupies, as opposed to what the plan drew: the
-        two differ exactly where the build put something the plan never had, and
-        that difference is what `site_covered` grades. World cells if no frame
-        is given -- the schedule does not carry one -- and plan (u, v) when it
-        is, because that is the space the reference is recorded in. A world
-        AABB compared to a plan AABB is a false red on any building that is
-        not already axis-aligned.
+        two differ exactly where the build put something the plan never had.
+        World cells if no frame is given -- the schedule does not carry one --
+        and plan (u, v) when it is. An empty declaration is not a box at the
+        origin: that reads as a real building and grades as one.
         """
         cells = [i for d in self.built.values()
                  for i, v in enumerate(d.mask.bits) if v]
         if not cells:
-            return (0.0, 0.0, 0.0, 0.0)
+            return None
         width = self.width
         if frame is None:
             xs = [i % width for i in cells]
