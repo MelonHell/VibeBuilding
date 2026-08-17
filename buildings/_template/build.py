@@ -176,8 +176,10 @@ class Site:
 
     def __init__(self, derived: dict, greybox: bool = False):
         self.d = derived
-        # Stored so `--greybox` can be passed in without a second constructor,
-        # and so a section can ask which half it is in.
+        # The greybox is a massing study: `shell` fills each part when this
+        # is set, and leaves the ring for the finished build. Same section,
+        # two artefacts -- a second `volumes` section on GREYBOX would run
+        # on the full build too and leave undeclared stone in every room.
         self.greybox = greybox
         read = derive.plan_of()
         # Two masks, and which one a section wants is a real question.
@@ -425,10 +427,14 @@ def ground(canvas: Canvas, site: Site, sched: Schedule) -> None:
 def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
     """Each drawn part, extruded to its own measured height.
 
-    Hollow, not solid. A filled volume is a massing study: it passes the section,
-    reads as a block of stone in every render, and cannot be walked into. The
-    greybox is that envelope -- one material, no openings -- and DETAIL is what
-    turns it into a building.
+    Under `--greybox` the extrusion is solid. A filled volume is a massing
+    study (`build.solid` says so), and the greybox *is* that study -- the
+    thing gate 4 looks at, beside a filled layout.png. Hollow rings read as
+    courtyards, and a flood-fill of a ring cannot tell a court from a room.
+
+    The full run is hollow. A solid you cannot walk into is wrong after the
+    form is agreed, and the schedule declares the ring because a declaration
+    as wide as the footprint is satisfied by the neighbours standing in it.
     """
     # Each part is declared with the mask the blocks actually went into, not
     # with the whole footprint. A declaration wider than what it describes is
@@ -438,9 +444,13 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
     for name in site.tops:
         foot = site.footprint(name)
         top = site.tops[name]
-        ring = foot.outline(THICK)
-        build.walls(canvas, foot, site.ground, top, WALL, THICK)
-        sched.declare("shell", ring, site.ground, top)
+        if site.greybox:
+            build.solid(canvas, foot, site.ground, top, WALL)
+            sched.declare("shell", foot, site.ground, top)
+        else:
+            ring = foot.outline(THICK)
+            build.walls(canvas, foot, site.ground, top, WALL, THICK)
+            sched.declare("shell", ring, site.ground, top)
 
     # -- when one height does not describe a part ----------------------------
     #

@@ -10,13 +10,15 @@ in both lists runs twice, and the second call wins wherever they disagree.
 
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from blockwright.schem import Schematic
+from blockwright.schem import AIR, Schematic
+from tools import fixture
 from tools.pipeline_selftest import MAPPED, make
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +46,59 @@ def run(*args: str) -> str:
 
 def counts_of(path: Path) -> dict[str, int]:
     return dict(Schematic.read(path).counts())
+
+
+def fixture_boxes() -> list[tuple[float, float, float, float, float]]:
+    boxes = [(p[1], p[2], p[3], p[4], p[5]) for p in fixture.PARTS]
+    boxes.append(fixture.OUTBUILDING)
+    return boxes
+
+
+def fixture_volume() -> float:
+    return sum((u1 - u0) * (v1 - v0) * top for u0, u1, v0, v1, top in fixture_boxes())
+
+
+def fixture_ring() -> float:
+    # Outline cells of a rectangle, times height. The four corners are in
+    # both side counts and come out once.
+    n = 0.0
+    for u0, u1, v0, v1, top in fixture_boxes():
+        du, dv = u1 - u0, v1 - v0
+        n += (2.0 * (du + dv) - 4.0) * top
+    return n
+
+
+def prove_occupancy(where: Path, grey: Path) -> str | None:
+    """Fail if the greybox is hollow, or if GREYBOX never extruded a part.
+
+    A ring and a volume produce two different WALL counts from the same
+    boxes; the fixture's own geometry is those two numbers. A mid-height
+    layer of each part being filled (not an outline) is the same fact
+    asked another way, and catches a list that skipped a wing whose
+    remaining stone still looks closer to a volume than a ring.
+    """
+    recipe = importlib.import_module(f"buildings._selftest_{KIND}.build")
+    wall = counts_of(grey).get(recipe.WALL, 0)
+    volume = fixture_volume()
+    ring = fixture_ring()
+    if abs(wall - volume) >= abs(wall - ring):
+        return (f"FAIL: greybox holds {wall} WALL, closer to a ring "
+                f"({ring:.0f}) than a volume ({volume:.0f})")
+
+    site = recipe.Site(
+        json.loads((where / "out" / "derived.json").read_text(encoding="utf-8")),
+        greybox=True)
+    model = Schematic.read(grey)
+    for name in site.tops:
+        interior = site.footprint(name).erode(recipe.THICK)
+        if interior.count() == 0:
+            return f"FAIL: {name} is too thin to have an interior"
+        y = site.ground + max(1, (site.tops[name] - site.ground) // 2)
+        empty = sum(1 for x, z in interior.cells() if model.get(x, y, z) == AIR)
+        if empty:
+            return (f"FAIL: {name} at y={y} is hollow "
+                    f"({empty} of {interior.count()} interior cells empty)")
+    return None
 
 
 def prove_overlap() -> str | None:
@@ -83,6 +138,11 @@ def main() -> int:
             return 1
         if full.exists():
             print("FAIL: --greybox wrote build.schem")
+            return 1
+
+        failed = prove_occupancy(where, grey)
+        if failed:
+            print(failed)
             return 1
 
         run("-m", f"buildings._selftest_{KIND}.build", "--quick")
