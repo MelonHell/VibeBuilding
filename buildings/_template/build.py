@@ -363,6 +363,17 @@ def ground(canvas: Canvas, site: Site, sched: Schedule) -> None:
     # is inside "still one site" and comes out with paving between. A building
     # that wants the lawn to stay a lawn lowers `COURT` below half the gap and
     # answers `strays` some other way.
+    #
+    # **A part further off than twice `COURT` is not bridged, and the row that
+    # notices is `strays`, which will not mention the assembly that put it
+    # there.** It counts blocks adrift from the main mass and says so in blocks
+    # -- a detached clubhouse across a lawn is a few thousand of them, and the
+    # message reads as clutter. That is the row to look at first when a build
+    # that grew a part off `derived.json` suddenly fails a budget it used to
+    # pass. Three answers, in order of honesty: pave the gap (raise `COURT`, if
+    # the site really is one piece of ground), lay that part its own ground so
+    # it is not adrift, or raise `GROUNDED_STRAYS` in `gate.py` with the reason
+    # written beside it.
     pad = site.site.dilate(COURT).erode(COURT).dilate(APRON)
     build.solid(canvas, pad, site.ground, site.ground + 1, PAVING)
     sched.declare("podium", pad, site.ground, site.ground + 1)
