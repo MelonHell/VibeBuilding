@@ -487,6 +487,13 @@ def prove_pause() -> int:
         if f"python -m buildings.{name}.build --greybox" not in said:
             return fail("the refusal did not print the command that arms "
                         "it:\n" + said)
+        # The refusal returns before any step runs, so the building it fires
+        # on has no derived.json -- and `build --greybox` refuses without one.
+        # A recipe that starts at build sends its reader into a second error.
+        if f"python -m buildings.{name}.probes.derive" not in said:
+            return fail("the refusal named build --greybox but not derive, "
+                        "which build --greybox needs and this building has "
+                        "not run:\n" + said)
         if f"python -m buildings.{name}.review --greybox --mesh" not in said:
             return fail("the refusal did not print the review command:\n" + said)
         if "## Gate 4 -- greybox" not in said:

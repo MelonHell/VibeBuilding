@@ -305,6 +305,12 @@ def unarmed(building: str, journal: Path | None = None) -> str | None:
         "greybox round was ever written down.",
         "",
         "Arm it:",
+        # `derive` first, and it is not padding. This refusal returns before
+        # any step runs, so on the fresh building it exists for there is no
+        # out/derived.json yet -- and `build --greybox` refuses without one.
+        # The second error does name derive, so the recipe self-corrects, but
+        # it self-corrects by failing at the person who followed it.
+        f"  python -m buildings.{building}.probes.derive",
         f"  python -m buildings.{building}.build --greybox",
         f"  python -m buildings.{building}.review --greybox --mesh",
         f"  then /blockwright-greybox {building}, which runs the loop and "
