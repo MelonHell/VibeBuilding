@@ -400,10 +400,31 @@ CLIP_BOX_SAME = 1.0
 # stop settling which way round they are. `gate.Registration` says it in its own
 # docstring: `Frame.fit` points +u into the eastern half-plane, "which settles
 # the ambiguity whenever the two bearings are close. It does not settle it when
-# they are not." Two degrees is the bar the squareness row already prints its
-# warning at, and it is what `Survey.assemble` leans on when a width profile is
-# too flat for `orient` to read a flip off.
+# they are not."
+#
+# Two degrees, and it is one constant in two places rather than two numbers
+# that happen to agree. The squareness warning in `Survey.report` carried its
+# own bare 2.0 while this comment named that warning as its justification,
+# which is a circle. What the number is: under it a turn between the two fits
+# is inside what a scale-and-shift registration absorbs and what the section
+# reports as noise; over it the two fits disagree about which way the building
+# points. That is the same fact whether it is being printed to a reader or
+# leaned on by `Survey.assemble` when a width profile is too flat for `orient`
+# to read a flip off.
 ORIENT_SQUARE = 2.0
+
+# How much overlap the sweep has to gain before turning the reference is worth
+# calling a disagreement rather than rasterisation. Five hundredths of an IoU:
+# on a footprint of a few thousand cells that is tens of cells moving together,
+# which a degree of real rotation produces and photogrammetric noise does not.
+SQUARE_GAIN = 0.05
+
+# How close the four orientation scores may be before the winner is reported as
+# a close call. It is a gap between sums of two agreement scores and so carries
+# no unit; what it is set against is that a building with a short wing or a
+# round end separates the four by several times this, and a symmetric one does
+# not separate them at all. Read it beside `undetermined`, never alone.
+ORIENT_CLOSE = 0.15
 
 
 def fits_clip_box(mesh, frame, within: float = CLIP_BOX_SAME) -> dict:
@@ -2363,7 +2384,7 @@ class Survey:
             scores.pop("shape_floor", None)
             lines.append(f"    the reference stands {r['turned']} to the plan; "
                          f"fit {scores}")
-            if margin is not None and margin < 0.15:
+            if margin is not None and margin < ORIENT_CLOSE:
                 lines.append(
                     f"    chosen by {margin:.3f}, which is close. On a "
                     "symmetric building either way round is the same building "
@@ -2385,11 +2406,13 @@ class Survey:
                 f"    frames square to within {sq['best']:+.1f} deg: the two "
                 f"footprints overlap {sq['as_fitted']:.3f} as fitted, "
                 f"{sq['overlap']:.3f} at the best angle in the sweep")
-            if abs(sq["best"]) >= 2.0 and sq["gain"] >= 0.05:
+            if abs(sq["best"]) >= ORIENT_SQUARE and sq["gain"] >= SQUARE_GAIN:
                 lines.append(
                     f"    THE FRAMES ARE NOT SQUARE. Turning the reference "
                     f"{sq['best']:+.1f} deg would gain {sq['gain']:.3f} of "
-                    "overlap, which means the two fits disagree about which "
+                    f"overlap, past {ORIENT_SQUARE:.1f} deg and "
+                    f"{SQUARE_GAIN:.2f}, which means the two fits disagree "
+                    "about which "
                     "way this building points. The registration does not "
                     "rotate, so that disagreement is spread over every station "
                     "of every section as if it were photogrammetry noise.\n"
