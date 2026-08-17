@@ -272,20 +272,32 @@ class Read:
         return (min(p.u0 for p in parts), max(p.u1 for p in parts),
                 min(p.v0 for p in parts), max(p.v1 for p in parts))
 
-    def drawn_bounds(self) -> tuple[float, float, float, float]:
-        """The extent of the parts the drawn source stated, and no others.
+    def drawn_parts(self) -> list:
+        """The parts the drawn source stated, and no others.
 
-        `bounds` is every part of the plan, which after `Survey.assemble` is the
-        whole site. Three measurements are taken against the reference -- the
-        registration, the facade bands the storey rhythm is read on, and the
-        size witness -- and all three are about the *building* the drawn source
-        drew, because the reference answers them on material above
-        `REGISTER_FLOOR` and a single-storey pool house across the lawn is not
-        in that. Putting it in the plan's half of the comparison would stretch
-        one axis by the width of the site and stop the run with a message about
-        a clip that is not the problem.
+        `parts` is every part of the plan, which after `Survey.assemble` is the
+        whole site. Everything measured *against* the reference is about the
+        building the drawn source drew -- the registration and the flip it is
+        read with, the facade bands the storey rhythm is taken on, the size
+        witness, the longest edge the notch pitch is read off -- because the
+        reference answers those on material above `REGISTER_FLOOR` and a
+        single-storey pool house across the lawn is not in that.
+
+        One method rather than the same comprehension in five places: the two
+        that were written separately are exactly the pair that drifted apart,
+        with `link_to` taking `drawn_bounds()` for the extents and every part
+        for the profile the flip is read off.
         """
-        parts = [self.named[name] for name in self.drawn] or self.parts
+        return [self.named[name] for name in self.drawn] or self.parts
+
+    def drawn_bounds(self) -> tuple[float, float, float, float]:
+        """The extent of `drawn_parts`.
+
+        Putting an assembled part in the plan's half of the registration would
+        stretch one axis by the width of the site and stop the run with a
+        message about a clip that is not the problem.
+        """
+        parts = self.drawn_parts()
         return (min(p.u0 for p in parts), max(p.u1 for p in parts),
                 min(p.v0 for p in parts), max(p.v1 for p in parts))
 
@@ -746,7 +758,7 @@ class Survey:
         The thing a reader could act on is the stop.
         """
         reference = evidence.reference
-        drawn = [read.named[name] for name in read.drawn]
+        drawn = read.drawn_parts()
         floor = float(self.t.MATCH_FLOOR)
         record = {"drawn": len(drawn), "reference_parts": 0, "matched": 0,
                   "extra": 0, "floor": floor,
@@ -1165,7 +1177,17 @@ class Survey:
         # canonical fits can land half a turn apart. Everything then registers
         # perfectly and every window is measured at the opposite end of the
         # building. Read off the plan's own asymmetry, on every run.
-        drawn = gate.Plan.from_parts(read.parts, read.frame)
+        #
+        # The drawn parts and not every part, for the same reason the extents
+        # three lines up are `drawn_bounds()`. Harmless on the first call, where
+        # nothing has been assembled yet; not harmless on the second, which
+        # `witnesses_of` makes against the already-assembled plan to ask a
+        # second OBJ the same questions. There the assembled parts lie outside
+        # `build_u`, `_profile` clamps everything out of span into the end bins,
+        # and the flip would be decided on a profile with two invented spikes at
+        # its ends. A wrong flip puts every `part heights agree` reading at the
+        # other end of the building.
+        drawn = gate.Plan.from_parts(read.drawn_parts(), read.frame)
         flip_u, flip_v, scores = reg.orient(high, drawn)
         reg.flip_u, reg.flip_v = flip_u, flip_v
 
@@ -1399,7 +1421,7 @@ class Survey:
         # its two long facades, and a pool house fifteen metres clear of it
         # would put one of them on the pool house's back wall -- where the
         # rhythm read would be a real rhythm, of the wrong building.
-        parts = [read.named[name] for name in read.drawn]
+        parts = read.drawn_parts()
         u0, u1, v0, v1 = read.drawn_bounds()
         body = (u0 + self.t.BODY[0] * (u1 - u0), u0 + self.t.BODY[1] * (u1 - u0))
 
@@ -1944,8 +1966,7 @@ class Survey:
         # photogrammetric silhouette, which is exactly the kind of edge this row
         # exists to keep out -- "the map and the model have edges somebody else
         # made", and a capture's are edges nobody made.
-        edge = max((read.named[name] for name in read.drawn),
-                   key=lambda p: p.u1 - p.u0)
+        edge = max(read.drawn_parts(), key=lambda p: p.u1 - p.u0)
         profile = measure.edge_profile(edge.mask, read.frame, self.t.PROFILE_BIN)
         series = measure.detrend(
             measure.median_filter(profile.trim(self.t.PROFILE_TRIM).series("high"),
