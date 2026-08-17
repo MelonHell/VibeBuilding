@@ -29,6 +29,7 @@ from pathlib import Path
 from PIL import Image
 
 from . import findings, render, sources
+from .paths import schematic_of
 from .schem import Schematic
 
 
@@ -916,9 +917,10 @@ class Review:
         # world somebody pasted it into, and the pipeline does not own that
         # boundary: a fault fixed here and not re-pasted there reads exactly
         # like a fault that was never fixed. It has happened.
-        tally = self.paths.OUT / "massing.stamp.md"
+        built = schematic_of(self.paths)
+        tally = self.paths.OUT / f"{built.stem}.stamp.md"
         if tally.exists():
-            print(f"[review] the renders are of {self.paths.SCHEM.name}. If a "
+            print(f"[review] the renders are of {built.name}. If a "
                   f"world is being judged instead, check it against "
                   f"{tally.name} first (//count) or re-paste.")
 
@@ -936,8 +938,9 @@ class Review:
                                  "Blender")
         args = parser.parse_args(argv)
 
-        if not self.paths.SCHEM.exists():
-            raise SystemExit(f"{self.paths.SCHEM} is missing; run build.py first")
+        built = schematic_of(self.paths)
+        if not built.exists():
+            raise SystemExit(f"{built} is missing; run build.py first")
 
         self.check_written()
 
@@ -947,8 +950,8 @@ class Review:
         # the findings answer last week's question. Worse here than at the gate:
         # a person then spends an hour fixing faults that were fixed last week.
         recipe = Path(self.paths.HERE) / "build.py"
-        if self.paths.SCHEM.stat().st_mtime < recipe.stat().st_mtime:
-            raise SystemExit(f"{self.paths.SCHEM.name} is older than {recipe.name}; "
+        if built.stat().st_mtime < recipe.stat().st_mtime:
+            raise SystemExit(f"{built.name} is older than {recipe.name}; "
                              f"rebuild before reviewing")
 
         derived = self.measured()
@@ -961,7 +964,7 @@ class Review:
         self.archive()
         self.clear()
         frame = read.frame
-        model = Schematic.read(self.paths.SCHEM)
+        model = Schematic.read(built)
         shots = self.resolve((frame.extent_u, frame.extent_v,
                               float(model.height)),
                              self.size[0] / self.size[1])

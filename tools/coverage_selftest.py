@@ -64,6 +64,11 @@ ANNEX = (30.0, 50.0, -27.0, -15.0, 7.0)
 # that is the real constraint -- the floor has to clear the accessory volumes
 # and still keep every part of the drawn building in the fit.
 ANNEX_FLOOR = 7.5
+# The comment above names both halves of the band. The runtime guard in
+# `prove_register_floor` only checks the annex sits under this floor; a
+# floor that climbed into the lower wing would still pass that guard, and
+# the proof would then be about a different building.
+assert ANNEX_FLOOR < min(part[-1] for part in fixture.PARTS)
 
 # How far a face of an assembled part may stand from where the fixture drew it.
 # Five metres. The five things that legitimately move the worst face -- the one

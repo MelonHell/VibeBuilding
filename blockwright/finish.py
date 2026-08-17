@@ -159,6 +159,11 @@ def finish(canvas, out, frame, *, schedule=None,
            views=STANDARD, sheets=SHEETS, plans=(), photos=()) -> Finished:
     """Join the blocks up, write everything, and draw what came out.
 
+    `name` is the stem of everything this writes that is *this* build: the
+    schematic, the stamp, the silhouette and the plan cuts. A greybox and a
+    finished build share an `out/`, and without the stem they would overwrite
+    each other -- which is how form and material used to be one file.
+
     `plans` are extra (label, y) horizontal cuts to write as PNGs -- a silhouette
     says how wide and how tall, and cannot say whether a court is open.
 

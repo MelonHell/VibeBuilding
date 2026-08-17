@@ -20,6 +20,7 @@ Three kinds of value appear here, and each is labelled where it is set:
                 to glaze a screen in.
 
     python -m buildings.<name>.probes.derive
+    python -m buildings.<name>.build --greybox
     python -m buildings.<name>.build
     python -m buildings.<name>.gate
 
@@ -40,6 +41,7 @@ curved shell, a surface of revolution, a colonnade and a planted court.
 from __future__ import annotations
 
 import json
+import sys
 
 from blockwright import build
 from blockwright.build import Canvas, Facade
@@ -172,8 +174,11 @@ class Site:
     others by half a degree after the layout is redrawn.
     """
 
-    def __init__(self, derived: dict):
+    def __init__(self, derived: dict, greybox: bool = False):
         self.d = derived
+        # Stored so `--greybox` can be passed in without a second constructor,
+        # and so a section can ask which half it is in.
+        self.greybox = greybox
         read = derive.plan_of()
         # Two masks, and which one a section wants is a real question.
         #
@@ -421,7 +426,9 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
     """Each drawn part, extruded to its own measured height.
 
     Hollow, not solid. A filled volume is a massing study: it passes the section,
-    reads as a block of stone in every render, and cannot be walked into.
+    reads as a block of stone in every render, and cannot be walked into. The
+    greybox is that envelope -- one material, no openings -- and DETAIL is what
+    turns it into a building.
     """
     # Each part is declared with the mask the blocks actually went into, not
     # with the whole footprint. A declaration wider than what it describes is
@@ -431,43 +438,9 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
     for name in site.tops:
         foot = site.footprint(name)
         top = site.tops[name]
-        floors = [y for y in site.levels if site.ground < y < top]
         ring = foot.outline(THICK)
-        deck = foot.erode(THICK)
-
         build.walls(canvas, foot, site.ground, top, WALL, THICK)
         sched.declare("shell", ring, site.ground, top)
-
-        for y in floors:
-            build.slab(canvas, foot, y, DECK, inset=THICK)
-            sched.declare("floors", deck, y, y + 1)
-
-        # The roof is a floor like any other, and this skeleton did without one
-        # for a long time: a ring of wall with storeys inside it and open sky
-        # over the middle. Almost nothing here says so. The section reads the
-        # tallest thing over each station and the parapet ring stands a metre
-        # above the roof line, so a hole in the middle of a part is answered by
-        # its own edge; the first render is what shows it.
-        build.slab(canvas, foot, top - 1, DECK, inset=THICK)
-        sched.declare("floors", deck, top - 1, top)
-
-        # The parapet: a course above the roof line, which is what stops a roof
-        # reading as an unfinished floor.
-        build.walls(canvas, foot, top, top + 1, TRIM, THICK)
-        sched.declare("parapets", ring, top, top + 1)
-
-        # Window bays, spaced by arc length along the wall and not by u. Spacing
-        # by u puts the bays closer together on any wall that is not square to
-        # the frame, which on a rotated building is every wall that turns a
-        # corner, and the rhythm visibly tightens at the corners.
-        face = Facade(foot)
-        build.windows(canvas, foot, face, site.ground + 1, top - 1,
-                      period=FACADE_PITCH, width=FACADE_WIDTH,
-                      thickness=THICK, block=GLASS)
-        sched.declare("glazing",
-                      build.openings(foot, face, FACADE_PITCH, FACADE_WIDTH,
-                                     THICK),
-                      site.ground + 1, top - 1)
 
     # -- when one height does not describe a part ----------------------------
     #
@@ -489,7 +462,65 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
     # `probes/derive.py`, where the reference is open. What none of them do is
     # follow the surface cell by cell -- every answer is a level a wall can be
     # built to, and a build that voxelises a capture is a pile of rubble.
-    #
+
+
+def floors(canvas: Canvas, site: Site, sched: Schedule) -> None:
+    """A deck at every measured storey line, and a roof over each part.
+
+    The roof is a floor like any other, and this skeleton did without one
+    for a long time: a ring of wall with storeys inside it and open sky
+    over the middle. Almost nothing here says so. The section reads the
+    tallest thing over each station and the parapet ring stands a metre
+    above the roof line, so a hole in the middle of a part is answered by
+    its own edge; the first render is what shows it.
+    """
+    for name in site.tops:
+        foot = site.footprint(name)
+        top = site.tops[name]
+        deck = foot.erode(THICK)
+        for y in (y for y in site.levels if site.ground < y < top):
+            build.slab(canvas, foot, y, DECK, inset=THICK)
+            sched.declare("floors", deck, y, y + 1)
+        build.slab(canvas, foot, top - 1, DECK, inset=THICK)
+        sched.declare("floors", deck, top - 1, top)
+
+
+def parapets(canvas: Canvas, site: Site, sched: Schedule) -> None:
+    """The upstand around each roof, one course above the roof line.
+
+    That course is what stops a roof reading as an unfinished floor, and
+    it is also what raises the build's top by a metre -- the modelled
+    branch of the pipeline selftest sets REGISTER_AT from that top, so
+    this section moving in or out of GREYBOX moves the ceiling the
+    registration is fitted under.
+    """
+    for name in site.tops:
+        foot = site.footprint(name)
+        top = site.tops[name]
+        ring = foot.outline(THICK)
+        build.walls(canvas, foot, top, top + 1, TRIM, THICK)
+        sched.declare("parapets", ring, top, top + 1)
+
+
+def glazing(canvas: Canvas, site: Site, sched: Schedule) -> None:
+    """Window bays, spaced by arc length along the wall and not by u.
+
+    Spacing by u puts the bays closer together on any wall that is not
+    square to the frame, which on a rotated building is every wall that
+    turns a corner, and the rhythm visibly tightens at the corners.
+    """
+    for name in site.tops:
+        foot = site.footprint(name)
+        top = site.tops[name]
+        face = Facade(foot)
+        build.windows(canvas, foot, face, site.ground + 1, top - 1,
+                      period=FACADE_PITCH, width=FACADE_WIDTH,
+                      thickness=THICK, block=GLASS)
+        sched.declare("glazing",
+                      build.openings(foot, face, FACADE_PITCH, FACADE_WIDTH,
+                                     THICK),
+                      site.ground + 1, top - 1)
+
     # -- a balcony is a recess, not a shelf ---------------------------------
     #
     # Balconies drawn as slabs sticking out of the wall plane fail the section
@@ -500,23 +531,53 @@ def shell(canvas: Canvas, site: Site, sched: Schedule) -> None:
     # the review uses. The exception is a balcony the capture itself holds as
     # an overhang, which is a measured fact and is built where it was measured.
 
-    # -- this building's own sections go here -------------------------------
-    #
-    # One function per part, each taking `(canvas, site, sched)` and declaring
-    # what it placed. Keeping them separate is what lets a review finding be
-    # answered by rewriting one of them.
-    #
-    # Before drawing anything narrow, check it against `site.staircase` and stop
-    # rather than draw it:
-    #
-    #     if width < site.staircase:
-    #         raise SystemExit(
-    #             f"a member {width:.1f} m wide is under this frame's "
-    #             f"{site.staircase:.2f} m staircase; it would rasterise into "
-    #             "cells joined only at their corners")
+
+# The two halves of a build, and the order they are written in.
+#
+# GREYBOX puts up the volumes: each part's footprint extruded to its measured
+# height, and the roof steps where the reference measured them. Nothing else --
+# no cavities, no openings, no material beyond one block per part.
+#
+# DETAIL is everything after that.
+#
+# The split is what makes gate 4 mean anything. Run under --greybox the build
+# stops after the first list, and the form is looked at and agreed before a line
+# of the second list is written. Reviewed the other way round -- form and colour
+# together at the end -- a wrong wing is found after a week of facades has been
+# hung on it, which is how this pipeline worked until now.
+GREYBOX = (ground, shell)
+
+DETAIL = (floors, parapets, glazing)
+
+# -- this building's own sections go here -------------------------------
+#
+# One function per part, each taking `(canvas, site, sched)` and declaring
+# what it placed. Keeping them separate is what lets a review finding be
+# answered by rewriting one of them. A volume belongs in GREYBOX; everything
+# after the envelope belongs in DETAIL.
+#
+# Before drawing anything narrow, check it against `site.staircase` and stop
+# rather than draw it:
+#
+#     if width < site.staircase:
+#         raise SystemExit(
+#             f"a member {width:.1f} m wide is under this frame's "
+#             f"{site.staircase:.2f} m staircase; it would rasterise into "
+#             "cells joined only at their corners")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    greybox = "--greybox" in argv
+
+    overlap = set(GREYBOX) & set(DETAIL)
+    if overlap:
+        raise SystemExit(
+            "section(s) in both GREYBOX and DETAIL: "
+            + ", ".join(sorted(f.__name__ for f in overlap))
+            + ".\nA section belongs to one list. Called twice it draws twice, "
+            "and the second call is the one that quietly wins.")
+
     if not paths.DERIVED.exists():
         raise SystemExit(
             f"{paths.DERIVED} is missing. Every dimension in this build is "
@@ -524,11 +585,15 @@ def main() -> None:
             "until the references have been read:\n"
             "    python -m buildings.<name>.probes.derive")
 
-    site = Site(json.loads(paths.DERIVED.read_text(encoding="utf-8")))
+    site = Site(json.loads(paths.DERIVED.read_text(encoding="utf-8")),
+                greybox=greybox)
     canvas = Canvas(site.width, site.top + 4, site.length)
 
-    ground(canvas, site, SCHEDULE)
-    shell(canvas, site, SCHEDULE)
+    for section in GREYBOX:
+        section(canvas, site, SCHEDULE)
+    if not greybox:
+        for section in DETAIL:
+            section(canvas, site, SCHEDULE)
 
     print(site.frame)
     print(f"  levels  {', '.join(str(y) for y in site.levels)}, "
@@ -539,7 +604,9 @@ def main() -> None:
               f"v {p.v0:5.1f}..{p.v1:5.1f}  to {top} m")
 
     done = finish(canvas, paths.OUT, site.frame,
-                  schedule=SCHEDULE, orthos=paths.ORTHOS, scale=RENDER_SCALE,
+                  name="greybox" if greybox else "build",
+                  schedule=None if greybox else SCHEDULE,
+                  orthos=paths.ORTHOS, scale=RENDER_SCALE,
                   plans=(("ground", site.ground),
                          ("upper", site.levels[len(site.levels) // 2])))
     for line in done.lines():

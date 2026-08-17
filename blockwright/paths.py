@@ -16,8 +16,8 @@ actually its own: where it keeps anything unusual, and why.
 
 `globals().update` rather than an import, because `sources.survey` and every
 script reads these as attributes of the building's own `paths` module, and that
-is worth keeping: `paths.SCHEM` says which building it belongs to and
-`Layout.SCHEM` does not.
+is worth keeping: `paths.BUILD` (or `paths.SCHEM` on a package started before
+the split) says which building it belongs to and `Layout.SCHEM` does not.
 
 Nothing in `input/` is required. Every path below may or may not exist, and what
 is present is what decides what can be measured and what has to be declared --
@@ -112,4 +112,18 @@ class Layout:
         return f"<layout of {self.HERE.name}>"
 
 
-__all__ = ["CAPTURE_NAMES", "Layout"]
+def schematic_of(paths) -> Path:
+    """The finished schematic this package's gate and review read.
+
+    The template names it BUILD. Packages started before the split still
+    name it SCHEM. The role is the same -- what the recipe wrote without
+    --greybox -- and looking for only one spelling would silently ungrade
+    every building that kept the other.
+    """
+    try:
+        return paths.BUILD
+    except AttributeError:
+        return paths.SCHEM
+
+
+__all__ = ["CAPTURE_NAMES", "Layout", "schematic_of"]

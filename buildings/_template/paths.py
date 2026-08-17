@@ -36,7 +36,8 @@ MESH_FULL = OUT / "mesh" / "merged.obj"     # the whole capture, converted
 MESH = OUT / "mesh-clip" / "merged.obj"     # clipped to this site, not this building
 ORTHOS = OUT / "mesh-clip" / "orthos"       # Blender elevations of the clip
 
-SCHEM = OUT / "massing.schem"
+GREYBOX = OUT / "greybox.schem"     # the volumes alone, gate 4 looks at this
+BUILD = OUT / "build.schem"         # the finished build, gate 5 looks at this
 SCHEDULE = OUT / "schedule.json"
 REPORT = OUT / "report.json"
 DERIVED = OUT / "derived.json"          # what `probes/derive.py` measured

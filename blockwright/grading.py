@@ -49,6 +49,7 @@ from . import model as model3d
 from .frame import Frame
 from .mask import Mask, iou
 from .mesh import Mesh
+from .paths import schematic_of
 from .schedule import Schedule
 from .schem import AIR, Schematic
 
@@ -270,7 +271,8 @@ class Grading:
         # the case that actually happens: the fix is made, the run is
         # forgotten, and the gate reports the defect as still present -- or,
         # worse, as gone.
-        g.fresh(made=[paths.SCHEM, paths.SCHEDULE],
+        built = schematic_of(paths)
+        g.fresh(made=[built, paths.SCHEDULE],
                 sources=[read.source.path, paths.DERIVED,
                          Path(c.__file__).with_name("build.py")]
                         + ([reference.path] if reference else []))
@@ -279,7 +281,7 @@ class Grading:
                 print(line)
             return 1
 
-        model = Schematic.read(paths.SCHEM)
+        model = Schematic.read(built)
         frame, parts = read.frame, read.parts
         sched = Schedule.load(paths.SCHEDULE)
 
