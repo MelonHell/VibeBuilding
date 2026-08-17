@@ -21,6 +21,7 @@ import argparse
 import itertools
 import json
 import math
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -42,6 +43,11 @@ from .schem import Schematic
 # above `out/` -- nothing rebuilds it, so this folder no longer owns one.
 # `clear` must not unlink the name: for two frozen buildings it is the
 # only copy.
+#
+# **Nothing reads the set-aside copy.** `findings.path_of` looks for
+# `findings.md` and only that, so what lands under `LEFTOVER` is invisible to
+# the audit, to the manual mode's waiting check and to every printout. It is
+# rescued text, not a journal, and the move says so where it happens.
 PROMPT_FILE = "prompt.txt"
 FINDINGS = "findings.md"
 LEFTOVER = "findings.leftover.md"
@@ -290,6 +296,8 @@ GREYBOX_PROMPT = """You are reviewing a greybox of a real building -- the volume
 and their standing, with no windows, no balconies, no roof covering and no
 materials. Those absences are not defects. Do not report them.
 
+{description}
+
 You are given {count} images, each labelled before it:
 
 {kinds}
@@ -341,17 +349,35 @@ Be specific and be brief.
 """
 
 
-# Words a photo-review camera caption uses to point at finish. Any one of
-# them in a greybox prompt is a more specific instruction than the four
-# questions, and a naive reviewer follows the more specific one.
+# Words that point at finish rather than at form. Any one of them in a greybox
+# prompt is a more specific instruction than the four questions, and a naive
+# reviewer follows the more specific one -- it goes looking for the windows the
+# greybox does not have and reports them missing.
+#
+# The list can only ever be approximate, and that is survivable because of
+# which way it fails: a sentence wrongly dropped costs the reviewer some
+# context it could have used, and a sentence wrongly kept costs a round of
+# findings about nothing. So it is written wide, and substrings rather than
+# words -- "balcon" catches balcony, balconied and balconies.
 _FORM_POISON = (
     "glazing", "bays", "rhythm", "material", "colour", "color",
-    "palette", "window", "windows", "finish", "cladding", "glass",
+    "palette", "window", "finish", "cladding", "glass", "balcon",
+    "concrete", "brick", "stucco", "render", "timber", "stone", "steel",
+    "paint", "tile", "shingle", "louvre", "louver", "awning", "clad",
 )
 
 
 _FORM_LOOK = ("The volumes, their proportions, the shape in plan, and "
               "where the parts stand")
+
+
+# Printed where the building's own sentence would go, when every sentence of it
+# named finish. Saying nothing there would leave the reviewer unable to tell a
+# building nobody described from one whose description did not survive.
+_FORM_NO_DESCRIPTION = (
+    "Nothing here describes this building. What was written for it names "
+    "material and finish, which a greybox has none of, so it was left out. "
+    "Read the volumes off the images.")
 
 
 def form_reading(shot) -> str:
@@ -368,6 +394,35 @@ def form_reading(shot) -> str:
     if first and not any(word in lowered for word in _FORM_POISON):
         return f"{first}. {_FORM_LOOK}."
     return f"{_FORM_LOOK}."
+
+
+def form_description(text: str) -> str:
+    """The building's own description, with anything about finish taken out.
+
+    The greybox prompt carried no description at all for a while, and that was
+    the wrong half of the trade. The reviewer's first question is how many
+    parts the build has against how many the reference has, and answering it
+    off a photogrammetry capture without being told what the building IS means
+    guessing which blobs are the building and which are its neighbours. That
+    is exactly what `check_written` refuses an unwritten `DESCRIPTION` for.
+
+    What could not go in as written is the rest of it: the skeleton asks an
+    author for the volumes, **what they are made of**, and how they stand -- so
+    a description written to that instruction names material, and a material
+    sentence in this prompt beats three general forbids, the same way a camera
+    caption did.
+
+    So it goes in a sentence at a time, and only the sentences that name no
+    finish. A sentence naming both -- "two towers of white concrete stand
+    either side of a low wing" -- is lost whole, which loses form the reviewer
+    could have used and leaks nothing, and that is the trade being made on
+    purpose.
+    """
+    text = (text or "").strip()
+    kept = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text)
+            if part.strip()
+            and not any(word in part.lower() for word in _FORM_POISON)]
+    return " ".join(kept) if kept else _FORM_NO_DESCRIPTION
 
 
 @dataclass(frozen=True)
@@ -743,6 +798,10 @@ class Review:
         print(f"[review] moved {self._shown(leftover)} to {self._shown(aside)} "
               "-- this folder no longer owns the journal, and the text was "
               "not rewritten")
+        print(f"[review] nothing reads {self._shown(aside)}: the audit, the "
+              "manual mode and this printout all look at "
+              f"{self._shown(findings.path_of(self.paths))} and only there. It "
+              "is kept text, not a ledger -- copy across whatever still applies.")
 
     def clear(self) -> None:
         """Empty the review folder. Does not unlink a leftover findings.md.
@@ -1072,6 +1131,7 @@ class Review:
         if self.greybox:
             text = GREYBOX_PROMPT.format(
                 count=len(images), views=views,
+                description=form_description(self.description),
                 kinds="\n".join(kinds), noise=noise, pairing=pairing)
         else:
             text = PROMPT.format(
@@ -1115,21 +1175,27 @@ class Review:
                 print(f"[review] ! no photographs in {self.paths.PHOTOS}; nothing states the "
                       "material, and a capture cannot see under a roof")
 
+        # The journal and its audit, at both gates. This block used to sit
+        # inside the non-greybox branch, so gate 4 -- the one gate whose whole
+        # artefact is a loop -- said nothing about the loop: no round count, no
+        # open findings, no missing `Prevented by`, no abandoned-loop line. All
+        # of it was recovered at gate 5, one gate late, by which time the
+        # detail the greybox exists to precede had been drawn.
+        journal = findings.path_of(self.paths)
+        try:
+            shown = journal.relative_to(self.repo)
+        except ValueError:
+            shown = journal
+        print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
+              f"write the findings and what was done about each to {shown}")
         if self.greybox:
-            print(f"[review] read every image in that folder against {PROMPT_FILE}")
-        else:
-            journal = findings.path_of(self.paths)
-            try:
-                shown = journal.relative_to(self.repo)
-            except ValueError:
-                shown = journal
-            print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
-                  f"write the findings and what was done about each to {shown}")
-            # The state of the loop, printed rather than looked up. A round that
-            # leaves findings open is a round that has not closed, and the count is
-            # the only thing that says so out loud.
-            for line in findings.lines(journal, after=self.round):
-                print(f"[review] {line}")
+            print("[review] this round is gate 4: write it under "
+                  "`## Gate 4 -- greybox`, as `### Round N -- agent`")
+        # The state of the loop, printed rather than looked up. A round that
+        # leaves findings open is a round that has not closed, and the count is
+        # the only thing that says so out loud.
+        for line in findings.lines(journal, after=self.round):
+            print(f"[review] {line}")
 
         # What this stage renders is the schematic. What a person looks at is a
         # world somebody pasted it into, and the pipeline does not own that
@@ -1258,4 +1324,5 @@ class Review:
         return 0
 
 
-__all__ = ["FINDINGS", "LEFTOVER", "Outside", "PROMPT_FILE", "Review", "Shot"]
+__all__ = ["FINDINGS", "LEFTOVER", "Outside", "PROMPT_FILE", "Review", "Shot",
+           "form_description", "form_reading"]

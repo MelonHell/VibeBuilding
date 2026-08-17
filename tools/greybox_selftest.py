@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from PIL import Image
 
 from blockwright.schem import AIR, Schematic
 from tools import fixture
@@ -182,6 +185,70 @@ def prove_placeholder(where: Path) -> str | None:
     return None
 
 
+def prove_textured_skip(where: Path) -> str | None:
+    """The reference's textured pass does not reach the greybox reviewer.
+
+    `if mesh.exists() and not self.greybox` is one line, and it is the only
+    thing keeping a photogrammetric texture -- which is to say windows, on a
+    building that has none -- out of the folder a naive form reviewer is
+    handed. Until now its whole evidence was a hand run recorded in a report,
+    which is the kind of proof that stops being true without anyone noticing.
+
+    No Blender: both passes are planted as flat images under `paths.ORTHOS`,
+    exactly as Blender would leave them, and the review is run without
+    `--mesh` so nothing tries to render. What is asserted is what the line is
+    for -- the solid pass copied, the textured pass not -- plus the prompt
+    around it, since a folder with no windows in it and a prompt that says
+    "glazing" is the same defect one step later.
+    """
+    recipe = where / "review.py"
+    text = recipe.read_text(encoding="utf-8")
+    # A description with one clean sentence and one about finish. The
+    # skeleton asks an author for both, so this is what a filled-in
+    # DESCRIPTION actually looks like.
+    planted = ('DESCRIPTION = "Three boxes stand in a row, the middle one '
+               'taller than its neighbours. " \\\n'
+               '              "They are clad in white concrete with glazed '
+               'bays along the long face."')
+    swapped = re.sub(r'DESCRIPTION = "<.*?>"', planted, text, flags=re.S)
+    if swapped == text:
+        return "FAIL: could not plant a DESCRIPTION in the fixture's review.py"
+    recipe.write_text(swapped, encoding="utf-8")
+
+    module = importlib.import_module(f"buildings._selftest_{KIND}.review")
+    importlib.reload(module)
+    shots = [shot.name for shot in module.PLAN]
+
+    orthos = where / "out" / "mesh-clip" / "orthos"
+    orthos.mkdir(parents=True, exist_ok=True)
+    for name in shots:
+        Image.new("RGB", (64, 48), (200, 40, 40)).save(orthos / f"{name}_tex.png")
+        Image.new("RGB", (64, 48), (160, 160, 160)).save(orthos / f"{name}_solid.png")
+
+    run("-m", f"buildings._selftest_{KIND}.review", "--greybox")
+
+    folder = where / "out" / "greybox" / "review"
+    textured = sorted(p.name for p in folder.glob("*.mesh.jpg"))
+    if textured:
+        return ("FAIL: the textured reference pass reached the greybox "
+                "reviewer: " + ", ".join(textured))
+    solid = sorted(p.stem.split(".")[0] for p in folder.glob("*.mesh-solid.png"))
+    if solid != sorted(shots):
+        return (f"FAIL: the solid reference pass was not copied: got {solid}, "
+                f"expected {sorted(shots)}")
+
+    prompt = (folder / "prompt.txt").read_text(encoding="utf-8").lower()
+    leaked = [word for word in ("glazing", "bays", "rhythm", "concrete", "clad")
+              if word in prompt]
+    if leaked:
+        return ("FAIL: the greybox prompt points at finish: "
+                + ", ".join(leaked))
+    if "three boxes stand in a row" not in prompt:
+        return ("FAIL: the greybox prompt dropped the whole description; the "
+                "reviewer is left to guess how many parts it should see")
+    return None
+
+
 def prove_overlap() -> str | None:
     """A section in both lists must refuse before it draws anything."""
     from buildings._template import build as recipe
@@ -247,6 +314,13 @@ def main() -> int:
         if failed:
             print(failed)
             return 1
+
+        failed = prove_textured_skip(where)
+        if failed:
+            print(failed)
+            return 1
+        print("  the greybox review takes the solid reference pass and not "
+              "the textured one, and its prompt names no finish")
 
         n_parts = len(json.loads(
             (where / "out" / "derived.json").read_text(encoding="utf-8"))["parts"])
