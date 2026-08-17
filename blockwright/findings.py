@@ -190,6 +190,17 @@ def rounds(path: str | Path) -> list[tuple[int, int, str, int]]:
     return out
 
 
+def gates(path: str | Path) -> list[int]:
+    """Every gate section the journal has a heading for, in file order."""
+    text = Path(path).read_text(encoding="utf-8") if Path(path).exists() else ""
+    seen: list[int] = []
+    for mark in GATE.finditer(text):
+        n = int(mark.group("n"))
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
 def audit(path: str | Path, after: int = 0) -> list[str]:
     """What the journal says, and what is wrong with it.
 
@@ -251,6 +262,28 @@ def audit(path: str | Path, after: int = 0) -> list[str]:
     for rec in chronicle:
         if rec[0] not in seen_gates:
             seen_gates.append(rec[0])
+
+    # Findings and no chronicle at all. This was the one silence in the whole
+    # mechanism: the ledger parses, so none of the rules above fire, and
+    # `rounds()` comes back empty, so none of the rules below do either --
+    # an abandoned loop, an unwritten one and a closed one print identically,
+    # which is the failure this journal was built to make impossible.
+    #
+    # Two ordinary routes reach it. An author writes the finding blocks --
+    # which the format documentation stresses hardest -- and never writes the
+    # chronicle. Or writes the chronicle in Russian, the way the spec's own
+    # examples illustrate it, which neither pattern here can match. Both come
+    # out as a run that says nothing, so the headings are quoted exactly.
+    if not chronicle and not gateless:
+        out.append("  no chronicle: findings are recorded and nothing says "
+                   "whether any loop closed. An abandoned round, an unwritten "
+                   "one and a finished one read identically without it.")
+        out.append("  The chronicle's headings are parsed, so they are "
+                   "English and exact -- `## Gate 4 -- greybox` (or "
+                   "`## Gate 5 -- photo`), then `### Round 1 -- agent` under "
+                   "it, and `### Round 1 -- human` for a person's. Two hyphens, "
+                   "not a dash.")
+
     for gate in seen_gates:
         for who in ("agent", "human"):
             mine = [r for r in chronicle if r[0] == gate and r[2] == who]
@@ -259,6 +292,28 @@ def audit(path: str | Path, after: int = 0) -> list[str]:
                     f"  the {who} loop has no empty round: gate {gate} last "
                     f"round ({mine[-1][1]}) raised {mine[-1][3]} finding(s), "
                     "so it was left rather than closed")
+
+    # The number the scaffolding's own exit criterion is read off. `--manual`
+    # is temporary by design and nothing in the mechanism forces it out, so
+    # somebody has to look at how far apart the two pairs of eyes still are:
+    # a gate where the human's first round comes back empty is a gate that no
+    # longer needs a person. The count was parsed from the first day and
+    # aggregated by nothing, which is how the one number that says "done"
+    # became the one number the pipeline did not print.
+    for gate in seen_gates:
+        agent = [r for r in chronicle if r[0] == gate and r[2] == "agent"]
+        human = [r for r in chronicle if r[0] == gate and r[2] == "human"]
+        here = [one for one in found if one.gate == gate]
+        theirs = sum(1 for one in here if one.by == "human")
+        ours = len(here) - theirs
+        out.append(f"  gate {gate}: {len(agent)} agent round(s), "
+                   f"{len(human)} human round(s); {ours} finding(s) raised by "
+                   f"the agent, {theirs} by the human")
+        if human and not human[-1][3] and not theirs:
+            out.append(f"  gate {gate} closed on a human round that found "
+                       f"nothing, after {len(human)} round(s): this gate no "
+                       "longer needs a person, which is what says the manual "
+                       "mode can come out of it")
 
     for finding in found:
         if (finding.state in ("built", "rejected")
@@ -280,5 +335,5 @@ def lines(path: str | Path, after: int = 0) -> list[str]:
 
 __all__ = [
     "DISPOSITIONS", "FIELDS", "Finding", "REOPEN",
-    "audit", "lines", "path_of", "read", "rounds",
+    "audit", "gates", "lines", "path_of", "read", "rounds",
 ]

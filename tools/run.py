@@ -55,11 +55,22 @@ WAITING = 10
 # run them -- otherwise "nothing after this gate runs until you do" is a
 # caption on a run that already did the next thing. Gate 5 is the last
 # review; nothing here sits after it, so a wait there still rebuilds.
+#
+# Gate 1 is here and nothing writes its chronicle heading: there is no capture
+# reviewer, no gate-1 command and no eyes-on step in the capture skill, so
+# `waiting_at` can never return 1 today. The slot is kept because growing that
+# cycle later costs nothing while it exists -- but no document promises it, and
+# none should until something writes `## Gate 1 -- capture`.
 AFTER = {
     1: ("probes.derive", "build", "gate", "review"),
     4: ("build", "gate", "review"),
     5: (),
 }
+
+# The gate `--manual` exists to stop before. Named rather than written into the
+# condition below, because what makes the refusal correct is that this is the
+# gate that sits in front of the detail.
+GREYBOX_GATE = 4
 
 
 def load(path: Path) -> dict:
@@ -262,6 +273,53 @@ def waiting_at(building: str, journal: Path | None = None) -> int | None:
     return None
 
 
+def unarmed(building: str, journal: Path | None = None) -> str | None:
+    """Why `--manual` must not draw the detail yet, or None if it may.
+
+    `--manual` is the debug mode whose whole purpose is stopping before the
+    detail is drawn. On a fresh building it did the opposite: no journal, so
+    `waiting_at` finds no closed agent loop, so nothing pauses, and the full
+    build -- DETAIL and all -- runs before anybody has looked at a volume. The
+    checkpoint was skippable by doing nothing and armed only by the work it
+    exists to compel, which is the failure the whole effort was written after.
+
+    So under `--manual` only, a build with no gate-4 section in the journal is
+    refused. `--auto` never calls this and costs nothing; no new stage is
+    added, which would have changed `--auto`'s wall clock and, on an empty
+    journal, run the volumes and the detail in one go.
+
+    A section, not a closed loop: the loop's own state is `waiting_at`'s
+    question, and refusing on an open one would deadlock a gate whose author
+    is mid-round.
+    """
+    from blockwright import findings
+
+    path = Path(journal) if journal is not None else journal_of(building)
+    if GREYBOX_GATE in findings.gates(path):
+        return None
+    lines = [
+        "",
+        f"gate {GREYBOX_GATE} has not been held. --manual will not draw the "
+        "detail on a building whose form nobody has looked at:",
+        f"  {path} has no `## Gate {GREYBOX_GATE} -- greybox` section, so no "
+        "greybox round was ever written down.",
+        "",
+        "Arm it:",
+        f"  python -m buildings.{building}.build --greybox",
+        f"  python -m buildings.{building}.review --greybox --mesh",
+        f"  then /blockwright-greybox {building}, which runs the loop and "
+        "writes the journal",
+        "",
+        "The journal's headings are parsed, so they are English and exact: "
+        f"`## Gate {GREYBOX_GATE} -- greybox`, then `### Round 1 -- agent` "
+        "under it. Two hyphens, not a dash.",
+        "",
+        "Run with --auto (or with no flag) to build anyway: this refusal is "
+        "the manual mode's, and only the manual mode's.",
+    ]
+    return "\n".join(lines)
+
+
 def announce(building: str, gate: int) -> None:
     """What to open, who already found what, and how to show a fix.
 
@@ -360,6 +418,11 @@ def main(argv: list[str]) -> int:
         if blocked is not None:
             later = AFTER[blocked]
             steps = [step for step in steps if step not in later]
+        elif "build" in steps:
+            why = unarmed(building)
+            if why is not None:
+                print(why)
+                return WAITING
 
     where = ROOT / "buildings" / building / "out" / "report.json"
     before = load(where)

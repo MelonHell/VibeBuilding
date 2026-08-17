@@ -1,9 +1,15 @@
 """The journal parses, and the audit catches what a journal hides.
 
-Four failures, each of which has happened: a finding closed with no account of
+Five failures, each of which has happened: a finding closed with no account of
 what would prevent it, a loop with no empty round at the end, a rejection raised
-again and again, and a heading the parser cannot read at all -- which turns a
-ledger into prose without saying so.
+again and again, a heading the parser cannot read at all -- which turns a
+ledger into prose without saying so -- and a journal with findings and no
+chronicle, which is the one shape that used to audit in complete silence: an
+abandoned loop, an unwritten one and a closed one printed identically, and the
+manual mode walked past the gate on all three.
+
+It also holds the manual mode's own proofs, because what `--manual` waits on is
+read off this file and nothing else.
 
     python -m tools.findings_selftest
 """
@@ -137,6 +143,61 @@ PROSE = """\
 The north wing is shorter than the south; the reference has them level.
 """
 
+# Findings and no chronicle. The route that produced it: the format
+# documentation stresses the four fields hardest -- "the field the journal is
+# kept for" -- so an author writes the blocks and never writes the rounds.
+# Every rule above this fixture passes on it, and every rule below needs a
+# round to fire, so before the no-chronicle line it audited in complete
+# silence and `--manual` walked straight past the gate.
+NO_CHRONICLE = """\
+# fixture -- findings, no chronicle
+
+### F-01 | built | gate 4 | round 1 | seen 1 | by: reviewer
+**The north wing is short.**
+
+**Fixed:** raised it.
+
+**Arose from:** one top for every part.
+
+**Prevented by:** a gate row.
+"""
+
+# The same silence reached the other way: a gate heading with nothing under
+# it. Whoever wrote this opened the section and never recorded a round.
+NO_ROUNDS = """\
+# fixture -- a gate section with no rounds
+
+## Gate 4 -- greybox
+
+### F-01 | open | gate 4 | round 1 | seen 1 | by: reviewer
+**The north wing is short.**
+"""
+
+# The second ordinary route: the chronicle written in Russian, which is how
+# the spec's own section 4.2 illustrates it. Neither GATE nor ROUND can match
+# a word of it, so the file reads to the parser exactly like NO_CHRONICLE --
+# a journal whose author believes the loop is recorded and whose tools cannot
+# see a single round of it.
+RUSSIAN_CHRONICLE = """\
+# fixture -- chronicle in Russian
+
+## Ворота 4 — грейбокс
+
+### Раунд 1 — агент
+- F-01 северное крыло ниже южного
+
+### Раунд 2 — агент
+
+### F-01 | built | gate 4 | round 1 | seen 1 | by: reviewer
+**The north wing is short.**
+
+**Fixed:** raised it.
+
+**Arose from:** one top for every part.
+
+**Prevented by:** a gate row.
+"""
+
 CLEAN = """\
 # fixture -- finished
 
@@ -234,6 +295,21 @@ def main() -> int:
         if not any("no ledger headings" in line for line in said):
             return fail("audit missed a journal the parser cannot read")
 
+        # The silence that graded an unheld gate as converged. Three shapes
+        # reach it and all three used to print nothing at all.
+        for name, text in (("no chronicle", NO_CHRONICLE),
+                           ("a gate section with no rounds", NO_ROUNDS),
+                           ("a chronicle in Russian", RUSSIAN_CHRONICLE)):
+            path.write_text(text, encoding="utf-8")
+            said = findings.audit(path)
+            if not any("no chronicle" in line for line in said):
+                return fail(f"audit was silent about {name}:\n"
+                            + "\n".join(said))
+            if not any("### Round 1 -- agent" in line for line in said):
+                return fail(f"audit did not quote the heading for {name}")
+            if not any("## Gate 4 -- greybox" in line for line in said):
+                return fail(f"audit did not quote the gate heading for {name}")
+
         path.write_text(CLEAN, encoding="utf-8")
         said = findings.audit(path)
         if any("no empty round" in line for line in said):
@@ -246,6 +322,36 @@ def main() -> int:
             return fail("audit did not read a well-formed ledger")
         if any("no gate sections" in line for line in said):
             return fail("audit invented a missing gate on a journal that has one")
+        if any("no chronicle" in line for line in said):
+            return fail("audit claimed a journal with a chronicle has none")
+
+        # The scaffolding's own exit criterion, printed. The spec makes it
+        # measurable -- a human cycle that closes on its first round is the
+        # sign this gate no longer needs a person -- and nothing in the
+        # mechanism forces the scaffolding out, so somebody has to read the
+        # number off a run.
+        if not any("2 agent round(s), 1 human round(s)" in line
+                   for line in said):
+            return fail("audit did not count the rounds per gate:\n"
+                        + "\n".join(said))
+        if not any("1 finding(s) raised by the agent, 0 by the human" in line
+                   for line in said):
+            return fail("audit did not report the human-minus-agent delta")
+        if not any("no longer needs a person" in line for line in said):
+            return fail("audit did not name the exit criterion on a gate "
+                        "whose human round found nothing")
+
+        path.write_text(LEDGER, encoding="utf-8")
+        said = findings.audit(path)
+        if not any("3 agent round(s), 1 human round(s)" in line
+                   for line in said):
+            return fail("audit miscounted LEDGER's rounds:\n" + "\n".join(said))
+        if not any("1 finding(s) raised by the agent, 1 by the human" in line
+                   for line in said):
+            return fail("audit lost the human finding in the delta")
+        if any("no longer needs a person" in line for line in said):
+            return fail("audit called a gate done while the human was still "
+                        "raising findings on it")
 
         # A round with no gate heading over it is not a thing, and must not
         # be counted under every gate the next reader asks about. The audit
@@ -270,7 +376,10 @@ def main() -> int:
         return 1
 
     print("ledger parses, audit catches all four")
-    print("manual mode waits at the closed agent gate and leaves --auto alone")
+    print("audit speaks on a journal with findings and no chronicle, "
+          "and counts the rounds the exit criterion is read off")
+    print("manual mode refuses an unheld gate 4, waits at the closed agent "
+          "gate, and leaves --auto alone")
     return 0
 
 
@@ -321,9 +430,11 @@ def prove_pause() -> int:
     """`--manual` stops before the full build; `--auto` and no flag do not.
 
     A stub building, not a fixture, so the proof does not spend a derive
-    and does not depend on one being left on disk. Also a look-again (the
-    human finding that forced the pause must print) and a wait at gate 5
-    (that one still rebuilds).
+    and does not depend on one being left on disk. Four states, in order:
+    a journal with no gate-4 section at all (the refusal that makes the
+    checkpoint a checkpoint on a building's first run), the closed agent
+    loop, a look-again (the human finding that forced the pause must
+    print) and a wait at gate 5 (that one still rebuilds).
     """
     name = "_selftest_manual"
     where = ROOT / "buildings" / name
@@ -355,13 +466,49 @@ def prove_pause() -> int:
         "if __name__ == '__main__':\n"
         "    main()\n",
         encoding="utf-8")
-    (where / "findings.md").write_text(
-        "# scratch -- review journal\n\n"
-        "## Gate 4 -- greybox\n\n"
-        "### Round 1 -- agent\n\n",
-        encoding="utf-8")
     built = where / "out" / "BUILT"
     try:
+        # No journal at all: gate 4 has never been held. --manual must refuse
+        # rather than draw the detail, and --auto must not care. This is the
+        # case the manual mode got exactly backwards -- its checkpoint was
+        # skippable by doing nothing, and armed only by the work it exists to
+        # compel.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--manual"])
+        said = buf.getvalue()
+        if code != run.WAITING:
+            return fail(f"--manual on an unheld gate 4 returned {code}, "
+                        "not WAITING")
+        if built.exists():
+            return fail("--manual drew the detail before gate 4 was held")
+        if "has not been held" not in said:
+            return fail("--manual did not say gate 4 was never held:\n" + said)
+        if f"python -m buildings.{name}.build --greybox" not in said:
+            return fail("the refusal did not print the command that arms "
+                        "it:\n" + said)
+        if f"python -m buildings.{name}.review --greybox --mesh" not in said:
+            return fail("the refusal did not print the review command:\n" + said)
+        if "## Gate 4 -- greybox" not in said:
+            return fail("the refusal did not quote the heading:\n" + said)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--auto"])
+        if code == run.WAITING:
+            return fail("--auto refused an unheld gate 4; the refusal is the "
+                        "manual mode's alone")
+        if not built.exists():
+            return fail("--auto did not build on an unheld gate 4")
+        built.unlink()
+
+        # A gate-4 section with a round under it: armed. From here the
+        # existing pauses are what is being proved.
+        (where / "findings.md").write_text(
+            "# scratch -- review journal\n\n"
+            "## Gate 4 -- greybox\n\n"
+            "### Round 1 -- agent\n\n",
+            encoding="utf-8")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             code = run.main([name, "--manual"])
