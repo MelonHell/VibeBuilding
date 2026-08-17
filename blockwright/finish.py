@@ -263,13 +263,18 @@ def finish(canvas, out, frame, *, schedule=None,
         done.notes.append("no mesh orthos; skipping the comparison sheets")
         return done
 
+    topsheet = done.sheets.get("top")
     for ortho, view, align in sheets:
         image = render(canvas, None, view=view, frame=frame, scale=scale)
         panels = [compare.mesh_panel(orthos, ortho),
                   compare.build_panel(image, scale, label=f"build {view.name}")]
         panels.extend(compare.photo(p) for p in photos)
         path = out / "compare" / f"{ortho}.png"
-        compare.sheet(compare.aligned(panels), path, scale=4.0, align=align)
+        # Elevations stay unaligned. `aligned()` equalises their heights, and
+        # then `align="bottom"` has nothing left to do -- the shorter façade
+        # floats. The three-panel plan sheet above is the one that wants one
+        # extent; these two keep the ground line `sheet` already gives them.
+        compare.sheet(panels, path, scale=4.0, align=align)
         done.sheets[ortho] = path
         score = compare.iou(panels[0], panels[1], 0.5)
         if score is None:
@@ -281,6 +286,12 @@ def finish(canvas, out, frame, *, schedule=None,
                 "score.")
         else:
             done.overlap[f"{ortho} vs {view.name}"] = score
+
+    # The compare loop writes `out/compare/top.png` under the same key. That
+    # file stays on disk; the dict names the three-panel sheet, because that
+    # is the one this function just made a point of writing.
+    if topsheet is not None:
+        done.sheets["top"] = topsheet
 
     return done
 

@@ -145,6 +145,36 @@ def aligned(panels: list[Panel], metres_per_pixel: float | None = None
     So each panel is padded, never scaled, to the union of all their extents.
     Padding says "nothing was known here"; scaling would say "this is what was
     there", which is false.
+
+    Same-size and centred is enough for a plan sheet: a clipped tower beside a
+    plot-sized map at a true 1:1, where the eye was hunting for the building.
+    It does not put the same ground in the same place. A reader comparing
+    shape can do it; a reader comparing position sees a false offset on a
+    correct plant. That is accepted for now.
+
+    This is a plan operation. An elevation must not go through it. After both
+    panels are the same pixel size, `sheet(align="bottom")` is a no-op -- the
+    shorter façade, which was sitting on the ground of its own picture, is
+    now centred in a taller box and floats. A clip that dropped the lower
+    floors is exactly that case. Elevations keep their ground line from
+    `sheet` lining up two pictures of different heights; they do not want
+    those heights equalised first.
+
+    The real fix, when a reader has to compare position, is a shared world
+    rectangle, and the hole is not in `sheet`:
+
+      1. `Panel` carries the world metres of its top-left pixel.
+      2. `trim()` must return the pixel crop so the origin can move with the
+         content -- today it throws that away, and that is the blocker.
+      3. `render()` already computes the content bbox in frame metres and
+         discards it; keep it.
+      4. `map_panel`'s origin is the layout crop origin; `mesh_panel`'s is
+         the ortho meta plus the trim offset.
+      5. `aligned()` then unions world boxes and pads each side independently.
+
+    A cheaper half-step, plan against map only: put the 1:1 `plan.png` on
+    the sheet instead of a trimmed render. Those already live on the site
+    grid. Not built here.
     """
     from PIL import Image
 
