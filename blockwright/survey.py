@@ -76,6 +76,10 @@ DEFAULTS = {
     # they are taken to be the same part.
     "CAPTURE_PARTS": (),
     "MATCH_FLOOR": 0.30,
+    # What is too small or too low to be a part of the building rather than
+    # a thing standing on it. See `Survey.assemble`.
+    "PART_LEAST_AREA": 40.0,
+    "PART_LEAST_HEIGHT": 2.5,
     "MODEL_UP": "y",
     "MODEL_SCALE": 1.0,
     "MAP_PALETTE": None,
@@ -673,6 +677,13 @@ class Survey:
         `MATCH_FLOOR`, and an unmatched piece is named in the run's own output
         rather than quietly becoming a new building.
 
+        An unmatched piece still has to be a part of the building. Decomposing
+        a whole site brings the trees, the cars, the awnings and the street
+        furniture along with it, so anything under `PART_LEAST_AREA` or
+        `PART_LEAST_HEIGHT` is dropped -- and counted: how many pieces went,
+        how much area in all, how tall the tallest one was. A threshold that
+        quietly ate a wing reads exactly like one that quietly ate a hedge.
+
         **Both sides have to be in one coordinate system before an overlap means
         anything**, and the reference's is its own: `model3d.read` grids the OBJ
         from wherever the exporter left the origin. So every reference footprint
@@ -707,7 +718,8 @@ class Survey:
         drawn = [read.named[name] for name in read.drawn]
         floor = float(self.t.MATCH_FLOOR)
         record = {"drawn": len(drawn), "reference_parts": 0, "matched": 0,
-                  "extra": 0, "floor": floor}
+                  "extra": 0, "floor": floor,
+                  "dropped": {"count": 0, "area": 0.0, "tallest": 0.0}}
         out["assembly"] = record
 
         # Written whichever way it goes, and with the reason when it goes
@@ -789,6 +801,24 @@ class Survey:
             record["off_plan"] = [
                 {"cells": p.mask.count(), "top": round(t, 1),
                  "on_the_plan": on, "past": off} for p, t, on, off in gone]
+
+        # The height is the one this already recorded -- the same number
+        # that later lands in `assembly.added[].top` -- and the area is the
+        # part's cells on the plan. One cell is one metre.
+        kept, dropped = [], []
+        for item in loose:
+            mask, top, _, _ = item
+            area = mask.count()
+            if area < self.t.PART_LEAST_AREA or top < self.t.PART_LEAST_HEIGHT:
+                dropped.append((area, top))
+            else:
+                kept.append(item)
+        loose = kept
+        record["dropped"] = {
+            "count": len(dropped),
+            "area": round(sum(a for a, _ in dropped), 1),
+            "tallest": round(max((t for _, t in dropped), default=0.0), 1),
+        }
         record["extra"] = len(loose)
         if not loose:
             return read
@@ -1999,12 +2029,16 @@ class Survey:
             lines += [f"assembly: {a['drawn']} drawn part(s); {a['why']}", ""]
         elif a:
             # Every piece of the reference accounted for in one line: matched,
-            # added, or off the canvas. A count that does not add up to what
-            # the reference split into is a piece that went somewhere unsaid.
+            # added, dropped as too slight, or off the canvas. A count that
+            # does not add up to what the reference split into is a piece
+            # that went somewhere unsaid.
+            gone = a.get("dropped") or {}
             lines.append(
                 f"assembly: {a['drawn']} drawn part(s); the reference splits "
                 f"into {a['reference_parts']}, of which {a['matched']} overlap "
                 f"one that is drawn and {a['extra']} do not"
+                + (f", {gone['count']} fall under the part thresholds"
+                   if gone.get("count") else "")
                 + (f", and {len(a['off_plan'])} lie off the plan's canvas"
                    if a.get("off_plan") else "")
                 + f" (floor {a['floor']:.2f})")
@@ -2022,6 +2056,14 @@ class Survey:
                     + (f" -- {' and '.join(o['undetermined'])} reads the same "
                        "either way, so the canonical fits settle it"
                        if o.get("undetermined") else ""))
+            # Printed even when it threw nothing away. A run that never
+            # applied the bars and a run that applied them to nothing look
+            # the same without this line, and they are not the same fact.
+            lines.append(
+                f"  dropped: {gone.get('count', 0)} piece(s), "
+                f"{gone.get('area', 0.0)} m2 in all, tallest "
+                f"{gone.get('tallest', 0.0)} m -- under "
+                f"PART_LEAST_AREA or PART_LEAST_HEIGHT")
             for one in a.get("added", []):
                 lines.append(
                     f"  {one['name']:15s} {one['cells']:5d} cells to "

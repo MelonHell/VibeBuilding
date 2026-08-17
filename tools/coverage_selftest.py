@@ -276,6 +276,84 @@ def prove_orientation() -> str | None:
     return None
 
 
+def _raise_drops(kind: str, extra: str, label: str, least_area: float
+                 ) -> str | None:
+    """Run derive with a raised bar and fail unless the outbuilding went."""
+    where = make(kind, extra, ("layout.png", "mesh"))
+    try:
+        ran = subprocess.run(
+            [sys.executable, "-m",
+             f"buildings._selftest_{kind}.probes.derive"],
+            cwd=ROOT, check=True, capture_output=True, text=True)
+        text = ran.stdout
+        if "dropped: 1 piece(s)" not in text:
+            return (f"FAIL: {label} should print 'dropped: 1 piece(s)'; "
+                    f"derive said:\n{text}")
+        derived = json.loads((where / "out" / "derived.json").read_text(
+            encoding="utf-8"))
+        gone = (derived.get("assembly") or {}).get("dropped") or {}
+        if gone.get("count") != 1:
+            return (f"FAIL: {label} should drop 1 piece, "
+                    f"assembly.dropped={gone!r}")
+        if gone.get("area", 0) < least_area:
+            return (f"FAIL: dropped area {gone.get('area')} m2 is under "
+                    "the ordinary PART_LEAST_AREA; this is not the "
+                    "outbuilding")
+        if gone.get("tallest", 0) < 5.0:
+            return (f"FAIL: dropped tallest {gone.get('tallest')} m is "
+                    "not the outbuilding's 6 m")
+        names = [p["name"] for p in derived.get("parts", [])]
+        if any("capture" in n for n in names):
+            return (f"FAIL: a capture part survived {label}: {names}")
+    except subprocess.CalledProcessError as err:
+        return (f"FAIL: derive with {label} exited {err.returncode}:\n"
+                f"{err.stdout}\n{err.stderr}")
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(where, ignore_errors=True)
+    return None
+
+
+def prove_thresholds() -> str | None:
+    """The part thresholds cut, and the run says what they threw away.
+
+    The fixture's outbuilding is 240 m² and 6 m, above both bars, so the
+    ordinary run cannot say whether they cut. Raising a bar over it and
+    then reverting the raise proves nothing to the next reader. This is
+    that raise, kept -- once for area, once for height.
+    """
+    from buildings._template.probes import derive as tables
+
+    u0, u1, v0, v1, top = fixture.OUTBUILDING
+    area = (u1 - u0) * (v1 - v0)
+    if area < tables.PART_LEAST_AREA or top < tables.PART_LEAST_HEIGHT:
+        return (f"FAIL: the fixture outbuilding is {area:.0f} m2 and "
+                f"{top} m, which is under PART_LEAST_AREA="
+                f"{tables.PART_LEAST_AREA} or PART_LEAST_HEIGHT="
+                f"{tables.PART_LEAST_HEIGHT}; the ordinary run going "
+                "green would not be evidence the bars were applied")
+    if not (20.0 < tables.PART_LEAST_AREA):
+        return "FAIL: PART_LEAST_AREA no longer cuts a 20 m2 hedge"
+    if not (2.0 < tables.PART_LEAST_HEIGHT):
+        return "FAIL: PART_LEAST_HEIGHT no longer cuts a 2 m awning"
+
+    missed = _raise_drops(
+        "thresholds",
+        'STRIPS = ("front", "back")\nPART_LEAST_AREA = 400.0\n',
+        "PART_LEAST_AREA=400", tables.PART_LEAST_AREA)
+    if missed:
+        return missed
+    missed = _raise_drops(
+        "thresholds_h",
+        'STRIPS = ("front", "back")\nPART_LEAST_HEIGHT = 10.0\n',
+        "PART_LEAST_HEIGHT=10", tables.PART_LEAST_AREA)
+    if missed:
+        return missed
+    print("thresholds: a piece under PART_LEAST_AREA or "
+          "PART_LEAST_HEIGHT is dropped, and the run says so", flush=True)
+    return None
+
+
 def build() -> Path:
     """Make the fixture building and measure it. Returns its out/ directory."""
     # Mapped inputs: the map draws the two wings, the mesh also has the
@@ -315,7 +393,8 @@ def _map_fill_box(layout: Path, frame: Frame
 def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
-        missed = prove_coverage_row() or prove_orientation()
+        missed = (prove_coverage_row() or prove_orientation()
+                  or prove_thresholds())
         if missed:
             print(missed)
             return 1
@@ -323,6 +402,15 @@ def main() -> int:
         out = build()
         derived = json.loads((out / "derived.json").read_text(encoding="utf-8"))
         parts = [p["name"] for p in derived.get("parts", [])]
+        gone = (derived.get("assembly") or {}).get("dropped")
+        if not isinstance(gone, dict) or "count" not in gone or "area" not in gone:
+            print("FAIL: derived.json assembly does not carry dropped "
+                  f"count and area; assembly={derived.get('assembly')!r}")
+            return 1
+        if gone.get("count"):
+            print("FAIL: the fixture outbuilding is 240 m2 and 6 m, "
+                  f"above both bars, but assembly.dropped={gone!r}")
+            return 1
 
         layout = where / "input" / "layout.png"
         _, _, drawn = decompose(layout)

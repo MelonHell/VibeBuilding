@@ -172,6 +172,16 @@ CAPTURE_PARTS: tuple[str, ...] = ()
 # being absorbed; lower it where a part keeps arriving twice.
 MATCH_FLOOR = 0.30
 
+# What is too small or too low to be a part of the building rather than a thing
+# standing on it. The reference is a capture of a whole site: it holds trees,
+# cars, awnings and street furniture, and decomposing it whole brings them all.
+#
+# Both are stated rather than guessed, and both are printed with what they threw
+# away. A threshold that quietly ate a wing reads exactly like one that quietly
+# ate a hedge, and the only defence is the count.
+PART_LEAST_AREA = 40.0        # square metres
+PART_LEAST_HEIGHT = 2.5       # metres above the datum
+
 # The model's own axes and units. An OBJ carries neither, so both are stated
 # here: `up` is 'y' or 'z', and the scale is 1.0 for a model already in metres.
 # Guessing a scale multiplies one guess through every dimension downstream, and
