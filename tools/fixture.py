@@ -123,6 +123,64 @@ def write_map(path: Path) -> None:
     image.save(path)
 
 
+def shell(vertex, u0: float, u1: float, v0: float, v1: float,
+          top: float) -> None:
+    """One volume as a capture holds it: outer surfaces, floor bands heavy.
+
+    `vertex(u, v, y)` places a point in the building's own coordinates. Factored
+    out of `write_mesh` so that `annex` can add a volume to a mesh that is
+    already written and have it be the same kind of thing -- a surface, standing
+    `SKIN` outside the drawn face, with the heavy band at every floor line that
+    the storey search keys on. A second, simpler shell written beside this one
+    would be a second answer to what a capture looks like.
+    """
+    a, b = u0 - SKIN, u1 + SKIN
+    c, d = v0 - SKIN, v1 + SKIN
+    floors = [i * STOREY for i in range(int(top / STOREY) + 1)]
+
+    steps_u = int((b - a) / STEP) + 1
+    steps_v = int((d - c) / STEP) + 1
+    heights = [i * STEP for i in range(int(top / STEP) + 1)]
+
+    for i in range(steps_u):
+        u = a + i * STEP
+        for y in heights:
+            vertex(u, c, y)
+            vertex(u, d, y)
+        for y in floors:
+            for _ in range(BAND):
+                vertex(u, c, y)
+                vertex(u, d, y)
+        for j in range(steps_v):
+            vertex(u, c + j * STEP, top)
+
+    for j in range(steps_v):
+        v = c + j * STEP
+        for y in heights:
+            vertex(a, v, y)
+            vertex(b, v, y)
+
+
+def annex(path: Path, box: tuple[float, float, float, float, float]) -> None:
+    """Add one more volume to a mesh already written, in the same coordinates.
+
+    A knob rather than a fifth entry in `PARTS`, because the volumes this places
+    are the ones a test wants present in some runs and absent in others -- a
+    neighbouring block standing above `REGISTER_FLOOR` that the map never drew,
+    which is what pulls a registration out to the parcel. Putting it in `PARTS`
+    would put it in every branch of every selftest at once.
+
+    The file holds only `v` lines, so appending is the whole operation.
+    """
+    x0, z0, _, _ = extent()
+    with open(path, "a", encoding="utf-8") as out:
+        def vertex(u: float, v: float, y: float) -> None:
+            x, z = rotate(u, v)
+            out.write(f"v {x - x0:.3f} {y:.3f} {z - z0:.3f}\n")
+
+        shell(vertex, *box)
+
+
 def write_mesh(path: Path) -> None:
     """A capture of the same building: outer surfaces only, floor bands heavy."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,33 +214,8 @@ def write_mesh(path: Path) -> None:
 
         # PARTS is what the map draws. The outbuilding is written the same way
         # -- a surface shell, not a solid -- so it still reads as a capture.
-        shells = [*PARTS, ("outbuilding",) + OUTBUILDING]
-        for _, u0, u1, v0, v1, top in shells:
-            a, b = u0 - SKIN, u1 + SKIN
-            c, d = v0 - SKIN, v1 + SKIN
-            floors = [i * STOREY for i in range(int(top / STOREY) + 1)]
-
-            steps_u = int((b - a) / STEP) + 1
-            steps_v = int((d - c) / STEP) + 1
-            heights = [i * STEP for i in range(int(top / STEP) + 1)]
-
-            for i in range(steps_u):
-                u = a + i * STEP
-                for y in heights:
-                    vertex(u, c, y)
-                    vertex(u, d, y)
-                for y in floors:
-                    for _ in range(BAND):
-                        vertex(u, c, y)
-                        vertex(u, d, y)
-                for j in range(steps_v):
-                    vertex(u, c + j * STEP, top)
-
-            for j in range(steps_v):
-                v = c + j * STEP
-                for y in heights:
-                    vertex(a, v, y)
-                    vertex(b, v, y)
+        for _, u0, u1, v0, v1, top in [*PARTS, ("outbuilding",) + OUTBUILDING]:
+            shell(vertex, u0, u1, v0, v1, top)
 
 
 def main(argv: list[str]) -> int:

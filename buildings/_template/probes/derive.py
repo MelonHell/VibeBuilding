@@ -113,6 +113,11 @@ PROFILE_TRIM = 8.0      # metres off each end, where the strip turns its corner
 
 # Fitting an OBJ's own frame: material this far above the datum is building
 # rather than the ground plane of the clip box.
+#
+# It moves with REGISTER_FLOOR below and for the same reason. `Mesh.frame` fits
+# a minimum-area rectangle to every vertex above this height, so under a site
+# clip it fits the *site* -- the villas, the palms, the neighbour across the
+# parcel line -- while the plan it is compared against is the drawn building.
 MESH_FLOOR = 6.0
 
 # Material this far above the ground is building, and the reference and the plan
@@ -126,8 +131,26 @@ MESH_FLOOR = 6.0
 # podium-and-tower the two sides describe different buildings and their scales
 # disagree by tens of per cent.
 #
+# **Under a clip of the site it also states which of the volumes standing on
+# this parcel is the building the drawn plan drew.** That is a second job and a
+# real decision, not a side effect. The clip now holds the villas, the pool
+# house, the palms and whatever the neighbour has above the parcel line; the
+# fit takes every vertex over this floor, so left at two storeys it fits the
+# whole parcel and registers that against a drawn plan of one tower. Either
+# both extents inflate together and the affine is quietly wrong for every
+# reader downstream, or the two axes disagree and `derive` stops with a message
+# about a clip that is not the problem.
+#
+# So put it above the accessory volumes and below the lowest part of the drawn
+# building. That bounds the *fit* and nothing else: `skyline_of` walks every
+# vertex regardless of this number, so a four-metre clubhouse under the floor is
+# still measured, still assembled onto the plan, and still carries a height.
+# What it stops doing is dragging the registration out to the parcel.
+#
 # Raise it when the clip carries a belt of tall trees, and understand what that
-# costs: anything below the new floor stops being registered.
+# costs: anything below the new floor stops being registered -- and if the drawn
+# building itself has a wing below it, that wing leaves the fit and the extents
+# stop describing the same thing.
 REGISTER_FLOOR = 6.0
 
 # Plan cells for `measure.presence`, used by the void probes at the bottom.

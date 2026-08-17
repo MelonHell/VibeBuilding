@@ -11,6 +11,14 @@ The fixture's outbuilding is that case in miniature: it stands in the capture
 and the map never drew it. A run that says nothing about it is the run this
 guards against.
 
+It also carries the proofs for the machinery that measuring a whole site rests
+on, none of which `pipeline_selftest` reaches: the coverage row in all three of
+its states and by both of its entrances, the flip that decides where an
+assembled part lands, the part thresholds, the clip-holds-the-site row, the
+`--clip-up` refusal, and `prove_register_floor` -- material above the register
+floor that the drawn plan never drew, which is the case a clip of the site
+creates and a clip of the building never did.
+
     python -m tools.coverage_selftest
 """
 
@@ -37,12 +45,25 @@ from blockwright.plan import Part, decompose
 from blockwright.schedule import Declaration, Item, Schedule
 
 from tools import fixture
-from tools.pipeline_selftest import make
+from tools.pipeline_selftest import MAPPED, make, run
 
 ROOT = Path(__file__).resolve().parent.parent
 KIND = "coverage"
 ROW = "every part is measured by something"
 SITE_ROW = "the clip holds the site"
+
+# A neighbouring block the map never draws, standing above the template's
+# REGISTER_FLOOR of 6 m and below the fixture's lower wing at 8 m. That band is
+# the whole case: a clip of the site holds volumes the drawn plan did not draw,
+# and every vertex above the floor enters the fit whether or not the plan drew
+# it. Seven metres is a three-storey clubhouse; fourteen would be the villas.
+ANNEX = (30.0, 50.0, -27.0, -15.0, 7.0)
+
+# Where the floors have to go for the fit to see the drawn building alone:
+# above the annex, below the 8 m wing. The gap is deliberately narrow, because
+# that is the real constraint -- the floor has to clear the accessory volumes
+# and still keep every part of the drawn building in the fit.
+ANNEX_FLOOR = 7.5
 
 # How far a face of an assembled part may stand from where the fixture drew it.
 # Four metres, which is the sum of the four things that legitimately move a face
@@ -276,6 +297,116 @@ def prove_orientation() -> str | None:
 
     print("orientation: a flip comes off asymmetry, and off nothing else",
           flush=True)
+    return None
+
+
+def _with_annex(kind: str, extra: str) -> Path:
+    """A mapped fixture whose capture holds one volume the map never drew."""
+    where = make(kind, extra, ("layout.png", "mesh"))
+    fixture.annex(where / "out" / "mesh-clip" / "merged.obj", ANNEX)
+    return where
+
+
+def prove_register_floor() -> str | None:
+    """A reference that holds more than the drawn plan draws, both ways.
+
+    Nothing else here exercises this, and the reason is a coincidence rather
+    than a design: the fixture's outbuilding tops out at exactly the template's
+    MESH_FLOOR with a strict `>`, so it sits one float outside every fit, and
+    the modelled branch reads its plan off the same file and fits no
+    registration at all. So the headline change of this whole work -- a clip of
+    the site rather than of the building -- has never had material above the
+    register floor that the drawn plan did not draw.
+
+    This is that material. `Mesh.frame` and the registration are fitted over
+    every vertex above the two floors, and the plan they are fitted against is
+    `read.drawn_bounds()` -- the drawn building. Put a seven-metre block on the
+    parcel and the mesh half of the fit reaches to the parcel while the plan
+    half does not, so the two axes come back scaled differently.
+
+    Both directions, because either one alone is arrangeable. Left at the
+    template's floors the run **stops**, and it has to stop with the exit named:
+    a reader who meets that message with a site clip and only the two old exits
+    -- drop the reference, or narrow the clip the documentation just told them
+    to widen -- has no correct move. Raised above the annex the run comes
+    through, and both accessory volumes are still measured, which is the claim
+    the whole answer rests on: the floor bounds the fit, not the reading.
+    """
+    from buildings._template.probes import derive as tables
+
+    if not (tables.REGISTER_FLOOR < ANNEX[4] < ANNEX_FLOOR):
+        return (f"FAIL: the annex tops out at {ANNEX[4]} m, which is no longer "
+                f"between the template's REGISTER_FLOOR of "
+                f"{tables.REGISTER_FLOOR} and the raised {ANNEX_FLOOR}; neither "
+                "half of this proof means anything then")
+
+    where = _with_annex("registerfloor", MAPPED)
+    try:
+        code, said = run("registerfloor", "probes.derive")
+        if code == 0:
+            return ("FAIL: a 7 m block above REGISTER_FLOOR that the map never "
+                    "drew should have stopped derive; it did not, which means "
+                    "the fit swallowed it and every reader of derived.json is "
+                    "measuring through an affine fitted to the parcel")
+        if "do not register" not in said:
+            return (f"FAIL: the stop was not the registration's:\n"
+                    + said[-1500:])
+        for wanted in ("REGISTER_FLOOR", "MESH_FLOOR", "bounds the fit"):
+            if wanted not in said:
+                return (f"FAIL: the registration stop does not name {wanted!r} "
+                        f"as a way out:\n" + said[-1500:])
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(where, ignore_errors=True)
+
+    raised = (MAPPED + f"\nMESH_FLOOR = {ANNEX_FLOOR}\n"
+              f"REGISTER_FLOOR = {ANNEX_FLOOR}\n")
+    where = _with_annex("registerfloor", raised)
+    try:
+        code, said = run("registerfloor", "probes.derive")
+        if code != 0:
+            return (f"FAIL: floors raised to {ANNEX_FLOOR} m should let the run "
+                    f"through:\n" + said[-2000:])
+        derived = json.loads((where / "out" / "derived.json").read_text(
+            encoding="utf-8"))
+        reg = derived.get("registration") or {}
+        if not reg.get("agrees"):
+            return f"FAIL: the raised fit still disagrees: {reg!r}"
+
+        # The half that matters. Both accessory volumes stand *below* the new
+        # floor -- the outbuilding at 6 m, the annex at 7 -- so if the floor
+        # bounded the reading they would arrive with no height at all.
+        sky = derived.get("skyline") or {}
+        heights = {}
+        for record in derived.get("parts") or []:
+            if (record.get("provenance") or {}).get("plan") != "capture":
+                continue
+            entry = sky.get(record["name"]) or {}
+            if entry.get("median") is not None:
+                heights[record["name"]] = (record["u"], entry["median"])
+        if len(heights) < 2:
+            return (f"FAIL: the raised run should still assemble and measure "
+                    f"both volumes under the floor, got {heights!r}")
+        annex = min(heights.items(),
+                    key=lambda kv: abs(kv[1][0][0] - ANNEX[0]))
+        name, (box, median) = annex
+        if abs(median - ANNEX[4]) > 1.0:
+            return (f"FAIL: {name} spans u {box} and reads {median} m; the "
+                    f"annex is at u {ANNEX[0]}..{ANNEX[1]} and {ANNEX[4]} m. "
+                    "The register floor is meant to bound the fit and not the "
+                    "reading, and this is the reading")
+        under = [n for n, (_, m) in heights.items() if m < ANNEX_FLOOR]
+        if len(under) < 2:
+            return (f"FAIL: the case needs both accessory volumes under "
+                    f"{ANNEX_FLOOR} m to prove the floor is not a ceiling on "
+                    f"the reading, got {heights!r}")
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(where, ignore_errors=True)
+
+    print(f"register floor: a {ANNEX[4]:.0f} m volume the map never drew stops "
+          f"the fit at {tables.REGISTER_FLOOR:.1f} m and is still measured at "
+          f"{ANNEX_FLOOR:.1f} m", flush=True)
     return None
 
 
@@ -550,8 +681,8 @@ def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
         missed = (prove_coverage_row() or prove_orientation()
-                  or prove_thresholds() or prove_site_covered()
-                  or prove_clip_up())
+                  or prove_register_floor() or prove_thresholds()
+                  or prove_site_covered() or prove_clip_up())
         if missed:
             print(missed)
             return 1
