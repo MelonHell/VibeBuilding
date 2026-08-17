@@ -1,9 +1,9 @@
 ---
 name: blockwright-schedule
-description: Стадия 3 Blockwright — обмер разреза (по модели, захвату или объявлениям) и манифест частей. Используй при работе с probes/derive.py, derived.json, measure.storey_height / skyline / silhouette / presence, DECLARED_HEIGHTS, DECLARED_STOREY, blockwright.schedule, Item, декларациями и объявлениями частей.
+description: Этап 3 Blockwright — обмер разреза (по модели, захвату или объявлениям) и манифест частей. Используй при работе с probes/derive.py, derived.json, measure.storey_height / skyline / silhouette / presence, DECLARED_HEIGHTS, DECLARED_STOREY, blockwright.schedule, Item, декларациями и объявлениями частей.
 ---
 
-# Стадия 3 — обмер разреза и запись того, что существует
+# Этап 3 — обмер разреза и запись того, что существует
 
 Карта не даёт высот. Высоты приходят из 3D-модели, из захвата, из масштабного
 чертежа — или объявляются словами.
@@ -150,7 +150,7 @@ description: Стадия 3 Blockwright — обмер разреза (по мо
 
 ## Манифест
 
-Фотографии читаются на этой стадии, и результат их чтения — `blockwright.schedule`:
+Фотографии читаются на этом этапе, и результат их чтения — `blockwright.schedule`:
 список частей, которые у здания есть, написанный руками наверху `build.py`,
 **до** кода, который хоть одну из них ставит.
 

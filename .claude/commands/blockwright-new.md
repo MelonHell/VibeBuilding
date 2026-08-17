@@ -25,7 +25,8 @@ buildings/$1/
     __init__.py
     paths.py            где что лежит
     probes/derive.py    таблицы обмера; чтение — blockwright.survey
-    build.py            рецепт: читает derived.json, пишет out/massing.schem
+    build.py            рецепт: читает derived.json, пишет out/build.schem,
+                        а под `--greybox` — out/greybox.schem
     gate.py             что считается правильным для этого здания
     review.py           камеры фото-ревью; аппаратура — blockwright.reviewing
 ```

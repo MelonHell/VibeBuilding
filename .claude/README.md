@@ -83,13 +83,14 @@ python -m buildings.<имя>.review --mesh
 .claude/
     settings.json                 разрешения на запуск скриптов пайплайна
     skills/
-        blockwright/                 корневой: три правила, карта стадий
-        blockwright-capture/         стадия 1 — захват и конвертация
-        blockwright-measure/         стадия 2 — обмер плана
-        blockwright-schedule/        стадия 3 — обмер разреза и манифест
-        blockwright-draw/            стадия 4 — чертёж
-        blockwright-gate/            стадия 5 — числа: гейт, отчёт, листы
-        blockwright-review/          стадия 5 — глаза: фото-ревью
+        blockwright/                 корневой: три правила, карта этапов
+        blockwright-capture/         этап 1 — захват и конвертация
+        blockwright-measure/         этап 2 — обмер плана
+        blockwright-schedule/        этап 3 — обмер разреза и манифест
+        blockwright-greybox/         этап 4 — грейбокс: объёмы до материала
+        blockwright-draw/            этапы 4 и 5 — чертёж
+        blockwright-gate/            этап 5 — числа: гейт, отчёт, листы
+        blockwright-review/          этап 5 — глаза: фото-ревью
     commands/
         blockwright-new.md           завести здание из скелета
         blockwright-run.md           обмер, чертёж, гейт

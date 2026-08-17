@@ -1,9 +1,9 @@
 ---
 name: blockwright-measure
-description: Стадия 2 Blockwright — обмер плана: по векторному плану (vectorplan.read), по карте layout.png, по 3D-модели или захвату (model.read), либо по объявленной таблице (declared.layout). Используй, когда нужно получить раму здания (угол, начало, протяжённость), разложить план на части, найти участок внутри дорожного кольца, или когда что-то не так с Frame.fit_mask, plan.decompose, model.read, declared.layout, flatmap.parcel, flatmap.guides.
+description: Этап 2 Blockwright — обмер плана: по векторному плану (vectorplan.read), по карте layout.png, по 3D-модели или захвату (model.read), либо по объявленной таблице (declared.layout). Используй, когда нужно получить раму здания (угол, начало, протяжённость), разложить план на части, найти участок внутри дорожного кольца, или когда что-то не так с Frame.fit_mask, plan.decompose, model.read, declared.layout, flatmap.parcel, flatmap.guides.
 ---
 
-# Стадия 2 — обмер плана
+# Этап 2 — обмер плана
 
 На вопрос плана отвечает сильнейший из положенных входов, и от этого зависит,
 кто **рисует** план — какую из четырёх читалок вызвать. Нарисованные части

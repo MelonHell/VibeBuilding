@@ -1,9 +1,9 @@
 ---
 name: blockwright-gate
-description: Стадия 5 Blockwright, числа — гейт, отчёт, рендеры и листы сравнения. Используй при работе с gate.py, blockwright.gate, Registration, сечениями по эталону, checks.inspect, report.json, render_set, compare.iou, вердиктом ungraded — и когда гейт красный или, наоборот, подозрительно зелёный.
+description: Этап 5 Blockwright, числа — гейт, отчёт, рендеры и листы сравнения. Используй при работе с gate.py, blockwright.gate, Registration, сечениями по эталону, checks.inspect, report.json, render_set, compare.iou, вердиктом ungraded — и когда гейт красный или, наоборот, подозрительно зелёный.
 ---
 
-# Стадия 5 — числа
+# Этап 5 — числа
 
 Проверок нужно четыре, и ловят они разное: **гейт** меряет то, что сводится к
 числу; **рендер** показывает то, что не сводится; **лист** ставит результат рядом

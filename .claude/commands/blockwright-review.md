@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Agent, Task
 
 Прогони фото-ревью здания `$1`. Аргументы: `$ARGUMENTS`.
 
-Подними скилл `blockwright-review` — там правила, по которым эта стадия работает.
+Подними скилл `blockwright-review` — там правила, по которым этот этап работает.
 
 ## 1. Отрендерить
 
