@@ -302,6 +302,7 @@ class Grading:
         self.grounds(g, derived, read, sched)
         self.witnesses(g, derived)
         self.coverage(g, derived, sched, read)
+        self.off_plan(g, derived)
         self.site_covered(g, derived, sched, read)
         sections, reg = self.section(g, derived, read, reference, model, frame,
                                      parts, evidence)
@@ -2199,6 +2200,66 @@ class Grading:
         g.add("every part is measured by something", True,
               with_aside("; ".join(bits)
                          + "; nothing this row examined stands unmeasured."))
+
+    def off_plan(self, g, derived):
+        """Whether the plan's canvas could hold every piece the reference offered.
+
+        `Survey.assemble` already refused the ones it could not, wrote them to
+        `derived["assembly"]["off_plan"]`, and printed the counts. This grades
+        that record. It does not re-measure: a gate that measured again would
+        be a second opinion on a number the survey already stood behind, and
+        the two drifting apart is how a printed count stops being a check.
+
+        A non-empty list is red. The crop is wrong, or the clip is: something
+        the reference holds sits where this plan cannot put it, and the build
+        may well put it up anyway from constants typed off a photograph. That
+        is the failure this whole effort was written after, and a count that
+        lives only in derive's stdout is the form it took -- printed once, in
+        a stream nobody re-reads.
+
+        Green when the survey asked and found nothing off the canvas. Not
+        silence: an empty `dropped` line is printed rather than omitted for
+        the same reason, and a missing row here would read exactly like a
+        passing one. Not `[----]` either: nobody-could-answer is untrue, the
+        survey answered with a count and an area.
+
+        `[----]` is for the run that never asked -- no reference, or the plan
+        and the reference are the same file -- because then there is no
+        `off_plan` list to grade, only a `why`.
+
+        No table excuses a non-empty list. The refusal already names the two
+        exits that make the number right: widen the crop, or clip the
+        reference to it. A keyed table is not even possible: names come from
+        `CAPTURE_PARTS` by position among the survivors, and a refused piece
+        is not a survivor. A single building-level sentence would hide a
+        villa behind a phrase about a hedge, which is `UNIFORM = True` again.
+        """
+        name = "the canvas holds the reference"
+        rec = derived.get("assembly")
+        if not rec or rec.get("why"):
+            why = (rec.get("why") if rec else
+                   "derived.json carries no assembly block")
+            g.ungraded(
+                name,
+                f"{why}. Nothing asked whether a piece sat off the canvas")
+            return
+        pieces = rec.get("off_plan") or []
+        n = len(pieces)
+        area = sum(int(p.get("cells") or 0) for p in pieces)
+        tallest = max((float(p.get("top") or 0.0) for p in pieces), default=0.0)
+        on = sum(int(p.get("on_the_plan") or 0) for p in pieces)
+        past = sum(int(p.get("past") or 0) for p in pieces)
+        if not n:
+            g.add(name, True,
+                  "0 piece(s) off the plan, 0 m2 -- every piece of the "
+                  "reference the survey offered sits on the canvas")
+            return
+        g.add(name, False,
+              f"{n} piece(s), {area} m2 in all, tallest {tallest:.1f} m, sit "
+              f"off the plan's canvas ({on} cell(s) reached it, {past} past). "
+              f"A part the canvas bit is a part the build would redraw at the "
+              f"size of what survived. Widen the crop the plan was drawn on, "
+              f"or clip the reference to what that crop covers.")
 
     @staticmethod
     def _share(mask, covered) -> float:

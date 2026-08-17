@@ -15,9 +15,10 @@ It also carries the proofs for the machinery that measuring a whole site rests
 on, none of which `pipeline_selftest` reaches: the coverage row in all three of
 its states and by both of its entrances, the flip that decides where an
 assembled part lands, the part thresholds, the clip-holds-the-site row, the
-`--clip-up` refusal, and `prove_register_floor` -- material above the register
-floor that the drawn plan never drew, which is the case a clip of the site
-creates and a clip of the building never did.
+canvas-holds-the-reference row over `assembly.off_plan` in both of its states,
+the `--clip-up` refusal, and `prove_register_floor` -- material above the
+register floor that the drawn plan never drew, which is the case a clip of the
+site creates and a clip of the building never did.
 
     python -m tools.coverage_selftest
 """
@@ -51,6 +52,7 @@ ROOT = Path(__file__).resolve().parent.parent
 KIND = "coverage"
 ROW = "every part is measured by something"
 SITE_ROW = "the clip holds the site"
+CANVAS_ROW = "the canvas holds the reference"
 
 # A neighbouring block the map never draws, standing above the template's
 # REGISTER_FLOOR of 6 m and below the fixture's lower wing at 8 m. That band is
@@ -556,6 +558,102 @@ def prove_canvas_bite() -> str | None:
     return None
 
 
+def _off_grade(assembly):
+    """Run `off_plan` on a derived record. `assembly` is the survey's block."""
+    derived = {} if assembly is None else {"assembly": assembly}
+    g = Gate("prove")
+    Grading(None, None, SimpleNamespace()).off_plan(g, derived)
+    if len(g.checks) != 1:
+        raise SystemExit(f"FAIL: off_plan wrote {len(g.checks)} row(s)")
+    return g.checks[0]
+
+
+def prove_off_plan() -> str | None:
+    """The gate grades assemble's off_plan record, both ways, and the silence.
+
+    `prove_canvas_bite` is the refusal. This is the row over it. A count that
+    lives only in derive's stdout is the failure this whole effort was written
+    after -- printed once, in a stream nobody re-reads -- so both states have
+    to survive here: a bitten piece is red with the numbers and the exits, and
+    a canvas that held everything is green with the zeros, not missing.
+    """
+    green = _off_grade({"drawn": 1, "reference_parts": 1,
+                        "matched": 1, "extra": 0})
+    if green.name != CANVAS_ROW or green.ok is not True:
+        return f"FAIL: an empty off_plan should be green, got {green.line()}"
+    if "0 piece(s)" not in green.detail or "0 m2" not in green.detail:
+        return (f"FAIL: green must print the zeros, not go quiet: "
+                f"{green.detail}")
+    if "Widen the crop" in green.detail or "clip the reference" in green.detail:
+        return f"FAIL: green reads as a problem: {green.detail}"
+
+    red = _off_grade({
+        "drawn": 1,
+        "off_plan": [{"cells": 300, "top": 6.0,
+                      "on_the_plan": 180, "past": 120}],
+    })
+    if red.ok is not False:
+        return f"FAIL: a non-empty off_plan should be red, got {red.line()}"
+    if "1 piece(s)" not in red.detail or "300 m2" not in red.detail:
+        return f"FAIL: red hid the count or the area: {red.detail}"
+    if "6.0 m" not in red.detail:
+        return f"FAIL: red hid the tallest piece: {red.detail}"
+    if "180" not in red.detail or "120" not in red.detail:
+        return f"FAIL: red hid how much reached the canvas: {red.detail}"
+    if "Widen the crop" not in red.detail or "clip the reference" not in red.detail:
+        return f"FAIL: red dropped the ways out: {red.detail}"
+
+    blank = _off_grade({
+        "why": "no model and no capture, so nothing here holds a "
+               "part the plan does not draw"})
+    if blank.ok is not None:
+        return (f"FAIL: assembly that never asked should be ungraded, "
+                f"got {blank.line()}")
+    if "no model and no capture" not in blank.detail:
+        return f"FAIL: ungraded dropped the survey's why: {blank.detail}"
+
+    missing = _off_grade(None)
+    if missing.ok is not None:
+        return (f"FAIL: no assembly block should be ungraded, "
+                f"got {missing.line()}")
+
+    # The same boxes `prove_canvas_bite` refuses, so this grades the record
+    # that proof produces and not a hand-built stand-in.
+    tmp = ROOT / "buildings" / "_selftest_offplan"
+    try:
+        _, bitten = _assembled(tmp, [(5.0, 25.0, 5.0, 15.0, 12.0),
+                                     (45.0, 70.0, 20.0, 32.0, 6.0)], 0.0)
+        record = bitten.get("assembly") or {}
+        pieces = record.get("off_plan") or []
+        if len(pieces) != 1:
+            return (f"FAIL: the canvas-bite assembly no longer refuses one "
+                    f"piece, got {record!r}; this is not grading the refusal")
+        real_red = _off_grade(record)
+        if real_red.ok is not False:
+            return (f"FAIL: the refused piece should make the row red, "
+                    f"got {real_red.line()}")
+        area = int(pieces[0]["cells"])
+        if f"{area} m2" not in real_red.detail:
+            return (f"FAIL: the row did not print the refused area {area}: "
+                    f"{real_red.detail}")
+
+        _, held = _assembled(tmp, [(5.0, 25.0, 5.0, 15.0, 12.0)], 0.0)
+        real_green = _off_grade(held.get("assembly"))
+        if real_green.ok is not True:
+            return (f"FAIL: a reference the canvas held should be green, "
+                    f"got {real_green.line()}")
+        if held.get("assembly", {}).get("off_plan"):
+            return (f"FAIL: the held-only case wrote off_plan: "
+                    f"{held.get('assembly')!r}")
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    print("off_plan row: green on empty, red on a bite, ungraded when "
+          "assembly never asked", flush=True)
+    return None
+
+
 def _with_annex(kind: str, extra: str) -> Path:
     """A mapped fixture whose capture holds one volume the map never drew."""
     where = make(kind, extra, ("layout.png", "mesh"))
@@ -938,7 +1036,7 @@ def main() -> int:
     try:
         missed = (prove_coverage_row() or prove_orientation()
                   or prove_orientation_stop() or prove_orientation_wrap()
-                  or prove_canvas_bite()
+                  or prove_canvas_bite() or prove_off_plan()
                   or prove_register_floor() or prove_thresholds()
                   or prove_site_covered() or prove_clip_up())
         if missed:
@@ -1012,6 +1110,19 @@ def main() -> int:
         print(f"site row present: ok={site['ok']!r}: {site['detail']}")
         if site["ok"] is not True:
             print("FAIL: the fixture clip should hold the site")
+            return 1
+        if CANVAS_ROW not in rows:
+            print("FAIL: report.json has no row "
+                  f"{CANVAS_ROW!r}; the gate asked {len(rows)} check(s)")
+            return 1
+        canvas = next(c for c in report["checks"] if c["name"] == CANVAS_ROW)
+        print(f"canvas row present: ok={canvas['ok']!r}: {canvas['detail']}")
+        if canvas["ok"] is not True:
+            print("FAIL: the fixture canvas should hold the reference")
+            return 1
+        if (derived.get("assembly") or {}).get("off_plan"):
+            print("FAIL: the fixture wrote off_plan and the row still passed: "
+                  f"{derived.get('assembly')!r}")
             return 1
 
         # A part the map never drew is one whose footprint misses the painted

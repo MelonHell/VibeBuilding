@@ -157,6 +157,15 @@ def write_vector(path: Path) -> None:
     tested by `vectorplan`'s own numbers, and what this branch is here to check
     is that a plan stated as rings rather than measured off pixels reaches the
     gate intact.
+
+    The sheet is the site, same as the map crop. Four 1 m pins sit at that
+    crop's corners so the raster grid holds the outbuilding the rings do not
+    draw. They rasterise to a cell each and fall under `vectorplan.MIN_CELLS`,
+    so they are not parts -- the same move as `fixture.extent()`, which grew
+    the map's sheet and left the drawing alone. Without them the outbuilding
+    hangs off the 4 m default margin, `assemble` refuses it, and the
+    canvas-holds row is red on a branch that is here to prove a vector plan
+    reaches the gate intact.
     """
     from tools import fixture
 
@@ -169,6 +178,20 @@ def write_vector(path: Path) -> None:
                "geometry": {"type": "Polygon",
                             "coordinates": [ring(u0, u1, v0, v1)]}}
               for name, u0, u1, v0, v1, _ in fixture.PARTS]
+    # World-axis 1 m squares at the map crop's corners. Not rotated: they
+    # mark the sheet, they are not a part of the building.
+    x0, z0, width, length = fixture.extent()
+    x1, z1 = x0 + width, z0 + length
+    for i, (x, z) in enumerate(((x0, z0), (x1, z0), (x1, z1), (x0, z1))):
+        shapes.append({
+            "type": "Feature",
+            "properties": {"name": f"pin-{i}"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[x, z], [x + 1, z],
+                                 [x + 1, z + 1], [x, z + 1], [x, z]]],
+            },
+        })
     path.write_text(json.dumps({"type": "FeatureCollection",
                                 "features": shapes}), encoding="utf-8")
 
