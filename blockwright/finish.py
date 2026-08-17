@@ -156,7 +156,8 @@ def quickly() -> bool:
 
 def finish(canvas, out, frame, *, schedule=None,
            name: str = "massing", scale: float = 6.0, orthos=None,
-           views=STANDARD, sheets=SHEETS, plans=(), photos=()) -> Finished:
+           views=STANDARD, sheets=SHEETS, plans=(), photos=(),
+           layout_png=None) -> Finished:
     """Join the blocks up, write everything, and draw what came out.
 
     `name` is the stem of everything this writes that is *this* build: the
@@ -211,11 +212,19 @@ def finish(canvas, out, frame, *, schedule=None,
             "looking at anything.")
         return done
 
-    done.plans[f"{name}_plan"] = out / f"{name}_plan.png"
-    canvas.silhouette().to_png(done.plans[f"{name}_plan"], scale=2)
+    # Greybox plans and the top sheet live in out/greybox/, not in out/: a
+    # full build writes the same names, and the two runs must not overwrite
+    # each other -- form and material used to be one file.
+    where = out / name if name == "greybox" else out
+    where.mkdir(parents=True, exist_ok=True)
+    done.plans[f"{name}_plan"] = where / "plan.png"
+    # One pixel to one block. Doubling makes the picture easier to see and
+    # impossible to count cells on, and counting cells is what a layered
+    # plan is for.
+    canvas.silhouette().to_png(done.plans[f"{name}_plan"], scale=1)
     for label, y in plans:
-        path = out / f"{name}_{label}.png"
-        canvas.layer(y).to_png(path, scale=2)
+        path = where / f"plan-{label}.png"
+        canvas.layer(y).to_png(path, scale=1)
         done.plans[label] = path
 
     # The silhouettes say how tall and how wide. They cannot say whether this is
@@ -224,11 +233,35 @@ def finish(canvas, out, frame, *, schedule=None,
     done.views = render_set(canvas, out / "views", frame=frame, scale=scale,
                             views=views)
 
+    from . import compare
+
+    # Plan | map | reference, all covering the same ground. Written here
+    # rather than only when Blender orthos exist: a greybox without a mesh
+    # still has a plan and a map, and those two already want one extent.
+    # The map is discovered from the package's input/ when the caller did
+    # not pass it -- every building keeps it there, and threading the path
+    # through every recipe would miss the ones written before this argument
+    # existed.
+    layout = (Path(layout_png) if layout_png is not None
+              else out.parent / "input" / "layout.png")
+    top_panels = [compare.build_panel(
+        render(canvas, None, view=View.plan(), frame=frame, scale=scale),
+        scale, label=f"{name} plan")]
+    if layout.exists():
+        top_panels.append(compare.map_panel(layout))
+    if orthos is not None and (Path(orthos) / "render_meta.json").exists():
+        try:
+            top_panels.append(compare.mesh_panel(orthos, "top"))
+        except KeyError:
+            pass
+    if len(top_panels) >= 2:
+        path = where / "top.png"
+        compare.sheet(compare.aligned(top_panels), path)
+        done.sheets["top"] = path
+
     if orthos is None or not (Path(orthos) / "render_meta.json").exists():
         done.notes.append("no mesh orthos; skipping the comparison sheets")
         return done
-
-    from . import compare
 
     for ortho, view, align in sheets:
         image = render(canvas, None, view=view, frame=frame, scale=scale)
@@ -236,7 +269,7 @@ def finish(canvas, out, frame, *, schedule=None,
                   compare.build_panel(image, scale, label=f"build {view.name}")]
         panels.extend(compare.photo(p) for p in photos)
         path = out / "compare" / f"{ortho}.png"
-        compare.sheet(panels, path, scale=4.0, align=align)
+        compare.sheet(compare.aligned(panels), path, scale=4.0, align=align)
         done.sheets[ortho] = path
         score = compare.iou(panels[0], panels[1], 0.5)
         if score is None:

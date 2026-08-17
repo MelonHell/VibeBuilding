@@ -42,6 +42,32 @@ class Panel:
         self.metres_per_pixel = metres_per_pixel
         self.label = label
 
+    def at(self, metres_per_pixel: float) -> "Panel":
+        """The same ground, sampled at a different metres-per-pixel.
+
+        Extent stays put; only the sampling changes. `aligned` restates every
+        panel onto one grid before it pads them to one rectangle -- restating
+        is not scaling the ground, and the two have to stay distinct or the
+        pad becomes a stretch.
+        """
+        if self.metres_per_pixel is None:
+            raise ValueError(
+                f"{self.label} is unmeasured; it has no metres to restate")
+        if metres_per_pixel <= 0:
+            raise ValueError("metres_per_pixel must be positive")
+        factor = self.metres_per_pixel / metres_per_pixel
+        if abs(factor - 1.0) < 1e-12:
+            return self
+        from PIL import Image
+
+        size = (max(1, round(self.image.width * factor)),
+                max(1, round(self.image.height * factor)))
+        # Nearest-neighbour so a 1 px = 1 m map restated to a finer grid stays
+        # a grid, not a blur: the sheet is for comparing shape, and a Lanczos
+        # upsample would invent edges that were never drawn.
+        return Panel(self.image.convert("RGB").resize(size, Image.NEAREST),
+                     metres_per_pixel, self.label)
+
 
 def _open(source):
     from PIL import Image
@@ -92,6 +118,60 @@ def build_panel(image, scale: float, label: str = "build") -> Panel:
 def photo(path, label: str = "photo") -> Panel:
     """A photograph: no scale, so it is fitted rather than measured against."""
     return Panel(_open(path), None, label)
+
+
+def map_panel(path, label: str = "map") -> Panel:
+    """A layout.png crop: one pixel is one metre by contract.
+
+    Not trimmed. The crop *is* the plot, and the empty ground around the
+    building is the extent the other panels have to pad out to. Trimming it
+    the way `mesh_panel` trims an ortho would throw that ground away and
+    then pad it back, which is how a missing site reads as a framing choice.
+    """
+    return Panel(_open(path), 1.0, label)
+
+
+def aligned(panels: list[Panel], metres_per_pixel: float | None = None
+            ) -> list[Panel]:
+    """The same panels, all covering the same rectangle of ground.
+
+    `sheet` already puts panels at one scale, and one scale is not one extent: a
+    reference clipped to the building beside a build that covers the whole plot
+    comes out as a small picture next to a large one, both at a true 1:1. The eye
+    then spends its time finding the building instead of comparing the shape,
+    which is what the sheet is for -- and on one real site that is exactly how a
+    missing half of the plot went unnoticed.
+
+    So each panel is padded, never scaled, to the union of all their extents.
+    Padding says "nothing was known here"; scaling would say "this is what was
+    there", which is false.
+    """
+    from PIL import Image
+
+    measured = [p for p in panels if p.metres_per_pixel is not None]
+    if not measured:
+        return list(panels)
+    scale = metres_per_pixel or min(p.metres_per_pixel for p in measured)
+    restated = [p if p.metres_per_pixel is None else p.at(scale)
+                for p in panels]
+    # Union of the restated pixel boxes, not of the original metre extents
+    # converted back: a round-trip through metres is off by a pixel, and a
+    # paste that does not fit is a clip, which is a lie about the edge.
+    box = (
+        max(p.image.width for p in restated if p.metres_per_pixel is not None),
+        max(p.image.height for p in restated if p.metres_per_pixel is not None),
+    )
+    out = []
+    for panel in restated:
+        if panel.metres_per_pixel is None:
+            out.append(panel)
+            continue
+        padded = Image.new("RGB", box, BACKGROUND)
+        image = panel.image.convert("RGB")
+        padded.paste(image, ((box[0] - image.width) // 2,
+                             (box[1] - image.height) // 2))
+        out.append(Panel(padded, scale, panel.label))
+    return out
 
 
 # Both, drawn only, built only. Chosen so the two faults read at a glance and in
