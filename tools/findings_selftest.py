@@ -321,7 +321,9 @@ def prove_pause() -> int:
     """`--manual` stops before the full build; `--auto` and no flag do not.
 
     A stub building, not a fixture, so the proof does not spend a derive
-    and does not depend on one being left on disk.
+    and does not depend on one being left on disk. Also a look-again (the
+    human finding that forced the pause must print) and a wait at gate 5
+    (that one still rebuilds).
     """
     name = "_selftest_manual"
     where = ROOT / "buildings" / name
@@ -387,6 +389,53 @@ def prove_pause() -> int:
             return fail("--auto returned WAITING")
         if not built.exists():
             return fail("--auto did not reach the build")
+
+        # Look-again: last human round still has findings. The pause must
+        # print that finding -- it is why the gate is waiting -- and must
+        # name the rebuild, not just --manual again.
+        (where / "findings.md").write_text(LEDGER, encoding="utf-8")
+        built.unlink()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--manual"])
+        said = buf.getvalue()
+        if code != run.WAITING:
+            return fail(f"look-again returned {code}, not WAITING")
+        if "yours:" not in said or "F-02" not in said:
+            return fail("look-again did not print the human finding:\n" + said)
+        if f"python -m buildings.{name}.build --greybox" not in said:
+            return fail("gate 4 announce did not name build --greybox:\n" + said)
+        if f"python -m buildings.{name}.review --greybox --mesh" not in said:
+            return fail("gate 4 announce did not name review --greybox:\n" + said)
+        if built.exists():
+            return fail("look-again at gate 4 ran the full build")
+
+        # Gate 5 is the last review: AFTER[5] is empty, so a wait there
+        # still rebuilds. That is the opposite of gate 4, and cheap to lose.
+        (where / "findings.md").write_text(
+            "# scratch -- gate 5\n\n"
+            "## Gate 4 -- greybox\n\n"
+            "### Round 1 -- agent\n\n"
+            "### Round 1 -- human\n\n"
+            "## Gate 5 -- photo\n\n"
+            "### Round 1 -- agent\n\n",
+            encoding="utf-8")
+        # Look-again left BUILT gone. A wait at 5 must write it: AFTER[5]
+        # is empty, so the build still runs.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = run.main([name, "--manual"])
+        said = buf.getvalue()
+        if code != run.WAITING:
+            return fail(f"gate 5 wait returned {code}, not WAITING")
+        if "gate 5 is waiting for you" not in said:
+            return fail("gate 5 wait did not say the gate is waiting:\n" + said)
+        if not built.exists():
+            return fail("a wait at gate 5 skipped the build")
+        if f"python -m buildings.{name}.build --greybox" in said:
+            return fail("gate 5 announce named a greybox rebuild:\n" + said)
+        if f"python -m buildings.{name}.review --mesh" not in said:
+            return fail("gate 5 announce did not name review --mesh:\n" + said)
 
         # A real failure is still 1, even under --manual: the pause is not
         # a blanket for every stop.

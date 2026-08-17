@@ -263,7 +263,11 @@ def waiting_at(building: str, journal: Path | None = None) -> int | None:
 
 
 def announce(building: str, gate: int) -> None:
-    """What to open, and what the agent already found at this gate."""
+    """What to open, who already found what, and how to show a fix.
+
+    A finding closes on a fresh frame. Re-invoking `--manual` alone redisplays
+    these same pictures, which is how a look-again pretends to be a review.
+    """
     from blockwright import findings
 
     journal = journal_of(building)
@@ -278,10 +282,31 @@ def announce(building: str, gate: int) -> None:
         print(f"  and    {here / 'greybox' / 'review'}")
     else:
         print(f"  open   {here / 'review'}")
-    print(f"  agent findings are in {journal}")
-    for one in findings.read(journal):
-        if one.gate == gate and one.by != "human":
+    print(f"  findings are in {journal}")
+    mine = [one for one in findings.read(journal) if one.gate == gate]
+    agent = [one for one in mine if one.by != "human"]
+    human = [one for one in mine if one.by == "human"]
+    if agent:
+        print("  agent:")
+        for one in agent:
             print(f"    {one.id} | {one.state} | {one.title()}")
+    if human:
+        print("  yours:")
+        for one in human:
+            print(f"    {one.id} | {one.state} | {one.title()}")
+    print("A finding closes on a fresh frame. After a fix, rebuild, then "
+          "--manual again -- not --manual alone:")
+    if gate == 1:
+        print("  recapture the clip, then")
+        print(f"  python -m tools.run {building} --manual")
+    elif gate == 4:
+        print(f"  python -m buildings.{building}.build --greybox")
+        print(f"  python -m buildings.{building}.review --greybox --mesh")
+        print(f"  python -m tools.run {building} --manual")
+    else:
+        print(f"  python -m buildings.{building}.build")
+        print(f"  python -m buildings.{building}.review --mesh")
+        print(f"  python -m tools.run {building} --manual")
     print("Say what it missed, or say it is fine. Nothing after this "
           "gate runs until you do.")
 
