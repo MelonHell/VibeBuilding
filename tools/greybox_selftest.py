@@ -101,6 +101,87 @@ def prove_occupancy(where: Path, grey: Path) -> str | None:
     return None
 
 
+def prove_placeholder(where: Path) -> str | None:
+    """Greybox stands an unmeasured part and marks it; the full build refuses.
+
+    Run after occupancy. Occupancy counts the first greybox against the
+    fixture's real heights; a placeholder on a tall wing shrinks that count
+    toward the full-height ring, so this rebuild is not fed back into it.
+
+    Forgetting a skyline median is the condition `Site` actually reads.
+    Raising `PART_LEAST_HEIGHT` only drops assembled extras, and the
+    template assigns that bar after `CAPTURE_PARTS`, so an insert there
+    would not even stick.
+    """
+    derived_path = where / "out" / "derived.json"
+    derived = json.loads(derived_path.read_text(encoding="utf-8"))
+    measured = []
+    for rec in derived.get("parts") or []:
+        name = rec.get("name")
+        entry = (derived.get("skyline") or {}).get(name) or {}
+        if isinstance(entry, dict) and entry.get("median") is not None:
+            measured.append((float(entry["median"]), name))
+    if not measured:
+        return "FAIL: derived.json has no part with a measured height to forget"
+    # Tallest first, so the old mid-height sits above the one-storey stand
+    # and leftover stone from the first greybox would still be visible.
+    old_top, name = max(measured)
+    derived["skyline"][name]["median"] = None
+
+    recipe = importlib.import_module(f"buildings._selftest_{KIND}.build")
+    site = recipe.Site(derived, greybox=True)
+    want = site.ground + site.storey
+    if name not in site.placeholder:
+        return f"FAIL: {name} was not marked as a placeholder"
+    if site.tops[name] != want:
+        return (f"FAIL: placeholder {name} stands at {site.tops[name]} m, "
+                f"not one storey ({want} m)")
+    try:
+        recipe.Site(derived, greybox=False)
+    except SystemExit as why:
+        text = str(why)
+        if ("nothing states how tall" not in text or name not in text
+                or "--greybox" not in text):
+            return f"FAIL: the full Site refused the wrong way: {why}"
+    else:
+        return "FAIL: the full build accepted a part with no measured height"
+
+    derived_path.write_text(json.dumps(derived), encoding="utf-8")
+    said = run("-m", f"buildings._selftest_{KIND}.build", "--greybox", "--quick")
+    if "placeholder" not in said or name not in said:
+        return "FAIL: greybox did not mark a part with no measured height"
+
+    grey = where / "out" / "greybox.schem"
+    model = Schematic.read(grey)
+    interior = site.footprint(name).erode(recipe.THICK)
+    if interior.count() == 0:
+        return f"FAIL: placeholder {name} is too thin to have an interior"
+    y_low = site.ground + max(1, (site.tops[name] - site.ground) // 2)
+    empty = sum(1 for x, z in interior.cells() if model.get(x, y_low, z) == AIR)
+    if empty:
+        return (f"FAIL: placeholder {name} at y={y_low} is hollow "
+                f"({empty} of {interior.count()} interior cells empty)")
+    y_old = site.ground + max(1, (int(old_top + 0.5) - site.ground) // 2)
+    if y_old >= site.tops[name]:
+        leftover = sum(
+            1 for x, z in interior.cells() if model.get(x, y_old, z) != AIR)
+        if leftover:
+            return (f"FAIL: placeholder {name} still has stone at y={y_old} "
+                    f"({leftover} of {interior.count()} cells) -- the first "
+                    "greybox was not rebuilt")
+
+    done = subprocess.run(
+        [sys.executable, "-m", f"buildings._selftest_{KIND}.build"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
+    if done.returncode == 0:
+        return "FAIL: the full build accepted a part with no measured height"
+    text = (done.stdout or "") + (done.stderr or "")
+    if "nothing states how tall" not in text or "--greybox" not in text:
+        return f"FAIL: the full build refused without pointing at --greybox:\n{text}"
+    return None
+
+
 def prove_overlap() -> str | None:
     """A section in both lists must refuse before it draws anything."""
     from buildings._template import build as recipe
@@ -160,6 +241,11 @@ def main() -> int:
         if counts_of(full) == counts:
             print("FAIL: the full build and the greybox hold the same blocks -- "
                   "DETAIL is empty or never ran")
+            return 1
+
+        failed = prove_placeholder(where)
+        if failed:
+            print(failed)
             return 1
 
         n_parts = len(json.loads(

@@ -242,13 +242,30 @@ class Site:
             and name in self.parts
         }
         missing = [name for name in read.order if name not in self.tops]
+        # A greybox exists to settle the plan, and the plan can be settled
+        # before the heights are. A part nothing has measured yet stands one
+        # storey tall and says so, in the printout and in `self.placeholder`, so
+        # that a low block in the render is read as "not measured yet" rather
+        # than as "measured low".
+        #
+        # The full build still refuses. A placeholder that reached a finished
+        # schematic would be a number nobody chose, standing in a file the gate
+        # grades against the reference.
+        self.placeholder = set()
+        if missing and greybox:
+            for name in missing:
+                self.tops[name] = self.ground + self.storey
+                self.placeholder.add(name)
+            missing = []
         if missing:
             raise SystemExit(
                 f"nothing states how tall {', '.join(missing)} is -- the "
                 "reference has no material over that part and no height was "
                 "declared for it. Add one to DECLARED_HEIGHTS in "
                 "probes/derive.py, with the photograph or the sheet it was read "
-                "off, and re-run it.")
+                "off, and re-run it.\n"
+                "To look at the plan before settling the heights, run the build "
+                "with --greybox: those parts stand one storey and are marked.")
         self.top = max(self.tops.values())
 
         # Whether a measured edge needs opening out by half a block, which
@@ -610,8 +627,13 @@ def main(argv: list[str] | None = None) -> None:
           f"storey {site.storey} m")
     for name, top in site.tops.items():
         p = site.parts[name]
+        mark = "  placeholder" if name in site.placeholder else ""
         print(f"  {name:12s} u {p.u0:6.1f}..{p.u1:6.1f}  "
-              f"v {p.v0:5.1f}..{p.v1:5.1f}  to {top} m")
+              f"v {p.v0:5.1f}..{p.v1:5.1f}  to {top} m{mark}")
+    if site.placeholder:
+        print(f"  {len(site.placeholder)} part(s) stand at a placeholder "
+              f"height: {', '.join(sorted(site.placeholder))}. The plan can be "
+              "agreed on this; the heights cannot.")
 
     done = finish(canvas, paths.OUT, site.frame,
                   name="greybox" if greybox else "build",
