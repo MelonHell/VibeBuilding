@@ -59,16 +59,9 @@ MESH_FLOOR = 2.0
 REGISTER_FLOOR = 2.0
 """
 
-DESCRIBED = """
-from blockwright import declared as _declared
-
-PLAN_ANGLE = 0.0
-DECLARED_PLAN = [
-    _declared.Rect("front", 0.0, 80.0, 0.0, 14.0,
-                   source="brief.md: 'a long block eighty metres by fourteen'"),
-    _declared.Rect("back", 0.0, 80.0, 24.0, 34.0,
-                   source="brief.md: 'a lower wing behind it, ten deep'"),
-]
+# Heights and storey declared the way the described branch already does.
+# WITNESS drops the capture, so a mapped building needs these or derive stops.
+DECLARED_SECTION = """
 DECLARED_HEIGHTS = {
     "front": {"top": 12.0, "source": "brief.md: 'four storeys'"},
     "back": {"top": 8.0, "source": "brief.md: 'the wing is lower, about eight'"},
@@ -79,6 +72,18 @@ DECLARED_STOREY = {
     "source": "brief.md: 'floor to floor about three metres'",
 }
 """
+
+DESCRIBED = """
+from blockwright import declared as _declared
+
+PLAN_ANGLE = 0.0
+DECLARED_PLAN = [
+    _declared.Rect("front", 0.0, 80.0, 0.0, 14.0,
+                   source="brief.md: 'a long block eighty metres by fourteen'"),
+    _declared.Rect("back", 0.0, 80.0, 24.0, 34.0,
+                   source="brief.md: 'a lower wing behind it, ten deep'"),
+]
+""" + DECLARED_SECTION
 
 # Same floors as the mapped branch, and for the same reason: the 6 m
 # outbuilding is not on the vector plan, and a floor below its roof would
@@ -239,12 +244,11 @@ def _ask_witnesses(expected=None, witness=None, iou=0.90):
 
 
 def prove_witness_ceiling(keep: bool = False) -> str | None:
-    """The refusals and the greying, left where a reviewer can see them fail.
+    """The refusals, the drop, and the described-shaped run.
 
-    Four things this task has to keep true, and a fifth that says what the
-    switch actually turns off -- because a switch that greys more than it
-    claims is the defect `JAGGED = None` already was, and one that claims
-    more than it greys is the same sentence read the other way.
+    A switch that greys three agreement rows while the reference still feeds
+    the build is the defect `JAGGED = None` already was. WITNESS drops the
+    capture or the model from the evidence; the rest is the described path.
     """
     from blockwright.gate import Gate
     from blockwright.grading import Grading
@@ -265,8 +269,11 @@ def prove_witness_ceiling(keep: bool = False) -> str | None:
         try:
             _ask_witnesses(witness=blank)
         except SystemExit as why:
-            if "sentence" not in str(why):
+            text = str(why)
+            if "sentence" not in text:
                 return f"FAIL: empty WITNESS {blank!r} said the wrong thing: {why}"
+            if blank is True and "True" not in text:
+                return f"FAIL: WITNESS = True should have named True, got {why}"
         else:
             return f"FAIL: WITNESS = {blank!r} should have been refused"
 
@@ -278,6 +285,8 @@ def prove_witness_ceiling(keep: bool = False) -> str | None:
             return f"FAIL: low overlap said the wrong thing: {why}"
         if "two buildings" in text and "cannot declare" in text:
             return f"FAIL: low overlap reused the EXPECTED-ban text: {why}"
+        if "out/compare/top.png" in text:
+            return f"FAIL: overlap stop named a file derive has not written: {why}"
     else:
         return "FAIL: overlap 0.51 against a floor of 0.70 should have stopped the run"
 
@@ -325,19 +334,69 @@ def prove_witness_ceiling(keep: bool = False) -> str | None:
     extra = MAPPED + f"\nWITNESS = {reason!r}\n"
     where = make("witness", extra, ("layout.png", "mesh"))
     try:
+        code, said = run("witness", "probes.derive")
+        if code == 0:
+            return ("FAIL: mapped+WITNESS without declared heights/storey "
+                    "should have stopped derive")
+        if "declared" not in said.lower() and "DECLARED" not in said:
+            return ("FAIL: stop did not say heights/storey must be declared:\n"
+                    + said[-1500:])
+    finally:
+        if not keep:
+            shutil.rmtree(where, ignore_errors=True)
+
+    extra = MAPPED + DECLARED_SECTION + f"\nWITNESS = {reason!r}\n"
+    where = make("witness", extra, ("layout.png", "mesh"))
+    try:
         for step in ("probes.derive", "build", "gate"):
             code, said = run("witness", step)
             if code != 0:
                 return f"FAIL: witness-set {step} died:\n{said[-2000:]}"
         derived = json.loads((where / "out" / "derived.json").read_text(encoding="utf-8"))
-        if not derived.get("witnesses"):
-            return "FAIL: mapped fixture wrote no witness rows to grey"
-        for row in derived.get("witnesses", []):
+        ev = derived.get("evidence") or {}
+        if ev.get("reference") is not None:
+            return (f"FAIL: evidence.reference should be None under WITNESS, "
+                    f"got {ev.get('reference')}")
+        have = ev.get("have") or {}
+        if "capture" in have or "model" in have:
+            return f"FAIL: survey still reported the dropped reference: {have}"
+        if derived.get("witness") != reason:
+            return f"FAIL: derived.json did not record WITNESS, got {derived.get('witness')!r}"
+        sky = derived.get("skyline") or {}
+        for name in ("front", "back"):
+            if not (sky.get(name) or {}).get("declared"):
+                return f"FAIL: {name} height was not declared: {sky.get(name)}"
+        if (derived.get("storeys") or {}).get("by") != "declared":
+            return (f"FAIL: storey should be declared under WITNESS, "
+                    f"got {derived.get('storeys')}")
+        for rec in derived.get("parts") or []:
+            proven = rec.get("provenance") or {}
+            if proven.get("witness") == "section":
+                return f"FAIL: provenance still claims a section witness on {rec['name']}"
+            if proven.get("height") not in ("declared", "none"):
+                return (f"FAIL: {rec['name']} height is {proven.get('height')!r}, "
+                        "not declared")
+        questions = {row["question"] for row in derived.get("witnesses") or []}
+        if not {"extent", "bearing", "plan overlap"} <= questions:
+            return f"FAIL: missing greying rows: {questions}"
+        for row in derived.get("witnesses") or []:
             if row.get("ok") is not None or row.get("expected") != reason:
                 return (f"FAIL: derive under WITNESS left {row.get('question')} "
                         f"ok={row.get('ok')} expected={row.get('expected')!r}")
         report = json.loads((where / "out" / "report.json").read_text(encoding="utf-8"))
         checks = {c["name"]: c for c in report.get("checks", [])}
+        section = checks.get("section")
+        if section is None or section.get("ok") is not None:
+            return f"FAIL: section should be ungraded for want of a reference, got {section}"
+        if report.get("sections"):
+            return "FAIL: sections were cut under WITNESS; the reference was not dropped"
+        for name in ("registration", "scale"):
+            row = checks.get(name)
+            if row is not None and row.get("ok") is not None:
+                return f"FAIL: {name} still graded against the dropped reference: {row}"
+        clip = checks.get("the clip holds the site")
+        if clip is not None and clip.get("ok") is not None:
+            return f"FAIL: clip still graded against the dropped reference: {clip}"
         agrees = [n for n in checks if n.endswith(" agree")]
         if not agrees:
             return "FAIL: mapped fixture wrote no agree rows to grey"
@@ -345,22 +404,8 @@ def prove_witness_ceiling(keep: bool = False) -> str | None:
             row = checks[name]
             if row.get("ok") is not None or reason not in (row.get("detail") or ""):
                 return f"FAIL: gate row {name} was not greyed with the sentence: {row}"
-        registration = checks.get("registration")
-        if registration is None or registration.get("ok") is not True:
-            return f"FAIL: registration should still grade under WITNESS, got {registration}"
-        scale = checks.get("scale")
-        if scale is None or scale.get("ok") is None:
-            return f"FAIL: scale should still grade under WITNESS, got {scale}"
-        # The section is the reference witnessing the build. WITNESS does not
-        # turn it off -- that is the blast radius this proof is here to name.
-        if not report.get("sections"):
-            return ("FAIL: no sections were cut under WITNESS; "
-                    "the switch greys more than the agreement rows")
-        stayed = [n for n, c in checks.items()
-                  if c.get("ok") is True
-                  and not n.endswith(" agree")]
         print("witness ceiling: refusals hold; greying holds; "
-              f"section/registration/scale still grade ({len(stayed)} other green rows)",
+              "WITNESS drops the reference (section ungraded, heights declared)",
               flush=True)
     finally:
         if not keep:

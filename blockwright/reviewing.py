@@ -982,6 +982,8 @@ class Review:
         self.holds(frame, shots, groups)
         self.render_build(model, frame, shots, groups)
 
+        # survey() reads WITNESS off the already-imported derive module, so
+        # a dropped reference stays dropped here too.
         reference = sources.survey(self.paths).reference
         if args.mesh:
             if reference is None:

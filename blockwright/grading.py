@@ -229,7 +229,8 @@ class Grading:
                 f"{paths.DERIVED} is missing; run probes/derive.py first")
 
         derived = json.loads(paths.DERIVED.read_text(encoding="utf-8"))
-        evidence = sources.survey(paths)
+        evidence = sources.survey(
+            paths, witness=getattr(self.derive, "WITNESS", None))
         read = derive.plan_of()
         reference = evidence.reference
         g = gate.Gate(c.BUILDING)

@@ -136,6 +136,8 @@ class Agreement:
     @property
     def detail(self) -> str:
         if not self.rows:
+            if self.expected:
+                return self.expected
             return "only one source can answer this, so nothing was compared"
         a, b = self.rows[self.where]
         measured = (f"{self.pair}: {self.worst:.2f} {self.unit} apart at "

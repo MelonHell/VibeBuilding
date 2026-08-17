@@ -273,11 +273,12 @@ EXPECTED: dict[str, str] = {
 # fact about two views of one thing -- it is a decision about which of two
 # buildings is being built, and it has to be made rather than excused.
 #
-# Set it, and every agreement row that asked the reference -- the ones derive
-# writes under "witnesses" -- goes ungraded with this sentence printed beside
-# it. The section still cuts, and registration and scale still grade: they are
-# not those rows. Leave it, and a silhouette overlap under the floor stops the
-# run.
+# Set it, and the capture or the model stops being evidence for this building.
+# sources.survey does not report it, so there is no reference to cut a section
+# against, assemble contributes nothing from it, and every row it would have
+# witnessed goes ungraded with this sentence. Heights and the storey must then
+# be declared, the way a described building already does. Leave it, and a
+# silhouette overlap under the floor stops the run.
 WITNESS: str | None = None
 
 # Metres per unit of an SVG plan. A GeoJSON in longitude and latitude is

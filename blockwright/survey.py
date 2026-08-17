@@ -94,7 +94,10 @@ DEFAULTS = {
     # two buildings, and that choice is `WITNESS`, not a declared disagreement.
     "EXPECTED": {},
     # Why the reference is not a witness to this building, as a sentence.
-    # None means it is. See `Survey.witnesses_of`.
+    # None means it is. Set, the capture or the model is not evidence --
+    # `sources.survey` does not report it -- so there is no reference to
+    # cut a section against, and heights and the storey must be declared.
+    # See `Survey.witnesses_of`.
     "WITNESS": None,
     # Metres per unit of an SVG plan. A GeoJSON in lon/lat needs none -- it is
     # projected -- and one already in metres needs none either; an SVG has no
@@ -666,7 +669,7 @@ class Survey:
         run would stop with a message about a clip that is not the problem.
         """
         out = {} if out is None else out
-        evidence = sources.survey(self.paths)
+        evidence = sources.survey(self.paths, witness=self.t.WITNESS)
         by = evidence.answers("plan")
         if by is None:
             raise SystemExit(sources.refuse(evidence) or "nothing states the plan")
@@ -1460,7 +1463,10 @@ class Survey:
         # is confident and the texture disagrees, that disagreement is the news:
         # a capture whose vertices say 4.5 m and whose photograph says 3.1 m has
         # told you which one is the exporter.
-        skin = self.from_texture(out)
+        # The texture is of the same capture the geometry came from. No
+        # link means that file is not evidence -- described, or WITNESS
+        # dropped it -- so this does not read a rhythm off it either.
+        skin = self.from_texture(out) if link is not None else {}
         if skin.get("storey") and measured is not None:
             measured["from_texture"] = skin["storey"]
         if skin.get("bay"):
@@ -1526,6 +1532,12 @@ class Survey:
             }
         elif measured:
             out["storeys"] = measured
+        elif self.t.WITNESS is not None:
+            raise SystemExit(
+                "nothing states the storey height. WITNESS dropped the "
+                "reference, so no rhythm can be measured, and "
+                "self.t.DECLARED_STOREY names no spacing.\n"
+                "Add one, with the sentence or the sheet it came from.")
         else:
             out["storeys"] = {
                 "by": "nothing", "spacing": 0.0, "score": 0.0, "found": False,
@@ -1771,12 +1783,7 @@ class Survey:
                 "WITNESS to the sentence saying the reference is of something "
                 "else, or build what the reference shows and let the plan "
                 "answer only for the parts that matched.")
-        if self.t.WITNESS is not None:
-            if not isinstance(self.t.WITNESS, str) or not self.t.WITNESS.strip():
-                raise SystemExit(
-                    "WITNESS is set to an empty string. It takes the reason the "
-                    "reference is not a witness, as a sentence -- the flag version "
-                    "of this is what let a real disagreement pass as expected.")
+        sources.witness_sentence(self.t.WITNESS)
         found: list[witnesses.Agreement] = []
         by = read.source.name
 
@@ -1860,12 +1867,15 @@ class Survey:
                     f"the drawn plan and the reference share {value:.2f} of their "
                     f"silhouettes against a floor of {floor:.2f}. Two drawings of "
                     "one building do not do that.\n"
-                    "Look at out/compare/top.png before anything else. If they are "
-                    "of different buildings -- a game map beside a capture of the "
-                    "real prototype is the usual way -- set WITNESS in this file to "
-                    "the sentence that says so, and every row the reference would "
-                    "have graded will read ungraded with that sentence. If they are "
-                    "the same building, the clip or the crop is wrong.")
+                    "Look at input/layout.png and the capture's ortho "
+                    "(out/mesh-clip/orthos/top.png) before anything else. If they "
+                    "are of different buildings -- a game map beside a capture of "
+                    "the real prototype is the usual way -- set WITNESS in this "
+                    "file to the sentence that says so, and the reference is "
+                    "dropped from the evidence: every row it would have graded "
+                    "reads ungraded with that sentence, and heights and the storey "
+                    "must be declared. If they are the same building, the clip or "
+                    "the crop is wrong.")
 
         # Disagreements the building has said to expect. Not a widened
         # tolerance: the row goes ungraded with the reason printed beside it,
@@ -1873,6 +1883,17 @@ class Survey:
         # still graded.
         witnesses.declare(found, dict(self.t.EXPECTED))
         if self.t.WITNESS is not None:
+            if not found:
+                # Nothing was compared: the reference is not evidence. The
+                # questions it would have answered still appear, or the
+                # report looks like nobody asked -- the JAGGED = None shape
+                # the other way.
+                found.extend([
+                    witnesses.Agreement("extent", "x", witnesses.SIZE),
+                    witnesses.Agreement("bearing", "deg", witnesses.ANGLE),
+                    witnesses.Agreement("plan overlap", "IoU",
+                                        1.0 - witnesses.OVERLAP),
+                ])
             for one in found:
                 one.declare(self.t.WITNESS)
         out["witnesses"] = [one.report() for one in found]
@@ -1947,10 +1968,21 @@ class Survey:
                 height = "declared"
             else:
                 height = "none"
+            if self.t.WITNESS is not None:
+                # The reference is not a witness. A leftover measurement
+                # must not claim it covered the part.
+                if height in ("capture", "model"):
+                    height = ("declared"
+                              if name in (self.t.DECLARED_HEIGHTS or {})
+                              else "none")
+                witness = "none"
+            else:
+                witness = ("section" if height in ("capture", "model")
+                           else "none")
             record["provenance"] = {
                 "plan": read.provenance.get(name, "declared"),
                 "height": height,
-                "witness": "section" if height in ("capture", "model") else "none",
+                "witness": witness,
             }
 
     def declarations_of(self, out: dict, read: Read) -> None:
@@ -1991,11 +2023,13 @@ class Survey:
         out: dict = {}
 
         self.unconverted()
-        evidence = sources.survey(self.paths)
+        evidence = sources.survey(self.paths, witness=self.t.WITNESS)
         stop = sources.refuse(evidence)
         if stop:
             raise SystemExit("nothing to measure: " + stop)
         out["evidence"] = evidence.to_json()
+        if self.t.WITNESS is not None:
+            out["witness"] = self.t.WITNESS
 
         # -- the plan -----------------------------------------------------------
 

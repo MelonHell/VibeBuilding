@@ -39,6 +39,7 @@ the second and reads as though it answered the first is the failure to avoid.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -431,13 +432,63 @@ def _textured(obj: Path) -> bool:
     return False
 
 
-def survey(paths) -> Evidence:
+# Distinguishes "the caller did not pass WITNESS" from "WITNESS is None".
+# The first looks the sentence up on the building's derive module so a
+# forgotten caller cannot resurrect a dropped reference; the second means
+# the reference stands.
+_UNSET = object()
+
+
+def witness_sentence(value) -> str | None:
+    """None if the reference stands; the sentence if it does not.
+
+    Anything else is the flag version of this, and is refused. A reason is a
+    sentence: `True` and `""` are the same shape that once let a real
+    disagreement pass as expected.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SystemExit(
+            f"WITNESS is set to {value!r}. It takes the reason the "
+            "reference is not a witness, as a sentence -- the flag version "
+            "of this is what let a real disagreement pass as expected.")
+    if not value.strip():
+        raise SystemExit(
+            "WITNESS is set to an empty string. It takes the reason the "
+            "reference is not a witness, as a sentence -- the flag version "
+            "of this is what let a real disagreement pass as expected.")
+    return value
+
+
+def _declared_witness(paths):
+    """WITNESS as the building's derive module already has it.
+
+    `survey` is called from derive, the gate and the review. The sentence
+    lives on the derive module. `sys.modules.get` and not an import: derive
+    imports this file.
+    """
+    name = getattr(paths, "__name__", "") or ""
+    if not name.endswith(".paths"):
+        return None
+    derive_name = name[:-len(".paths")] + ".probes.derive"
+    return getattr(sys.modules.get(derive_name), "WITNESS", None)
+
+
+def survey(paths, *, witness=_UNSET) -> Evidence:
     """Read a building's `paths` module and report what was actually supplied.
 
     Takes the module rather than a directory because a building may put its
     inputs wherever it likes, and `paths.py` is already the one place that says
     where. Missing attributes are treated as missing inputs, so a building that
     predates a kind does not crash on it.
+
+    `witness` is `WITNESS` from the building's derive tables. A sentence means
+    the capture or the model is of a different building, so this does not
+    report either: `Evidence.reference` is then None and the rest of the
+    pipeline is the described path. Omitted, the sentence is read off the
+    already-imported derive module, so a caller that forgot still cannot put
+    the file back.
     """
     def at(attribute: str) -> Path | None:
         value = getattr(paths, attribute, None)
@@ -489,6 +540,16 @@ def survey(paths) -> Evidence:
     add("photos", photos, _has_files(photos or Path("."),
                                      (".png", ".jpg", ".jpeg", ".webp")))
 
+    if witness is _UNSET:
+        witness = _declared_witness(paths)
+    if witness_sentence(witness) is not None:
+        # The reference is of a different building. It is not evidence.
+        # Both kinds go: dropping only the held-out OBJ would leave the
+        # other one to become the new reference, and the section would
+        # still cut.
+        found = [source for source in found
+                 if source.name not in ("model", "capture")]
+
     return Evidence(found)
 
 
@@ -514,4 +575,5 @@ def refuse(evidence: Evidence) -> str | None:
     return None
 
 
-__all__ = ["Evidence", "Kind", "Source", "KINDS", "QUESTIONS", "refuse", "survey"]
+__all__ = ["Evidence", "Kind", "Source", "KINDS", "QUESTIONS", "refuse",
+           "survey", "witness_sentence"]
