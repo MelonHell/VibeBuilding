@@ -300,6 +300,103 @@ def prove_orientation() -> str | None:
     return None
 
 
+def _blocks_obj(path: Path, boxes) -> None:
+    """An OBJ of solid blocks, vertices only, in model coordinates."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as out:
+        for x0, x1, z0, z1, top in boxes:
+            steps_x = int((x1 - x0) * 2) + 1
+            steps_z = int((z1 - z0) * 2) + 1
+            steps_y = int(top * 2) + 1
+            for i in range(steps_x):
+                for j in range(steps_z):
+                    for k in range(steps_y):
+                        out.write(f"v {x0 + i * 0.5:.2f} {k * 0.5:.2f} "
+                                  f"{z0 + j * 0.5:.2f}\n")
+
+
+def _assembled(tmp: Path, boxes, bearing: float):
+    """`Survey.assemble` against a stub plan, a stub link and a written OBJ.
+
+    Everything real except the inputs: the real `Read`, the real `Link`, the
+    real decomposition. What varies between the two calls is whether the
+    reference holds anything the plan does not draw.
+    """
+    from blockwright.survey import Link, Read, Survey
+
+    w, l = 60, 40
+    frame = Frame((0.0, 0.0), 0.0, float(w), float(l))
+    drawn = _rect(w, l, 5, 25, 5, 15)
+    read = Read(SimpleNamespace(name="map"), frame,
+                {"front": Part(drawn, frame)}, ["front"], mass=drawn,
+                provenance={"front": "map"})
+    read.link = Link(None, Frame((0.0, 0.0), bearing, float(w), float(l)),
+                     0.0, "capture")
+    obj = tmp / "reference.obj"
+    _blocks_obj(obj, boxes)
+    evidence = SimpleNamespace(
+        reference=SimpleNamespace(name="capture", path=obj))
+    out = {"registration": {"orientation": {
+        "undetermined": "u", "shape": [0.4, 0.4], "shape_floor": 1.0,
+        "margin": 0.5}}}
+    return Survey(None, SimpleNamespace()).assemble(out, read, evidence), out
+
+
+def prove_orientation_stop() -> str | None:
+    """The undetermined-axis refusal fires when a part is about to be placed.
+
+    It refuses because an assembled part would land at whichever end the fit
+    guessed, and every row below would agree with the guess. That argument is
+    about a part; raised before the reference had even been read, the refusal
+    stopped `derive`, `build` and `gate` on any building whose plan reads the
+    same end for end and whose two frames sit more than `ORIENT_SQUARE` apart --
+    a plain slab, two strips running the whole way, a square tower -- with a
+    message about placing a part that did not exist and remedies that did not
+    apply to it.
+
+    So both cases are asked of the same stub at the same bearing: a reference
+    holding only what the plan drew, and the same reference with one more block
+    on the site.
+    """
+    from blockwright.survey import ORIENT_SQUARE
+
+    apart = ORIENT_SQUARE + 0.1
+    tmp = ROOT / "buildings" / "_selftest_orientstop"
+    try:
+        try:
+            joined, out = _assembled(tmp, [(5.0, 25.0, 5.0, 15.0, 12.0)], apart)
+        except SystemExit as why:
+            return (f"FAIL: a reference holding only what the plan drew was "
+                    f"refused for want of an orientation: {why}")
+        record = out.get("assembly") or {}
+        if record.get("matched") != 1 or record.get("extra"):
+            return (f"FAIL: the one-block case is meant to match the drawn part "
+                    f"and leave nothing loose, got {record!r}; the case below "
+                    "proves nothing if this one never had a part to place")
+        if len(joined.order) != 1:
+            return (f"FAIL: a reference holding only what the plan drew should "
+                    f"leave the plan alone, got {joined.order}")
+
+        try:
+            _assembled(tmp, [(5.0, 25.0, 5.0, 15.0, 12.0),
+                             (30.0, 50.0, 18.0, 30.0, 6.0)], apart)
+        except SystemExit as why:
+            text = str(why)
+            if "which way round" not in text or "part(s) the plan does not" \
+                    not in text:
+                return f"FAIL: the stop said the wrong thing: {why}"
+        else:
+            return (f"FAIL: an undetermined axis {apart:.1f} deg apart with a "
+                    "part to place should have stopped the run")
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    print("orientation stop: refuses a part it cannot place, and only then",
+          flush=True)
+    return None
+
+
 def _with_annex(kind: str, extra: str) -> Path:
     """A mapped fixture whose capture holds one volume the map never drew."""
     where = make(kind, extra, ("layout.png", "mesh"))
@@ -681,8 +778,9 @@ def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
         missed = (prove_coverage_row() or prove_orientation()
-                  or prove_register_floor() or prove_thresholds()
-                  or prove_site_covered() or prove_clip_up())
+                  or prove_orientation_stop() or prove_register_floor()
+                  or prove_thresholds() or prove_site_covered()
+                  or prove_clip_up())
         if missed:
             print(missed)
             return 1

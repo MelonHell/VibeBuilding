@@ -756,6 +756,13 @@ class Survey:
         place it marked: a marked part is still a real building put up sixty
         metres from where it stands, and every check would still agree with it.
         The thing a reader could act on is the stop.
+
+        That refusal is raised where the loose pieces are known and nowhere
+        earlier. It is an argument about placing a part, so it has to fire when
+        a part is about to be placed: at the top of this method it stopped
+        `derive`, `build` and `gate` on every building whose plan reads the same
+        end for end and whose two frames sit a couple of degrees apart, whether
+        or not the reference held anything to place.
         """
         reference = evidence.reference
         drawn = read.drawn_parts()
@@ -780,7 +787,9 @@ class Survey:
 
         # Which way round the two frames stand, and whether anything decided it.
         # `orient` names the axes its profiles were too flat to read; where the
-        # bearings also disagree, nothing at all places a part and this stops.
+        # bearings also disagree, nothing at all places a part. Recorded here
+        # and acted on below, once the loose pieces are known -- see the refusal
+        # after them.
         turn = (out.get("registration") or {}).get("orientation") or {}
         blind = turn.get("undetermined") or ""
         bearing = abs(read.frame.angle - read.link.frame.angle)
@@ -788,23 +797,6 @@ class Survey:
                                  "undetermined": blind,
                                  "shape": turn.get("shape"),
                                  "bearing": round(bearing, 2)}
-        if blind and bearing > ORIENT_SQUARE:
-            raise SystemExit(
-                f"nothing states which way round the reference and the plan "
-                f"stand on {' and '.join(blind)}.\n"
-                f"    the plan's width profile differs from its own reverse by "
-                f"{turn.get('shape')} m along u and across v, against a floor "
-                f"of {turn.get('shape_floor')} m, so this building cannot be "
-                f"told from itself end for end there\n"
-                f"    and the two frames stand {bearing:.1f} deg apart, over "
-                f"the {ORIENT_SQUARE:.1f} deg within which two canonical fits "
-                f"of one building settle it between them\n"
-                "So a part the reference holds and the plan does not could be "
-                "placed at either end, and every row below would agree with "
-                "whichever was picked. Draw the part on the plan and it is "
-                "drawn rather than assembled; or lower REGISTER_FLOOR until "
-                "the reference's own asymmetry is inside the fit, knowing that "
-                "it enters the scale fit with it.")
 
         # Read the reference exactly the way `link_to` read it, which on this
         # branch is raw. `MODEL_UP` and `MODEL_SCALE` describe the file the
@@ -865,6 +857,31 @@ class Survey:
         record["extra"] = len(loose)
         if not loose:
             return read
+
+        # Now, and not before the reference was read. This refusal is about
+        # placing a part, so it has to fire when a part is about to be placed
+        # and not a moment earlier: raised at the top of this method it stopped
+        # `derive`, `build` and `gate` on a plain slab whose two frames sat 2.1
+        # degrees apart and whose reference held nothing the plan had not drawn
+        # -- a message about placing a part that does not exist, with remedies
+        # that do not apply to it.
+        if blind and bearing > ORIENT_SQUARE:
+            raise SystemExit(
+                f"nothing states which way round the reference and the plan "
+                f"stand on {' and '.join(blind)}, and the reference holds "
+                f"{len(loose)} part(s) the plan does not draw.\n"
+                f"    the plan's width profile differs from its own reverse by "
+                f"{turn.get('shape')} m along u and across v, against a floor "
+                f"of {turn.get('shape_floor')} m, so this building cannot be "
+                f"told from itself end for end there\n"
+                f"    and the two frames stand {bearing:.1f} deg apart, over "
+                f"the {ORIENT_SQUARE:.1f} deg within which two canonical fits "
+                f"of one building settle it between them\n"
+                "So each of those parts could be placed at either end, and "
+                "every row below would agree with whichever was picked. Draw "
+                "them on the plan and they are drawn rather than assembled; or "
+                "lower REGISTER_FLOOR until the reference's own asymmetry is "
+                "inside the fit, knowing that it enters the scale fit with it.")
 
         names = list(self.t.CAPTURE_PARTS) or [
             f"capture-{i + 1}" for i in range(len(loose))]
