@@ -133,6 +133,13 @@ def prove_sheet(where: Path) -> str | None:
         return (f"FAIL: top.png is {got} px wide, three map-extent panels "
                 f"at the sheet's 4 px/m would be {want} -- the panels do "
                 "not share one extent")
+
+    views = where / "out" / "greybox" / "views"
+    if not views.is_dir() or not any(views.glob("*.png")):
+        return "FAIL: greybox views were not written under out/greybox/views/"
+    leaked = where / "out" / "views"
+    if leaked.exists():
+        return "FAIL: greybox wrote views into out/views/"
     return None
 
 

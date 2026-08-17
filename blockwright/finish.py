@@ -199,23 +199,26 @@ def finish(canvas, out, frame, *, schedule=None,
     done.counts = canvas.counts()
     done.stamp = stamp(out, name, done)
 
+    # Greybox plans, the top sheet and the preview views live in
+    # out/greybox/, not in out/: a full build writes the same names, and
+    # the two runs must not overwrite each other -- form and material used
+    # to be one file.
+    where = out / name if name == "greybox" else out
+
     if quick:
         # Everything above this line is what the gate reads. Everything below it
         # is for a person to look at, costs most of the run, and is worth
         # nothing during a round of "move the number and see which stations go
         # green". Skipped by name rather than silently, because a stale render
         # that nobody knows is stale is worse than no render.
+        folder = "greybox/views/" if name == "greybox" else "views/"
         done.notes.append(
             "quick run: no renders, no plans, no comparison sheets. The "
-            "schematic and the schedule are current; everything in views/ and "
-            "compare/ is from an earlier run. Re-run without --quick before "
-            "looking at anything.")
+            "schematic and the schedule are current; everything in "
+            f"{folder} and compare/ is from an earlier run. Re-run without "
+            "--quick before looking at anything.")
         return done
 
-    # Greybox plans and the top sheet live in out/greybox/, not in out/: a
-    # full build writes the same names, and the two runs must not overwrite
-    # each other -- form and material used to be one file.
-    where = out / name if name == "greybox" else out
     where.mkdir(parents=True, exist_ok=True)
     done.plans[f"{name}_plan"] = where / "plan.png"
     # One pixel to one block. Doubling makes the picture easier to see and
@@ -230,7 +233,9 @@ def finish(canvas, out, frame, *, schedule=None,
     # The silhouettes say how tall and how wide. They cannot say whether this is
     # one long block or a row of houses, so the renders exist to be looked at,
     # and the sheets to be looked at beside the mesh they were measured from.
-    done.views = render_set(canvas, out / "views", frame=frame, scale=scale,
+    # Greybox views stay under out/greybox/views/: a person opening out/views/
+    # after a greybox run would otherwise be looking at the wrong building.
+    done.views = render_set(canvas, where / "views", frame=frame, scale=scale,
                             views=views)
 
     from . import compare

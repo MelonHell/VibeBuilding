@@ -1,7 +1,8 @@
 """<name>: the cameras the photo review looks through.
 
-    python -m buildings.<name>.review            # the build
+    python -m buildings.<name>.review            # the finished build
     python -m buildings.<name>.review --mesh     # and the reference, via Blender
+    python -m buildings.<name>.review --greybox  # the volumes, into out/greybox/review/
 
 Two tables and a call. Everything else -- solving where a camera has to stand,
 rendering the reference from the same viewpoints through Blender, collecting the
@@ -109,7 +110,13 @@ PLAN = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    return Review(paths, PLAN, DESCRIPTION).run(derive.plan_of(), argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    greybox = "--greybox" in argv
+    schematic = paths.GREYBOX if greybox else paths.BUILD
+    where = paths.OUT / "greybox" / "review" if greybox else paths.OUT / "review"
+    return Review(paths, PLAN, DESCRIPTION,
+                  schematic=schematic, where=where, greybox=greybox).run(
+                      derive.plan_of(), argv)
 
 
 if __name__ == "__main__":

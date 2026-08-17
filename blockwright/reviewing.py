@@ -138,6 +138,24 @@ KIND_PHOTO = """  90-photo-<nn>      a photograph of the real building, from a v
                      could not see from the air."""
 
 
+# Greybox photos answer the four form questions, not the material ones. The
+# photo-review sentence above is poison here: a reviewer told that photographs
+# are trustworthy for colour reports that the greybox has no colour.
+KIND_PHOTO_FORM = """  90-photo-<nn>      a photograph of the real building, from a viewpoint of its
+                     own. Trustworthy for volume, proportion, the shape of the
+                     plan and where the parts stand. Not for material, colour,
+                     glazing or finish -- those are absent from the greybox on
+                     purpose."""
+
+
+# The photo-review solid pass tells the reviewer to read material off the
+# textured image beside it. A greybox has no material to read.
+KIND_SOLID_FORM = """  <n>-<view>.mesh-solid  the same reference from the same camera, shaded flat in
+                     one colour with cavity shading and no texture. Read form
+                     here -- where a roof steps, whether a face is one plane or
+                     two, what stands proud of a facade."""
+
+
 KIND_DRAWING = """  80-drawing-<nn>    a drawing of the building -- a plan, an elevation, a
                      section or a sketch. It shows what was intended, at a scale
                      that may or may not be stated, and from a viewpoint no
@@ -205,6 +223,10 @@ NOISE_MODEL = (" The model has no material and no surroundings; judge shape and 
                "proportion against it, and material against the photographs.")
 
 
+NOISE_MODEL_FORM = (" The model has no surroundings; judge shape and "
+                    "proportion against it.")
+
+
 PROMPT = """You are reviewing a Minecraft recreation of a real building.
 
 {description}
@@ -246,6 +268,63 @@ between a render and a photographic lens.{noise}
 wrong, including when you suspect no block matches: naming the colour you see is
 your job, and finding a block for it is not. A review that stays silent about
 colour because the palette is limited has skipped half of what it is for.
+
+Be specific and be brief.
+"""
+
+
+GREYBOX_PROMPT = """You are reviewing a greybox of a real building -- the volumes
+and their standing, with no windows, no balconies, no roof covering and no
+materials. Those absences are not defects. Do not report them.
+
+{description}
+
+You are given {count} images, each labelled before it:
+
+{kinds}
+
+Every render is a perspective camera, so near things are larger than far ones and
+verticals converge; do not read that as a change in proportion.{pairing}
+
+The viewpoints:
+
+{views}
+
+Answer four questions and no others:
+
+1. The volumes. How many parts the build has and how many the reference has;
+   where one has a part the other does not.
+2. The proportions. Length to width, height to length, the parts against each
+   other.
+3. The plan shape. Rectangular stays rectangular, round stays round, a wing
+   goes the same way as on the reference.
+4. The placement. How the parts stand relative to each other, the gaps, what
+   abuts what.
+
+A part that stands conspicuously lower than its neighbours is a placeholder
+whose height has not been measured yet. Do not discuss its height. Its
+footprint and position are fair game.
+
+Do not report on material, colour, palette, glazing, facade rhythm or any
+finish. They are not there by construction. A finding of "no windows" on a
+greybox is a finding that you are looking at a greybox.
+
+Report each fault once, at the viewpoint that shows it best -- do not repeat a
+finding for every image it appears in. For each finding give:
+ - what is wrong, in one sentence;
+ - which images show it, by name;
+ - what it should be instead, and which image says so;
+ - how wrong, as a count or a proportion -- three volumes where there are five,
+   half the height of its neighbour. Not in metres: you have no scale, and a
+   finding in metres is answered by a section you cannot see.
+ - your confidence: high, medium or low.
+
+Rank the findings by severity: anything that changes how the building reads goes
+first, fine detail last.
+
+Ignore differences that are only the medium: blocky staircasing along diagonals,
+the block grid, the dark background of the build renders, and the difference
+between a render and a photographic lens.{noise}
 
 Be specific and be brief.
 """
@@ -449,21 +528,41 @@ class Review:
     a place to stand -- and `description` is the one sentence the reviewer is
     told about the building. Everything else here is the same for every building
     there has ever been, which is why it lives in the library and not in a copy.
+
+    `schematic`, `where` and `greybox` are how a greybox review leaves the
+    finished build's folder alone. Defaults keep the photo review: the
+    finished schematic, `out/review/`, drawings and the colour prompt.
     """
 
     def __init__(self, paths, plan, description: str,
-                 size: tuple[int, int] = SIZE):
+                 size: tuple[int, int] = SIZE, *,
+                 schematic: Path | None = None,
+                 where: Path | None = None,
+                 greybox: bool = False):
         self.paths = paths
         self.plan = tuple(plan)
         self.description = description
         self.size = size
-        self.out = paths.OUT / "review"
+        self.schematic = Path(schematic) if schematic is not None else None
+        self.out = Path(where) if where is not None else paths.OUT / "review"
+        self.greybox = greybox
         # Which round this run is. Set by `archive`, which counts what is
         # already kept; 1 until then, because a first run has nothing to keep.
         self.round = 1
         # Where `tools/render_orthos.py` lives: `paths.HERE` is
         # buildings/<name>, so two levels up is the project root.
         self.repo = Path(paths.HERE).resolve().parents[1]
+
+    def built_path(self) -> Path:
+        """The schematic this run renders, not whatever schematic_of prefers.
+
+        schematic_of never returns the greybox. A greybox review that asked it
+        would render the finished build, or refuse, and write the stamp line
+        against the wrong file.
+        """
+        if self.schematic is not None:
+            return self.schematic
+        return schematic_of(self.paths)
 
     def resolve(self, extent: tuple[float, float, float], aspect: float) -> tuple[Shot, ...]:
         """`self.plan` with every exterior direction turned into a place to stand."""
@@ -850,9 +949,14 @@ class Review:
                     Image.LANCZOS)
             image.save(target, quality=quality)
 
-        drawings = gather(self.paths.DRAWINGS) + gather(self.paths.SKETCHES)
-        for i, sheet in enumerate(drawings, start=1):
-            shrink(sheet, self.out / f"80-drawing-{i:02d}.jpg", DRAWING_EDGE, 90)
+        # Drawings stay out of a greybox folder even when they exist on disk.
+        # A plan or an elevation is the wrong reference for volumes: the
+        # reviewer starts counting bays and reporting missing windows.
+        drawings = []
+        if not self.greybox:
+            drawings = gather(self.paths.DRAWINGS) + gather(self.paths.SKETCHES)
+            for i, sheet in enumerate(drawings, start=1):
+                shrink(sheet, self.out / f"80-drawing-{i:02d}.jpg", DRAWING_EDGE, 90)
 
         photos = gather(self.paths.PHOTOS)
         for i, photo in enumerate(photos, start=1):
@@ -865,23 +969,41 @@ class Review:
         # not made for a build that declared no manifest.
         inks = any(n.endswith(".ink.png") for n in images)
         parts = any(n.endswith(".parts.png") for n in images)
-        kinds = ([KIND_BUILD]
-                 + [KIND_INK] * inks
-                 + [KIND_PARTS] * parts
-                 + [KIND_MODEL if is_model else KIND_MESH] * bool(meshes)
-                 + [KIND_SOLID] * bool(solids)
-                 + [KIND_DRAWING] * bool(drawings)
-                 + [KIND_PHOTO] * bool(photos))
-        noise = "" if not meshes else (NOISE_MODEL if is_model else NOISE_CAPTURE)
+        if self.greybox:
+            kinds = ([KIND_BUILD]
+                     + [KIND_INK] * inks
+                     + [KIND_PARTS] * parts
+                     + [KIND_MODEL if is_model else KIND_MESH] * bool(meshes)
+                     + [KIND_SOLID_FORM] * bool(solids)
+                     + [KIND_PHOTO_FORM] * bool(photos))
+        else:
+            kinds = ([KIND_BUILD]
+                     + [KIND_INK] * inks
+                     + [KIND_PARTS] * parts
+                     + [KIND_MODEL if is_model else KIND_MESH] * bool(meshes)
+                     + [KIND_SOLID] * bool(solids)
+                     + [KIND_DRAWING] * bool(drawings)
+                     + [KIND_PHOTO] * bool(photos))
+        if not meshes:
+            noise = ""
+        elif is_model:
+            noise = NOISE_MODEL_FORM if self.greybox else NOISE_MODEL
+        else:
+            noise = NOISE_CAPTURE
         views = "\n".join(f"  {s.name}  {s.reading}" for s in shots)
-        (self.out / PROMPT_FILE).write_text(
-            PROMPT.format(count=len(images), views=views,
-                          description=self.description,
-                          kinds="\n".join(kinds), noise=noise,
-                          internal=INTERNAL, light=LIGHT,
-                          pairing=("" if not meshes else
-                                   (PAIRING if paired else UNPAIRED))),
-            encoding="utf-8")
+        pairing = ("" if not meshes else (PAIRING if paired else UNPAIRED))
+        if self.greybox:
+            text = GREYBOX_PROMPT.format(
+                count=len(images), views=views,
+                description=self.description,
+                kinds="\n".join(kinds), noise=noise, pairing=pairing)
+        else:
+            text = PROMPT.format(
+                count=len(images), views=views,
+                description=self.description,
+                kinds="\n".join(kinds), noise=noise,
+                internal=INTERNAL, light=LIGHT, pairing=pairing)
+        (self.out / PROMPT_FILE).write_text(text, encoding="utf-8")
 
         print(f"[review] {self.out.relative_to(self.repo)}: {len(images)} images")
         for name in images:
@@ -890,19 +1012,32 @@ class Review:
         # A folder with nothing but the build in it is not a weak review but a
         # fabricated one: the only thing left to grade against is the reviewer's idea
         # of what the building ought to look like. Say so, and do not ask for one.
-        if not meshes and not photos and not drawings:
-            print("[review] nothing to compare against: no reference renders "
-                  f"(pass --mesh), no drawings, no photographs in {self.paths.PHOTOS}.")
+        # Drawings do not count for a greybox: they are not in the folder.
+        if not meshes and not photos and (self.greybox or not drawings):
+            if self.greybox:
+                print("[review] nothing to compare against: no reference renders "
+                      f"(pass --mesh), no photographs in {self.paths.PHOTOS}.")
+            else:
+                print("[review] nothing to compare against: no reference renders "
+                      f"(pass --mesh), no drawings, no photographs in {self.paths.PHOTOS}.")
             print("[review] not enough for a review; the renders are there to look "
                   "at, but do not send them to a reviewer on their own")
             return
 
         if not meshes:
-            print("[review] ! no reference renders; whatever else is here has to "
-                  "carry bulk and height as well as material")
+            if self.greybox:
+                print("[review] ! no reference renders; whatever else is here has to "
+                      "carry volume and proportion")
+            else:
+                print("[review] ! no reference renders; whatever else is here has to "
+                      "carry bulk and height as well as material")
         if not photos:
-            print(f"[review] ! no photographs in {self.paths.PHOTOS}; nothing states the "
-                  "material, and a capture cannot see under a roof")
+            if self.greybox:
+                print(f"[review] ! no photographs in {self.paths.PHOTOS}; "
+                      "form is judged against the reference renders alone")
+            else:
+                print(f"[review] ! no photographs in {self.paths.PHOTOS}; nothing states the "
+                      "material, and a capture cannot see under a roof")
 
         print(f"[review] read every image in that folder against {PROMPT_FILE}, then "
               f"write the findings and what was done about each to {FINDINGS}")
@@ -917,7 +1052,7 @@ class Review:
         # world somebody pasted it into, and the pipeline does not own that
         # boundary: a fault fixed here and not re-pasted there reads exactly
         # like a fault that was never fixed. It has happened.
-        built = schematic_of(self.paths)
+        built = self.built_path()
         tally = self.paths.OUT / f"{built.stem}.stamp.md"
         if tally.exists():
             print(f"[review] the renders are of {built.name}. If a "
@@ -936,11 +1071,25 @@ class Review:
         parser.add_argument("--mesh", action="store_true",
                             help="also render the reference geometry, which needs "
                                  "Blender")
+        parser.add_argument("--greybox", action="store_true",
+                            help="review the greybox into out/greybox/review/")
         args = parser.parse_args(argv)
+        if args.greybox:
+            self.greybox = True
+            if self.schematic is None:
+                grey = getattr(self.paths, "GREYBOX", None)
+                if grey is None:
+                    raise SystemExit(
+                        "--greybox needs paths.GREYBOX; this building has none")
+                self.schematic = Path(grey)
+            if self.out == Path(self.paths.OUT) / "review":
+                self.out = Path(self.paths.OUT) / "greybox" / "review"
 
-        built = schematic_of(self.paths)
+        built = self.built_path()
         if not built.exists():
-            raise SystemExit(f"{built} is missing; run build.py first")
+            hint = ("run build.py --greybox first" if self.greybox
+                    else "run build.py first")
+            raise SystemExit(f"{built} is missing; {hint}")
 
         self.check_written()
 
@@ -972,8 +1121,10 @@ class Review:
         # colour by. Absent -- a build that declared nothing -- the shaded and
         # line renders still go out and the part map is simply not made, which
         # is the honest answer rather than a picture of one colour.
+        # A leftover full-build schedule would colour the greybox with floors
+        # and glazing that are not in it. Greybox finish writes no schedule.
         groups = None
-        if self.paths.SCHEDULE.exists():
+        if not self.greybox and self.paths.SCHEDULE.exists():
             from .schedule import Schedule
             groups = [(name, held.mask) for name, held
                       in Schedule.load(self.paths.SCHEDULE).built.items()]
