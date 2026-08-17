@@ -378,12 +378,17 @@ def _blocks_obj(path: Path, boxes) -> None:
                                   f"{z0 + j * 0.5:.2f}\n")
 
 
-def _assembled(tmp: Path, boxes, bearing: float):
+def _assembled(tmp: Path, boxes, bearing: float, reported: float | None = None):
     """`Survey.assemble` against a stub plan, a stub link and a written OBJ.
 
     Everything real except the inputs: the real `Read`, the real `Link`, the
     real decomposition. What varies between the two calls is whether the
     reference holds anything the plan does not draw.
+
+    `reported`, when set, is the axis `Frame.fit` would have written for the
+    link. The mapping still uses `bearing` -- `_cos`/`_sin` are fixed at
+    construction -- so a wraparound pair can still land a part on the plan.
+    The refusal reads `.angle`.
     """
     from blockwright.survey import Link, Read, Survey
 
@@ -393,8 +398,10 @@ def _assembled(tmp: Path, boxes, bearing: float):
     read = Read(SimpleNamespace(name="map"), frame,
                 {"front": Part(drawn, frame)}, ["front"], mass=drawn,
                 provenance={"front": "map"})
-    read.link = Link(None, Frame((0.0, 0.0), bearing, float(w), float(l)),
-                     0.0, "capture")
+    link_frame = Frame((0.0, 0.0), bearing, float(w), float(l))
+    if reported is not None:
+        link_frame.angle = reported
+    read.link = Link(None, link_frame, 0.0, "capture")
     obj = tmp / "reference.obj"
     _blocks_obj(obj, boxes)
     evidence = SimpleNamespace(
@@ -456,6 +463,50 @@ def prove_orientation_stop() -> str | None:
             shutil.rmtree(tmp, ignore_errors=True)
 
     print("orientation stop: refuses a part it cannot place, and only then",
+          flush=True)
+    return None
+
+
+def prove_orientation_wrap() -> str | None:
+    """Axes that meet across 180 deg are near-parallel, not opposite.
+
+    `Frame.fit` reports a building half a degree north of east at 179.5 and
+    one half a degree south of it at 0.5. Linear subtraction then says they
+    stand 179 deg apart -- past `ORIENT_SQUARE` -- so `assemble` refuses
+    every part of a building that is standing on the axis. They stand one
+    degree apart.
+
+    The frames that *map* the reference stay at 0 deg so the extra part
+    still lands on the plan; the refusal reads `.angle`, which is the
+    number `Frame.fit` would have written for that pair.
+    """
+    from blockwright.survey import ORIENT_SQUARE
+
+    wrapped = 180.0 - 0.5
+    tmp = ROOT / "buildings" / "_selftest_orientwrap"
+    try:
+        try:
+            joined, out = _assembled(
+                tmp,
+                [(5.0, 25.0, 5.0, 15.0, 12.0),
+                 (30.0, 50.0, 18.0, 30.0, 6.0)],
+                0.0, reported=wrapped)
+        except SystemExit as why:
+            return (f"FAIL: two frames {wrapped:.1f} deg apart by subtraction "
+                    f"(0.5 deg as axes) were refused: {why}")
+        record = out.get("assembly") or {}
+        bearing = (record.get("orientation") or {}).get("bearing")
+        if bearing is None or bearing > ORIENT_SQUARE:
+            return (f"FAIL: the wraparound pair recorded bearing={bearing!r}; "
+                    f"the axes stand 0.5 deg apart, under {ORIENT_SQUARE:.1f}")
+        if "capture-1" not in joined.named:
+            return (f"FAIL: the extra part was not placed, got {joined.order}; "
+                    "near-parallel axes across 180 deg must assemble, not refuse")
+    finally:
+        if "--keep" not in sys.argv:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    print("orientation wrap: axes that meet across 180 deg are not refused",
           flush=True)
     return None
 
@@ -886,7 +937,8 @@ def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
         missed = (prove_coverage_row() or prove_orientation()
-                  or prove_orientation_stop() or prove_canvas_bite()
+                  or prove_orientation_stop() or prove_orientation_wrap()
+                  or prove_canvas_bite()
                   or prove_register_floor() or prove_thresholds()
                   or prove_site_covered() or prove_clip_up())
         if missed:

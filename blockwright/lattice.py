@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import math
 
+from .frame import axis_apart
+
 # How many runs a motif may have before it reads as noise rather than as rhythm.
 # Three: 2,1,1 is a rhythm and 2,1,1,2,1,1,2,1,1,1 is not, and nothing between
 # them is worth arguing about.
@@ -92,7 +94,13 @@ class Slope:
             self.error = None
             self.cost = None
         else:
-            self.error = self.angle - measured
+            # The short turn, not the wrap. `with_the_plan` adds this to a
+            # frame angle; 0 against 179.5 is half a degree, and a raw
+            # subtraction would half-turn the reference.
+            gap = axis_apart(self.angle, measured)
+            linear = self.angle - measured
+            self.error = math.copysign(gap, linear if abs(linear) <= 90.0
+                                       else -linear)
             # How far each end of the building moves when the frame is turned
             # about its own centre. The whole trade, in the unit the section
             # grades in.
@@ -255,10 +263,12 @@ def candidates(angle: float, runs: int = RUNS, reach: int = REACH,
     """
     near = []
     for slope in slopes(runs, reach):
-        # A candidate more than a quarter turn away is the same line pointing
-        # backwards, not a nearer angle. Taking one would reverse u, and
-        # registration cannot express a half-turn -- see `Frame.fit`.
-        if abs(slope.angle - angle) > 90.0:
+        # Two axes in a half-turn range are never more than a quarter turn
+        # apart. Linear subtraction wraps at the east/west seam -- 179.5
+        # against 0 is half a degree, not 179 -- and dropping the wrap is
+        # how a 165 m slab half a degree north of east used to get -35:1
+        # instead of 1:0. See `axis_apart`.
+        if axis_apart(slope.angle, angle) > 90.0:
             continue
         near.append(Slope(slope.a, slope.b, measured=angle, span=span))
     near.sort(key=lambda s: (abs(s.error), s.runs, s.period))

@@ -31,7 +31,7 @@ from pathlib import Path
 from . import declared, flatmap, gate, lattice, measure, roof, sources, witnesses
 from . import model as model3d
 from .flatmap import guides
-from .frame import Frame
+from .frame import Frame, axis_apart
 from .mask import iou
 from .mesh import Mesh
 from .plan import Part, decompose
@@ -808,7 +808,7 @@ class Survey:
         # after them.
         turn = (out.get("registration") or {}).get("orientation") or {}
         blind = turn.get("undetermined") or ""
-        bearing = abs(read.frame.angle - read.link.frame.angle)
+        bearing = axis_apart(read.frame.angle, read.link.frame.angle)
         record["orientation"] = {"margin": turn.get("margin"),
                                  "undetermined": blind,
                                  "shape": turn.get("shape"),

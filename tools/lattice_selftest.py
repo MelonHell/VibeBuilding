@@ -96,6 +96,22 @@ def choosing_prefers_a_period_it_can_repeat_on() -> None:
           f"{picked.period:.1f} m, {picked.cost:.2f} m at the ends")
 
 
+def a_slab_the_other_side_of_east_is_still_square() -> None:
+    """`choose` exists so a 165 m slab half a degree off east is 1:0.
+
+    `Frame.fit` reports the north-of-east case at 179.5, not -0.5. Linear
+    subtraction then drops 1:0 as 179 deg away and the shortest period
+    inside the budget is -35:1 -- one kink per wall, which is the case
+    `choose`'s own docstring says it exists to prevent.
+    """
+    picked = lattice.choose(179.5, 165.0)
+    check("a slab half a degree north of east is built on 1:0",
+          picked.step == (1, 0) and abs(picked.error) < 1.0
+          and not picked.strained,
+          f"chose {picked.a}:{picked.b}, period {picked.period:.1f} m, "
+          f"error {picked.error:+.2f} deg, {picked.cost:.2f} m at the ends")
+
+
 def an_unaffordable_snap_says_so() -> None:
     picked = lattice.choose(39.0, 165.0)
     cheap = lattice.choose(52.43, 165.0)
@@ -511,6 +527,7 @@ def main() -> int:
     only_short_motifs_are_offered()
     the_grid_is_dense_near_the_axes_and_sparse_near_45()
     choosing_prefers_a_period_it_can_repeat_on()
+    a_slab_the_other_side_of_east_is_still_square()
     an_unaffordable_snap_says_so()
     print()
     a_lattice_wall_repeats_exactly()

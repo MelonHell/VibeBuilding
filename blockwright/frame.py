@@ -52,6 +52,19 @@ from . import fast
 NUDGE = 1e-9
 
 
+def axis_apart(a: float, b: float) -> float:
+    """How far apart two axes reported in a half-turn range are, in degrees.
+
+    A minimum-area rectangle is an axis, not a direction -- ``Frame.fit`` can
+    come back at 30 or at 210, and both describe the same rectangle -- so the
+    two numbers live in [0, 180) and the furthest they can stand is a quarter
+    turn. A subtraction that returns more than that has wrapped: 179.5 and 0.5
+    are one degree apart, not 179.
+    """
+    gap = abs(a - b)
+    return min(gap, 180.0 - gap)
+
+
 def convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Andrew's monotone chain, counter-clockwise, without collinear points."""
     pts = sorted(set(points))
