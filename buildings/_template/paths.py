@@ -33,7 +33,7 @@ PHOTOS = INPUT / "photos"               # photographs of the real thing
 # -- what the pipeline makes ------------------------------------------------
 
 MESH_FULL = OUT / "mesh" / "merged.obj"     # the whole capture, converted
-MESH = OUT / "mesh-clip" / "merged.obj"     # clipped to this building
+MESH = OUT / "mesh-clip" / "merged.obj"     # clipped to this site, not this building
 ORTHOS = OUT / "mesh-clip" / "orthos"       # Blender elevations of the clip
 
 SCHEM = OUT / "massing.schem"

@@ -68,16 +68,20 @@ class Layout:
 
         # -- what the pipeline makes -------------------------------------
         self.MESH_FULL = self.OUT / "mesh" / "merged.obj"       # the whole capture
-        self.MESH = self.OUT / "mesh-clip" / "merged.obj"       # clipped to the building
+        self.MESH = self.OUT / "mesh-clip" / "merged.obj"       # clipped to the site
         self.ORTHOS = self.OUT / "mesh-clip" / "orthos"         # Blender elevations
 
-        # The wider clip, covering the grounds rather than the building.
+        # A second, wider clip, for a building whose parcel does not fit the one
+        # above.
         #
-        # Left unset here on purpose, because most buildings do not need one: the
-        # clip that is right for a building is wrong for its site, and a building
-        # that needs both says so in its own `paths.py`, next to the conversion
-        # command that made it. A building whose whole export is already the
-        # parcel points these at `MESH_FULL` and its orthos and says why.
+        # Left unset here on purpose, and it is now the rare case rather than
+        # the ordinary one: `MESH` is clipped to the site, so the grounds are
+        # already in it. What is left for this is a parcel that reaches past the
+        # clip somebody cut -- which is the case `the clip holds the site`
+        # reports, with the box that would hold both. A building that needs a
+        # second one says so in its own `paths.py`, next to the conversion
+        # command that made it; one whose whole export is already the parcel
+        # points these at `MESH_FULL` and its orthos and says why.
         #
         #     MESH_SITE = MESH_FULL
         #     ORTHOS_SITE = OUT / "mesh" / "orthos"

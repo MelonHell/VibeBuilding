@@ -693,9 +693,18 @@ def ground(mesh, frame, datum: float, floor: float, under: float,
     is a skirt vertex some metres under the road and every surface reads low.
     The ceiling drops the palms, the sea wall's coping and the building itself.
 
-    Read off the *whole* export rather than the building clip, normally: the
-    clip that makes a section honest cuts the grounds away by construction. Pass
-    the site mesh, not the clipped one.
+    Read off the **clip**, and that is a reversal. While the clip was cut round
+    the building it held none of the grounds by construction, so the only file
+    with a deck or a road in it was the unclipped export. The clip is of the
+    site now, and the whole export then adds everything off the parcel -- the
+    far side of the street, a neighbour's forecourt -- to every height band.
+    That is not clutter with no consequence: `checks.surface` counts the cells
+    in a band and `grading.grounds` compares that area against what the build
+    laid, so the extra cells inflate the number the build is graded against.
+
+    Pass the wider file only where the parcel really does reach past the clip,
+    which is what the `the clip holds the site` row reports, and re-clip instead
+    where that is possible.
 
     `to_local` converts a point in the reference's frame into the plan's, for a
     survey that registered the two -- the map is indexed in the plan's metres so

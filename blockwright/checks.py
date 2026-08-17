@@ -894,15 +894,20 @@ def surface(mask: Mask, frame, reading, low: float,
             high: float | None = None) -> dict:
     """A ground the build laid, against the ground the reference reads there.
 
-    Two numbers and not a shape, which is the whole design. The clip that makes
-    a section honest cuts the grounds away by construction, so nothing in this
-    pipeline grades a deck, a road or a beach at all -- they can be any shape
-    at all and every row stays green. A capture is no authority on their shape
-    either (`docs/sources.md`), so asking about one would be asking the wrong
-    witness. What a capture *is* an authority on is height, and a height band
-    gives an area and an extent: how much of the plot stands at deck level, and
-    how far it reaches. Those two are enough to catch a deck built at half its
-    size or running the length of the block.
+    Two numbers and not a shape, which is the whole design. The clip is of the
+    site, so the reference does hold the deck, the road and the beach -- it
+    still does not witness their *shape*, and without this row they can be any
+    shape at all and every other row stays green. A capture is no authority on
+    the shape of a ground either (`docs/sources.md`), so asking about one would
+    be asking the wrong witness. What a capture *is* an authority on is height,
+    and a height band gives an area and an extent: how much of the plot stands
+    at deck level, and how far it reaches. Those two are enough to catch a deck
+    built at half its size or running the length of the block.
+
+    This used to say the clip cut the grounds away by construction, which was
+    the doctrine when the clip was cut round the building. That premise is gone;
+    the design it argued for is not, because the missing witness was never the
+    clip -- it was that nothing photographs a shape into a number.
 
     `reading` is a `measure.Ground`. The bands are the building's, because which
     level is a deck and which is a road is a fact about that plot.

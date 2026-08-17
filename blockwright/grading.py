@@ -917,10 +917,12 @@ class Grading:
             g.ungraded(
                 "grounds",
                 "GROUNDS names surfaces to grade and derived.json carries no "
-                "`grounds` block to grade them against. It is written by "
-                "`measure.ground` off the whole export rather than the building "
-                "clip -- the clip has none of it -- so the probe needs the "
-                "unclipped capture.")
+                "`grounds` block to grade them against. Write one with "
+                "`measure.ground` in this building's probe, off the clip: the "
+                "clip is of the site, so the deck and the road are in it, and "
+                "reading the unclipped export instead adds every cell off the "
+                "parcel to the height bands and inflates the area this row "
+                "grades the build against.")
             table = {}
 
         budget = self._("GROUNDS_SAME", 0.25)
