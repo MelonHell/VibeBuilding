@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / "buildings" / "_template"
@@ -198,6 +199,175 @@ def make(kind: str, extra: str, wants: tuple[str, ...]) -> Path:
     return where
 
 
+def _ask_witnesses(expected=None, witness=None, iou=0.90):
+    """`Survey.witnesses_of` against a fake pair, so the refusals do not need a building."""
+    from blockwright.survey import Survey
+
+    tables = SimpleNamespace(
+        EXPECTED={} if expected is None else expected,
+        WITNESS=witness,
+    )
+    read = SimpleNamespace(
+        source=SimpleNamespace(name="map"),
+        frame=SimpleNamespace(angle=30.0),
+        drawn_bounds=lambda: (0.0, 80.0, 0.0, 34.0),
+    )
+    link = SimpleNamespace(
+        kind="capture",
+        frame=SimpleNamespace(angle=30.0),
+    )
+    evidence = SimpleNamespace(
+        sources=(),
+        witnesses_for=lambda question: (),
+    )
+    out = {
+        "registration": {
+            "needed": True,
+            "u": {"mesh": [0.0, 80.0]},
+            "v": {"mesh": [0.0, 34.0]},
+            "square": {"as_fitted": iou},
+        },
+        "mesh": {"kind": "capture"},
+        "storeys": {
+            "by": "declared",
+            "spacing": 3.0,
+            "measured": {"found": True, "spacing": 3.1, "by": "capture"},
+        },
+    }
+    Survey(None, tables).witnesses_of(out, evidence, read, link)
+    return out
+
+
+def prove_witness_ceiling(keep: bool = False) -> str | None:
+    """The refusals and the greying, left where a reviewer can see them fail.
+
+    Four things this task has to keep true, and a fifth that says what the
+    switch actually turns off -- because a switch that greys more than it
+    claims is the defect `JAGGED = None` already was, and one that claims
+    more than it greys is the same sentence read the other way.
+    """
+    from blockwright.gate import Gate
+    from blockwright.grading import Grading
+
+    reason = ("the capture is of the real building in Miami; "
+              "the map is a game map of a different tower")
+
+    try:
+        _ask_witnesses(expected={"plan overlap": "the silhouettes differ"})
+    except SystemExit as why:
+        text = str(why)
+        if "cannot declare" not in text or "two buildings" not in text:
+            return f"FAIL: plan-overlap ban said the wrong thing: {why}"
+    else:
+        return "FAIL: EXPECTED['plan overlap'] should have stopped the run"
+
+    for blank in ("", "   ", True):
+        try:
+            _ask_witnesses(witness=blank)
+        except SystemExit as why:
+            if "sentence" not in str(why):
+                return f"FAIL: empty WITNESS {blank!r} said the wrong thing: {why}"
+        else:
+            return f"FAIL: WITNESS = {blank!r} should have been refused"
+
+    try:
+        _ask_witnesses(iou=0.51)
+    except SystemExit as why:
+        text = str(why)
+        if "0.51" not in text or "0.70" not in text or "WITNESS" not in text:
+            return f"FAIL: low overlap said the wrong thing: {why}"
+        if "two buildings" in text and "cannot declare" in text:
+            return f"FAIL: low overlap reused the EXPECTED-ban text: {why}"
+    else:
+        return "FAIL: overlap 0.51 against a floor of 0.70 should have stopped the run"
+
+    grey = _ask_witnesses(iou=0.51, witness=reason)
+    questions = {row["question"] for row in grey["witnesses"]}
+    wanted = {"plan overlap", "extent", "bearing", "storey height"}
+    if not wanted <= questions:
+        return f"FAIL: greying fixture lost rows: {questions}"
+    for row in grey["witnesses"]:
+        if row["ok"] is not None:
+            return f"FAIL: {row['question']} stayed graded under WITNESS: {row}"
+        if row["expected"] != reason:
+            return (f"FAIL: {row['question']} carried {row['expected']!r} "
+                    f"instead of the WITNESS sentence")
+
+    # storey height is not a resemblance row. Greying it is the blast radius
+    # of "every agreement row that asked the reference", and the proof has
+    # to name it so a later narrowing cannot happen in silence.
+    storey = next(r for r in grey["witnesses"] if r["question"] == "storey height")
+    if storey["ok"] is not None:
+        return "FAIL: storey height stayed graded under WITNESS"
+
+    g = Gate("prove")
+    Grading(None, None, SimpleNamespace()).witnesses(g, grey)
+    printed = [c for c in g.checks if c.name.endswith(" agree")]
+    if not printed:
+        return "FAIL: grading.witnesses wrote no agree rows"
+    for check in printed:
+        if check.ok is not None or reason not in check.detail:
+            return f"FAIL: gate did not print [----] with the sentence: {check.line()}"
+
+    clean = _ask_witnesses(iou=0.90)
+    overlap = next(r for r in clean["witnesses"] if r["question"] == "plan overlap")
+    if overlap["ok"] is not True:
+        return f"FAIL: overlap 0.90 should be green, got {overlap}"
+    declared = _ask_witnesses(
+        expected={"bearing": "the map stands on its own street grid"})
+    bearing = next(r for r in declared["witnesses"] if r["question"] == "bearing")
+    if bearing["ok"] is not None or "street grid" not in bearing["expected"]:
+        return f"FAIL: EXPECTED['bearing'] should still declare, got {bearing}"
+    still = next(r for r in declared["witnesses"] if r["question"] == "plan overlap")
+    if still["ok"] is not True:
+        return f"FAIL: declaring bearing greys plan overlap too: {still}"
+
+    extra = MAPPED + f"\nWITNESS = {reason!r}\n"
+    where = make("witness", extra, ("layout.png", "mesh"))
+    try:
+        for step in ("probes.derive", "build", "gate"):
+            code, said = run("witness", step)
+            if code != 0:
+                return f"FAIL: witness-set {step} died:\n{said[-2000:]}"
+        derived = json.loads((where / "out" / "derived.json").read_text(encoding="utf-8"))
+        if not derived.get("witnesses"):
+            return "FAIL: mapped fixture wrote no witness rows to grey"
+        for row in derived.get("witnesses", []):
+            if row.get("ok") is not None or row.get("expected") != reason:
+                return (f"FAIL: derive under WITNESS left {row.get('question')} "
+                        f"ok={row.get('ok')} expected={row.get('expected')!r}")
+        report = json.loads((where / "out" / "report.json").read_text(encoding="utf-8"))
+        checks = {c["name"]: c for c in report.get("checks", [])}
+        agrees = [n for n in checks if n.endswith(" agree")]
+        if not agrees:
+            return "FAIL: mapped fixture wrote no agree rows to grey"
+        for name in agrees:
+            row = checks[name]
+            if row.get("ok") is not None or reason not in (row.get("detail") or ""):
+                return f"FAIL: gate row {name} was not greyed with the sentence: {row}"
+        registration = checks.get("registration")
+        if registration is None or registration.get("ok") is not True:
+            return f"FAIL: registration should still grade under WITNESS, got {registration}"
+        scale = checks.get("scale")
+        if scale is None or scale.get("ok") is None:
+            return f"FAIL: scale should still grade under WITNESS, got {scale}"
+        # The section is the reference witnessing the build. WITNESS does not
+        # turn it off -- that is the blast radius this proof is here to name.
+        if not report.get("sections"):
+            return ("FAIL: no sections were cut under WITNESS; "
+                    "the switch greys more than the agreement rows")
+        stayed = [n for n, c in checks.items()
+                  if c.get("ok") is True
+                  and not n.endswith(" agree")]
+        print("witness ceiling: refusals hold; greying holds; "
+              f"section/registration/scale still grade ({len(stayed)} other green rows)",
+              flush=True)
+    finally:
+        if not keep:
+            shutil.rmtree(where, ignore_errors=True)
+    return None
+
+
 def run(kind: str, step: str) -> tuple[int, str]:
     """One stage of one scratch building, as a person would run it."""
     done = subprocess.run(
@@ -210,6 +380,11 @@ def run(kind: str, step: str) -> tuple[int, str]:
 def main(argv: list[str]) -> int:
     keep = "--keep" in argv
     bad = 0
+    print("-- witness ceiling")
+    failed = prove_witness_ceiling(keep=keep)
+    if failed:
+        print("   " + failed)
+        bad += 1
     for kind, extra, wants in SCENARIOS:
         print(f"-- {kind}")
         try:

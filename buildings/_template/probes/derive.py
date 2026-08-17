@@ -246,7 +246,8 @@ UNLATTICED = None
 # than failing. It is not a widened tolerance: widening would excuse every other
 # disagreement on that axis too, including the ones that are faults, and would
 # do it silently. Keyed by question -- bearing, extent, part heights, storey
-# height, plan overlap.
+# height. Not plan overlap: two silhouettes that share less than the floor are
+# two buildings, and that choice is WITNESS below, not a declared disagreement.
 #
 # A key that matches nothing is left alone, so a stale entry shows up as a row
 # that has gone back to being graded.
@@ -262,6 +263,22 @@ EXPECTED: dict[str, str] = {
     # "bearing": "the map is a game map and stands this building on its own "
     #            "street grid, 37.5 degrees off the real one the capture is of",
 }
+
+# Why the reference is not a witness to this building at all, as a sentence.
+# None means it is, which is the normal case.
+#
+# The case this exists for: the plan is a crop of a game map and the capture is
+# of the real prototype, and the two are drawings of different buildings. That
+# is not a disagreement to declare in EXPECTED -- a declared disagreement is a
+# fact about two views of one thing -- it is a decision about which of two
+# buildings is being built, and it has to be made rather than excused.
+#
+# Set it, and every agreement row that asked the reference -- the ones derive
+# writes under "witnesses" -- goes ungraded with this sentence printed beside
+# it. The section still cuts, and registration and scale still grade: they are
+# not those rows. Leave it, and a silhouette overlap under the floor stops the
+# run.
+WITNESS: str | None = None
 
 # Metres per unit of an SVG plan. A GeoJSON in longitude and latitude is
 # projected and needs none; one already in metres needs none either. An SVG

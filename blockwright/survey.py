@@ -90,7 +90,12 @@ DEFAULTS = {
     "DATUM_AGREEMENT": 1.0,
     # Witness disagreements that are facts about the inputs rather than faults,
     # keyed by question, each with the reason. See `witnesses.declare`.
+    # `plan overlap` is not a legal key: two silhouettes under the floor are
+    # two buildings, and that choice is `WITNESS`, not a declared disagreement.
     "EXPECTED": {},
+    # Why the reference is not a witness to this building, as a sentence.
+    # None means it is. See `Survey.witnesses_of`.
+    "WITNESS": None,
     # Metres per unit of an SVG plan. A GeoJSON in lon/lat needs none -- it is
     # projected -- and one already in metres needs none either; an SVG has no
     # units at all and cannot be read without this.
@@ -1745,7 +1750,33 @@ class Survey:
         a map crop rescaled before it was cropped, a capture of the building next
         door, a model of a later revision than the photographs, a drawing read at
         the wrong scale.
+
+        A silhouette overlap under the floor is not in that list. It is two
+        buildings, not two views of one, and declaring it expected is what let a
+        game-map crop of a dogbone grade as a capture of a different tower: the
+        only row that said so became a dash, the verdict was ungraded, and the
+        build reproduced the map of somewhere else. `EXPECTED` cannot name it.
+        `WITNESS` is the way to say the reference is of something else, and it
+        takes a sentence -- the flag version of this already let a real
+        disagreement pass as expected.
         """
+        banned = set(self.t.EXPECTED) & {"plan overlap"}
+        if banned:
+            raise SystemExit(
+                "EXPECTED cannot declare 'plan overlap'. Two silhouettes that "
+                "share less than the floor are not one building seen twice, "
+                "they are two buildings, and calling the difference expected "
+                "hides the only row that says so.\n"
+                "Decide instead: build what the drawn plan shows and set "
+                "WITNESS to the sentence saying the reference is of something "
+                "else, or build what the reference shows and let the plan "
+                "answer only for the parts that matched.")
+        if self.t.WITNESS is not None:
+            if not isinstance(self.t.WITNESS, str) or not self.t.WITNESS.strip():
+                raise SystemExit(
+                    "WITNESS is set to an empty string. It takes the reason the "
+                    "reference is not a witness, as a sentence -- the flag version "
+                    "of this is what let a real disagreement pass as expected.")
         found: list[witnesses.Agreement] = []
         by = read.source.name
 
@@ -1815,11 +1846,35 @@ class Survey:
         if square and kind and read.source.name != kind:
             found.append(witnesses.overlap(square["as_fitted"], by, kind))
 
+        # Two silhouettes that share less than the floor are not one building
+        # seen twice. Stop rather than write a failing row that EXPECTED used
+        # to be able to grey out: the grey dash read exactly like "nobody
+        # could answer this", and a real pair of different buildings passed.
+        floor = witnesses.OVERLAP
+        for one in found:
+            if one.question != "plan overlap" or self.t.WITNESS:
+                continue
+            value = one.rows["silhouette"][1].value
+            if value < floor:
+                raise SystemExit(
+                    f"the drawn plan and the reference share {value:.2f} of their "
+                    f"silhouettes against a floor of {floor:.2f}. Two drawings of "
+                    "one building do not do that.\n"
+                    "Look at out/compare/top.png before anything else. If they are "
+                    "of different buildings -- a game map beside a capture of the "
+                    "real prototype is the usual way -- set WITNESS in this file to "
+                    "the sentence that says so, and every row the reference would "
+                    "have graded will read ungraded with that sentence. If they are "
+                    "the same building, the clip or the crop is wrong.")
+
         # Disagreements the building has said to expect. Not a widened
         # tolerance: the row goes ungraded with the reason printed beside it,
         # so it stays legible and every other disagreement on that axis is
         # still graded.
         witnesses.declare(found, dict(self.t.EXPECTED))
+        if self.t.WITNESS is not None:
+            for one in found:
+                one.declare(self.t.WITNESS)
         out["witnesses"] = [one.report() for one in found]
         out["witness_lines"] = witnesses.lines(found)
 
