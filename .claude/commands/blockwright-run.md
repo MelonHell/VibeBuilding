@@ -13,8 +13,9 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, TodoWrite
 
 Подними скилл `blockwright` — он держит три правила и карту этапов. Перед каждым
 этапом поднимай его скилл: `blockwright-capture`, `blockwright-measure`,
-`blockwright-schedule`, `blockwright-greybox`, `blockwright-draw`,
-`blockwright-gate`.
+`blockwright-schedule`, `blockwright-draw`, `blockwright-gate`. У этапа 4 скилла
+нет: чертёж объёмов — это `blockwright-draw`, а ворота 4 проходит команда
+`/blockwright-greybox`.
 
 ## Порядок
 

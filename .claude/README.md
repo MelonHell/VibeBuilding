@@ -1,6 +1,6 @@
 # Blockwright — конфигурация Claude для этого проекта
 
-Скиллы, команды и агент фото-ревьюера, которые ведут сборку зданий Minecraft.
+Скиллы, команды и агенты-ревьюеры, которые ведут сборку зданий Minecraft.
 **Движок живёт в проекте, а не здесь:**
 
 ```
@@ -9,7 +9,7 @@ tools/                отдельные CLI
 docs/                 sources.md, pipeline.md, data-contract.md
 buildings/            по пакету на здание
     _template/        скелет, из которого заводят новое
-.claude/              вот эта конфигурация: скиллы, команды, агент
+.claude/              вот эта конфигурация: скиллы, команды, агенты
 ```
 
 Так и задумано. Здания импортируют `blockwright` абсолютно и запускаются как
@@ -87,24 +87,29 @@ python -m buildings.<имя>.review --mesh
         blockwright-capture/         этап 1 — захват и конвертация
         blockwright-measure/         этап 2 — обмер плана
         blockwright-schedule/        этап 3 — обмер разреза и манифест
-        blockwright-greybox/         этап 4 — грейбокс: объёмы до материала
         blockwright-draw/            этапы 4 и 5 — чертёж
         blockwright-gate/            этап 5 — числа: гейт, отчёт, листы
         blockwright-review/          этап 5 — глаза: фото-ревью
     commands/
         blockwright-new.md           завести здание из скелета
         blockwright-run.md           обмер, чертёж, гейт
-        blockwright-review.md        рендеры и фото-ревью
+        blockwright-greybox.md       ворота 4 — грейбокс: объёмы до материала
+        blockwright-review.md        рендеры и фото-ревью, ворота 5
     agents/
-        blockwright-photo-reviewer.md   наивный ревьюер: только картинки
+        blockwright-photo-reviewer.md    наивный ревьюер ворот 5: только картинки
+        blockwright-greybox-reviewer.md  наивный ревьюер ворот 4: только форма
+        blockwright-fix-verifier.md      «до / после / эталон»: устранено или нет
 ```
+
+У ворот 4 своего скилла нет — есть команда. Этап 4 делят `blockwright-draw`
+(как пишется `build.py`) и `/blockwright-greybox` (как ворота проходятся).
 
 `buildings/_template/` — рабочий скелет: он запускается и собирает объёмный
 этюд, ничего не зная о конкретном здании и не зная заранее, какие входы ему
 дадут. Всё специфическое в нём — помеченные таблицы (`DECLARED_PLAN`,
 `DECLARED_HEIGHTS`, `DECLARED_STOREY`, `STRIPS`, `DISCS`, `MODEL_PARTS`,
 `MAP_PALETTE`, `VECTOR_SCALE`, `DECLARED`, `COUNTS`, `LEVELS`, `RINGS`,
-`windows()`, `DESCRIPTION`, `PLAN`) и помеченные блоки комментариев.
+`windows()`, `DESCRIPTION`, `FORM`, `PLAN`) и помеченные блоки комментариев.
 
 Аппаратура, которая иначе копировалась бы в каждое здание — чтение входов и
 фото-ревью, — живёт в `blockwright.survey` и `blockwright.reviewing`:

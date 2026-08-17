@@ -73,8 +73,9 @@ description: Постройка здания в Minecraft из любых вхо
 Скилл `blockwright-capture` описывает, что именно смотреть.
 
 Скиллы по этапам: 1 `blockwright-capture`, 2 `blockwright-measure`,
-3 `blockwright-schedule`, 4 `blockwright-greybox` и `blockwright-draw`,
-5 `blockwright-draw`, `blockwright-gate`, `blockwright-review`.
+3 `blockwright-schedule`, 4 и 5 `blockwright-draw`, 5 ещё `blockwright-gate` и
+`blockwright-review`. Скилла на этап 4 нет: как пишется `build.py`, говорит
+`blockwright-draw`, а как проходятся ворота 4 — команда `/blockwright-greybox`.
 
 Этап 1 нужен только для Google Earth. Этапы 2–5 идут по порядку, и каждый
 отказывается работать без предыдущего. Это не формальность: `build.py` падает без
