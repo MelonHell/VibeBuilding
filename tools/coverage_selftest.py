@@ -24,15 +24,150 @@ from pathlib import Path
 
 from PIL import Image
 
+from types import SimpleNamespace
+
 from blockwright import model as model3d
 from blockwright.frame import Frame
-from blockwright.plan import decompose
+from blockwright.gate import Gate
+from blockwright.grading import COVERAGE_SHARE, COVERAGE_STOREYS, Grading
+from blockwright.mask import Mask
+from blockwright.plan import Part, decompose
+from blockwright.schedule import Declaration, Item, Schedule
 
 from tools import fixture
 from tools.pipeline_selftest import make
 
 ROOT = Path(__file__).resolve().parent.parent
 KIND = "coverage"
+ROW = "every part is measured by something"
+
+
+def _rect(width: int, length: int, x0: int, x1: int, z0: int, z1: int) -> Mask:
+    mask = Mask(width, length)
+    for z in range(z0, z1):
+        for x in range(x0, x1):
+            mask.set(x, z)
+    return mask
+
+
+def _grade(parts, items, built, excused=None, spacing=3.0):
+    """Run `coverage` on a tiny schedule. `built` is name -> (mask, y0, y1)."""
+    width = next(iter(built.values()))[0].width if built else 20
+    length = next(iter(built.values()))[0].length if built else 20
+    frame = Frame((0.0, 0.0), 0.0, float(width), float(length))
+    named = {}
+    for rec in parts:
+        mask = rec.get("mask")
+        if mask is None:
+            continue
+        named[rec["name"]] = Part(mask, frame)
+    mass = Mask.union([p.mask for p in named.values()], width, length)
+    read = SimpleNamespace(named=named, mass=mass, frame=frame)
+    derived = {
+        "parts": [{"name": r["name"],
+                   "provenance": r.get("provenance", {})} for r in parts],
+        "storeys": {"spacing": spacing},
+    }
+    sched = Schedule(Item(n, "what", "source") for n in items)
+    for name, (mask, y0, y1) in built.items():
+        sched.built[name] = Declaration(mask, y0, y1)
+    sched.width, sched.length = width, length
+    g = Gate("prove")
+    cfg = SimpleNamespace(UNMEASURED={} if excused is None else excused)
+    Grading(None, None, cfg).coverage(g, derived, sched, read)
+    if len(g.checks) != 1:
+        raise SystemExit(f"FAIL: coverage wrote {len(g.checks)} row(s)")
+    return g.checks[0]
+
+
+def prove_coverage_row() -> str | None:
+    """The three states, both ways in, and the things the row must not accuse.
+
+    Lives here so a reviewer can see it fail. Returns a FAIL line, or None.
+    """
+    w, l = 20, 20
+    plan = _rect(w, l, 2, 10, 2, 10)
+    on_plan = _rect(w, l, 3, 9, 3, 9)
+    away = _rect(w, l, 14, 18, 14, 18)
+    measured = {"plan": "map", "height": "capture", "witness": "section"}
+    blank = {"plan": "declared", "height": "none", "witness": "none"}
+    front = {"name": "front", "provenance": measured, "mask": plan}
+    skeleton = ["podium", "shell", "floors", "glazing", "parapets"]
+    short = {
+        "podium": (_rect(w, l, 1, 12, 1, 12), 0, 1),
+        "shell": (plan, 0, 12),
+        "floors": (on_plan, 3, 12),
+        "glazing": (on_plan, 1, 11),
+        "parapets": (plan, 12, 13),
+    }
+
+    green = _grade([front], skeleton, short)
+    if green.name != ROW or green.ok is not True:
+        return f"FAIL: skeleton should be green, got {green.line()}"
+    if "carry a measured footprint" in green.detail or "all 2 plan" in green.detail:
+        return f"FAIL: pass text still counts unexamined parts: {green.detail}"
+    if "nothing stands unmeasured" not in green.detail:
+        return f"FAIL: green detail does not say what was found: {green.detail}"
+
+    red = _grade([front], skeleton + ["villas"],
+                 {**short, "villas": (away, 0, 14)})
+    if red.ok is not False or "villas" not in red.detail:
+        return f"FAIL: villas 14 m off the plan should be red, got {red.line()}"
+    for name in skeleton:
+        if name in red.detail:
+            return f"FAIL: {name} was accused: {red.detail}"
+    if "declare their sizes" in red.detail:
+        return f"FAIL: fail text still sends the reader to DECLARED_*: {red.detail}"
+    if "UNMEASURED" not in red.detail or "widen the clip" not in red.detail:
+        return f"FAIL: fail text dropped the ways out: {red.detail}"
+    if f"{COVERAGE_SHARE:.0%}" not in red.detail:
+        return f"FAIL: red row hid the share threshold: {red.detail}"
+    if f"{COVERAGE_STOREYS:g} storey" not in red.detail:
+        return f"FAIL: red row hid the height threshold: {red.detail}"
+
+    club = _grade([front], ["clubhouse"], {"clubhouse": (away, 0, 4)})
+    if club.ok is not False or "clubhouse" not in club.detail:
+        return f"FAIL: clubhouse 4 m off the plan should be red, got {club.line()}"
+
+    storey = _grade([front], ["deck"], {"deck": (away, 0, 3)})
+    if storey.ok is not True:
+        return f"FAIL: a one-storey deck off the plan is a surface, got {storey.line()}"
+
+    named = _grade(
+        [{"name": "front", "provenance": blank, "mask": plan}],
+        ["front"], {})
+    if named.ok is not False or "front" not in named.detail:
+        return f"FAIL: a plan-named part with empty columns should be red, got {named.line()}"
+
+    excused = _grade([front], skeleton + ["villas"],
+                     {**short, "villas": (away, 0, 14)},
+                     {"villas": "the clip stops twelve metres short of it"})
+    if excused.ok is not None:
+        return f"FAIL: UNMEASURED villas should be ungraded, got {excused.line()}"
+    if "twelve metres" not in excused.detail:
+        return f"FAIL: ungraded detail dropped the phrase: {excused.detail}"
+
+    try:
+        _grade([front], skeleton, short, {"floors": "not a building"})
+    except SystemExit as why:
+        if "floors" not in str(why):
+            return f"FAIL: stale UNMEASURED should name floors, got {why}"
+    else:
+        return "FAIL: UNMEASURED of a surface should have stopped the run"
+
+    for cover in (
+        {"plan": "vector", "height": "none", "witness": "none"},
+        {"plan": "declared", "height": "model", "witness": "none"},
+        {"plan": "declared", "height": "none", "witness": "section"},
+    ):
+        one = _grade([{"name": "front", "provenance": cover, "mask": plan}],
+                     ["front"], {})
+        if one.ok is not True:
+            return f"FAIL: {cover} should cover, got {one.line()}"
+
+    print("coverage row: green, red, ungraded, and the geometric line hold",
+          flush=True)
+    return None
 
 
 def build() -> Path:
@@ -74,6 +209,11 @@ def _map_fill_box(layout: Path, frame: Frame
 def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
+        missed = prove_coverage_row()
+        if missed:
+            print(missed)
+            return 1
+
         out = build()
         derived = json.loads((out / "derived.json").read_text(encoding="utf-8"))
         parts = [p["name"] for p in derived.get("parts", [])]
@@ -91,11 +231,8 @@ def main() -> int:
                   f"the map into {len(drawn)}")
             return 1
 
-        # The gate row that will grade the hole this file exists to see. Built
-        # and graded here so the check reads report.json rather than the source;
-        # a method that exists and a row that was never asked look the same
-        # from the second check down. The fixture's schedule does not name the
-        # two wings, so the row is green today -- that is not this file's red.
+        # The fixture's schedule is the skeleton, so the row is green -- the
+        # outbuilding is still not a derived part, and that is this file's red.
         subprocess.run(
             [sys.executable, "-m", f"buildings._selftest_{KIND}.build"],
             cwd=ROOT, check=True)
@@ -114,6 +251,13 @@ def main() -> int:
         row = next(c for c in report["checks"]
                    if c["name"] == "every part is measured by something")
         print(f"gate row present: ok={row['ok']!r}: {row['detail']}")
+        if row["ok"] is not True:
+            print("FAIL: the fixture skeleton went unmeasured")
+            return 1
+        if "carry a measured footprint" in row["detail"]:
+            print("FAIL: fixture pass text still counts unexamined parts: "
+                  + row["detail"])
+            return 1
 
         # A part the map never drew is one whose footprint misses the painted
         # fill, in the plan frame derived.json already uses. Frame.fit_mask

@@ -145,6 +145,19 @@ DEFAULTS = {
     "FREE_ENDS": 1200,
 }
 
+# A declaration taller than this many measured storeys is a building, not a
+# surface. One course is grounds, a deck, a pool; one storey is a floor plate
+# or a parapet course stacked in the merge. A clubhouse at four metres on a
+# three-metre storey is the thing this row exists to see.
+COVERAGE_STOREYS = 1.0
+
+# Share of a declaration that must sit on the surveyed plan -- dilated by
+# `slack`, so a wall ring on the padded edge still counts as on the plan.
+# Half is "mostly": a balcony that is one cell of wall and one cell of
+# cantilever stays with the plan; a villa whose whole footprint misses
+# every part does not.
+COVERAGE_SHARE = 0.5
+
 
 class Grading:
     """One building's gate, run in the order that makes its answers readable."""
@@ -252,7 +265,7 @@ class Grading:
         self.plateaus(g, derived)
         self.grounds(g, derived, read, sched)
         self.witnesses(g, derived)
-        self.coverage(g, derived, sched)
+        self.coverage(g, derived, sched, read)
         sections, reg = self.section(g, derived, read, reference, model, frame,
                                      parts, evidence)
 
@@ -1891,7 +1904,7 @@ class Grading:
                   + (f" at {where}" if where else "")
                   + f", tolerance {one['tolerance']:.2f} {one['unit']}")
 
-    def coverage(self, g, derived, sched):
+    def coverage(self, g, derived, sched, read):
         """Parts the build put up that nothing measured.
 
         The row this pipeline did not have. A declaration check asks whether
@@ -1901,11 +1914,27 @@ class Grading:
         was written after, nine parts of fourteen would have failed here, and
         every one of them printed green.
 
+        Two ways in, because the names do not line up. A schedule item that
+        shares a name with a derived part and has dashes in every provenance
+        column is the first: the build put that surveyed part up and nothing
+        measured it. A schedule item that shares no name -- `villas` against
+        `north_tower` -- is the second: if it stands taller than one storey
+        and its footprint lies mostly outside the surveyed mass, it is a
+        building the plan never drew. A floor, a run of glazing, a one-course
+        podium are neither, and are not accused of lacking a footprint.
+
+        The three provenance columns are read independently. Today `witness`
+        is "section" exactly when `height` was read off the reference, so the
+        third test adds nothing; when that changes, a part whose only evidence
+        is a section still counts as covered, and a part whose height was
+        measured still counts if the witness column later says none.
+
         `UNMEASURED` is the building's own list of parts it knows nothing
         measured -- a phrase per part, not a flag. Named there, the row goes
         ungraded with the reasons printed rather than failing: a part standing
         on a photograph alone is a legitimate way to build and an illegitimate
-        thing to report as checked.
+        thing to report as checked. A name in the table that this row does
+        not treat as unmeasured stops the run, the same way `NOT_WALLS` does.
         """
         stated = {r["name"]: r.get("provenance", {})
                   for r in derived.get("parts", [])}
@@ -1916,48 +1945,95 @@ class Grading:
                 "standing on a photograph is named here with why nothing "
                 "measured it; a bare True would turn the row off.")
 
-        # A plan part is a schedule name that also appears in derived["parts"].
-        # The manifest lists podium, shell, floors, glazing, parapets; only some
-        # of those share a name with a footprint the survey wrote down. A floor
-        # or a run of glazing has no footprint of its own -- it is declared
-        # against a plan part and graded by `placement`. Walking the schedule
-        # and asking "is this name in the plan?" is the line: same name as a
-        # surveyed part means the build put that part up; any other name is an
-        # attachment and is not accused of lacking a measurement.
-        #
-        # The three columns are read independently. Today `witness` is "section"
-        # exactly when `height` was read off the reference, so the third test
-        # adds nothing; when that changes, a part whose only evidence is a
-        # section still counts as covered, and a part whose height was measured
-        # still counts if the witness column later says none.
-        blind, named = [], []
+        storey = float((derived.get("storeys") or {}).get("spacing") or 0.0)
+        mass = self.drawn_mass(read)
+        if mass and (mass.width, mass.length) != (0, 0):
+            covered = mass.dilate(self.slack(read))
+        else:
+            covered = None
+
+        # `notes` is what the row prints next to a name; `measured` / `inside`
+        # are what the pass text is allowed to claim -- only the names this
+        # loop actually classified, never every key in derived["parts"].
+        blind, notes = [], {}
+        measured, inside = [], []
         for name in sorted(sched.by_name):
             p = stated.get(name)
-            if p is None:
+            if p is not None:
+                if (p.get("plan") in ("map", "vector", "model", "capture")
+                        or p.get("height") in ("capture", "model")
+                        or p.get("witness") == "section"):
+                    measured.append(name)
+                    continue
+                notes[name] = "named on the plan, nothing in any column"
+                blind.append(name)
                 continue
-            if p.get("plan") in ("map", "vector", "model", "capture"):
-                continue
-            if p.get("height") in ("capture", "model"):
-                continue
-            if p.get("witness") == "section":
-                continue
-            (named if name in excused else blind).append(name)
 
-        if blind:
+            held = sched.built.get(name)
+            if held is None:
+                continue
+            rise = float(held.y1) - float(held.y0)
+            cells = held.mask.count()
+            if cells == 0 or rise <= storey * COVERAGE_STOREYS:
+                inside.append(name)
+                continue
+            if (covered is None
+                    or (held.mask.width, held.mask.length)
+                    != (covered.width, covered.length)):
+                share = 0.0
+            else:
+                share = (held.mask & covered).count() / cells
+            if share >= COVERAGE_SHARE:
+                inside.append(name)
+                continue
+            notes[name] = f"{rise:.0f} m, {share:.0%} on the plan"
+            blind.append(name)
+
+        strangers = sorted(set(excused) - set(blind))
+        if strangers:
+            raise SystemExit(
+                f"UNMEASURED names {', '.join(strangers)}, which this row "
+                "does not treat as unmeasured. A renamed part, a typo, or a "
+                "surface named here would otherwise go back to being silent.")
+
+        named = [n for n in blind if n in excused]
+        red = [n for n in blind if n not in excused]
+        limit = storey * COVERAGE_STOREYS
+        rule = (f"taller than {COVERAGE_STOREYS:g} storey "
+                f"({limit:.2f} m here) with less than {COVERAGE_SHARE:.0%} "
+                "of the footprint on the plan, or named on the plan with "
+                "nothing in any provenance column")
+
+        def listed(names):
+            return ", ".join(
+                f"{n} ({notes[n]})" if n in notes else n for n in names)
+
+        if red:
             g.add("every part is measured by something", False,
-                  f"{len(blind)} part(s) have no measured footprint, no "
-                  f"measured height and no witness: {', '.join(blind)}. Either "
-                  "widen the clip so the reference covers them, declare their "
-                  "sizes with the sheet or the phrase they came from, or name "
-                  "them in UNMEASURED with the reason they cannot be measured.")
+                  f"{len(red)} part(s) have no measured footprint, no "
+                  f"measured height and no witness: {listed(red)}. "
+                  f"Unmeasured is {rule}. Measure the footprint, measure "
+                  "the height, widen the clip so the reference reaches "
+                  "them, or name them in UNMEASURED with the reason they "
+                  "cannot be measured.")
             return
         if named:
             g.ungraded("every part is measured by something",
-                       "; ".join(f"{n}: {excused[n]}" for n in named))
+                       "; ".join(f"{n}: {excused[n]}" for n in named)
+                       + f". Unmeasured is {rule}")
             return
+
+        bits = []
+        if measured:
+            bits.append(f"{len(measured)} plan-named part(s) are measured")
+        if inside:
+            bits.append(
+                f"{len(inside)} attachment(s) sit on the plan or stand "
+                f"{COVERAGE_STOREYS:g} storey or less")
+        if not bits:
+            bits.append("the schedule names no part this row examines")
         g.add("every part is measured by something", True,
-              f"all {len(stated)} plan part(s) carry a measured footprint, a "
-              "measured height or a witness")
+              "; ".join(bits) + "; nothing stands unmeasured")
 
     def section(self, g, derived, read, reference, model, frame, parts,
                 evidence):
