@@ -13,10 +13,10 @@ Offset is where the box's minimum corner sat relative to the copy origin, and
 WorldEdit records that absolute origin in Metadata. Neither alone places the
 schematic; `min_corner` adds them and is what local (0, 0, 0) maps to.
 
-    s = Schematic.read("layout.schem")
+    s = Schematic.read("massing.schem")
     s.get(10, 0, 20)                  # 'minecraft:gray_concrete'
     s.set(10, 0, 20, "minecraft:stone")
-    s.write("layout.schem")
+    s.write("massing.schem")
 """
 
 from __future__ import annotations

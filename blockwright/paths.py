@@ -66,19 +66,6 @@ class Layout:
         self.PHOTOS = self.INPUT / "photos"             # photographs of the real thing
         self.GE_EXPORT = self._capture()                # a raw Google Earth capture
 
-        # Where the build lands in the world, for the case where that has been
-        # decided in advance. **Optional, and usually absent.** The pipeline ends
-        # at a schematic in local coordinates, which is a finished result: it
-        # opens in an editor and pastes wherever somebody puts it, and every
-        # stage grades it the same either way. This file is only needed when the
-        # build has to land on one exact spot in one existing world, and a map
-        # crop already fixes that spot.
-        #
-        # A building measured off a model or off a description has no world
-        # position at all, because nothing supplied carries one. Where it stands
-        # is then a decision a person makes, outside this pipeline.
-        self.LAYOUT_SCHEM = self.INPUT / "layout.schem"
-
         # -- what the pipeline makes -------------------------------------
         self.MESH_FULL = self.OUT / "mesh" / "merged.obj"       # the whole capture
         self.MESH = self.OUT / "mesh-clip" / "merged.obj"       # clipped to the building

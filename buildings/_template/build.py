@@ -512,7 +512,6 @@ def main() -> None:
               f"v {p.v0:5.1f}..{p.v1:5.1f}  to {top} m")
 
     done = finish(canvas, paths.OUT, site.frame,
-                  template=site.mass, layout=paths.LAYOUT_SCHEM,
                   schedule=SCHEDULE, orthos=paths.ORTHOS, scale=RENDER_SCALE,
                   plans=(("ground", site.ground),
                          ("upper", site.levels[len(site.levels) // 2])))

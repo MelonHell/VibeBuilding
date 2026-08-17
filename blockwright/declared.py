@@ -19,8 +19,8 @@ numbers. A declared plan is a legitimate way to build; a declared plan reported
 as a survey is not.
 
 The grid is made here, so a declared building knows its own size and shape and
-nothing about where it stands in the world. Placing it is a separate decision --
-see `paths.LAYOUT_SCHEM`.
+nothing about where it stands in the world. Where it stands is a decision a
+person makes, outside this pipeline.
 """
 
 from __future__ import annotations

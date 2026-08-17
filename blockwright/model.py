@@ -66,9 +66,8 @@ class Grid:
     grid is made here, big enough for the building and `MARGIN` clear all round.
 
     This means a model-only project knows the building's size and shape exactly
-    and its position in the Minecraft world not at all. Where it goes is a
-    declaration, made when it is placed, and `paths.LAYOUT_SCHEM` is the usual
-    way to make it: put the anchor in the world and the build lands on it.
+    and its position in the Minecraft world not at all. Where it stands is a
+    decision a person makes, outside this pipeline.
     """
 
     __slots__ = ("width", "length", "x0", "z0", "cell")

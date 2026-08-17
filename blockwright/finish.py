@@ -3,13 +3,12 @@
 A `build.py` is a recipe: parts, constants with the reason each one has its
 value, and the geometry that follows from them. What it is not is a program for
 writing files -- yet every one of them ended with the same forty lines of
-placement arithmetic, schematic writing, schedule saving, tallying, silhouette
-PNGs, render sets and comparison sheets. Forty lines that are identical between
-buildings are forty lines that will diverge between buildings, and the first
-thing to go is always the part that fails soft.
+schematic writing, schedule saving, tallying, silhouette PNGs, render sets and
+comparison sheets. Forty lines that are identical between buildings are forty
+lines that will diverge between buildings, and the first thing to go is always
+the part that fails soft.
 
-    summary = finish(canvas, paths.OUT, frame, template=template,
-                     layout=paths.LAYOUT_SCHEM, schedule=SCHEDULE,
+    summary = finish(canvas, paths.OUT, frame, schedule=SCHEDULE,
                      orthos=paths.ORTHOS, scale=RENDER_SCALE)
     for line in summary.lines():
         print(line)
@@ -24,9 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-from .mask import Mask
 from .render import STANDARD, View, render, render_set
-from .schem import Schematic
 
 # East elevation against the long view, top-down against the plan: the two pairs
 # whose cameras genuinely match, so their silhouettes can be compared as
@@ -37,7 +34,7 @@ SHEETS = (("east", View.long(), "bottom"), ("top", View.plan(), "centre"))
 class Finished:
     """What a finished build turned out to be, and where it was written."""
 
-    __slots__ = ("blocks", "counts", "joined", "placement", "schematic",
+    __slots__ = ("blocks", "counts", "joined", "schematic",
                  "items", "undeclared", "views", "sheets", "overlap",
                  "plans", "notes", "said", "stamp")
 
@@ -45,7 +42,6 @@ class Finished:
         self.blocks = 0
         self.counts: dict[str, int] = {}
         self.joined = 0
-        self.placement: dict = {}
         self.schematic: Path | None = None
         self.items = 0
         self.undeclared: list[tuple[str, str]] = []
@@ -67,8 +63,7 @@ class Finished:
         out.extend("! " + n for n in self.notes)
         out.extend("  " + n for n in self.said)
         if self.schematic:
-            where = "placed" if self.placement else "local coordinates"
-            out.append(f"wrote {self.schematic.name} ({where})")
+            out.append(f"wrote {self.schematic.name} (local coordinates)")
         if self.items:
             out.append(f"schedule: {self.items - len(self.undeclared)} of "
                        f"{self.items} parts built")
@@ -88,76 +83,12 @@ class Finished:
             "palette": len(self.counts),
             "counts": self.counts,
             "joined": self.joined,
-            "placed": bool(self.placement),
             "schedule": {"items": self.items,
                          "undeclared": [n for n, _ in self.undeclared]},
             "iou": {k: round(v, 4) for k, v in self.overlap.items()},
             "notes": list(self.notes),
             "said": list(self.said),
         }
-
-
-def placement_of(layout: Path, template: Mask, blocks
-                 ) -> tuple[dict, list[str], list[str]]:
-    """Where in the world this build goes, if anywhere was ever asked for.
-
-    Returns `(placement, notes, said)`: notes are things wrong with a placement
-    that was attempted, `said` is plain reporting about one that was not. The
-    two are separated because they read completely differently and used to be
-    the same list -- a build with no world anchor printed a line beginning `!`,
-    which is the mark this pipeline uses for something that needs attention, and
-    every reader took it as a job to do.
-
-    **Placing a build in a world is optional.** A `.schem` in local coordinates
-    is a finished deliverable: it opens in a schematic editor, it pastes
-    wherever somebody puts it, and every other stage grades it exactly the same.
-    The anchor exists for the case where a map crop already fixes a spot in a
-    particular world -- which is one workflow among several, and not the one
-    most buildings here are built for.
-
-    The world position, when there is one, comes from `origin`/`offset` of a
-    schematic crop of the same map, carried across as the shift between its grid
-    and the template's.
-
-    It fails soft on purpose. This used to be a bare read that raised, which
-    meant a missing schematic killed the run *after* every block was placed and
-    *before* anything was written -- so `out/` kept a build from two layouts ago
-    while the gate went on grading it and reporting a pass.
-    """
-    layout = Path(layout)
-    if not layout.exists():
-        return {}, [], [
-            f"no {layout.name}, so the schematic is written in local "
-            "coordinates. That is a complete result: paste it wherever it "
-            "belongs. Supply the anchor only if this build has to land on one "
-            "exact spot in an existing world."]
-
-    schematic = Schematic.read(layout)
-    marked = Mask.from_schematic(schematic, list(blocks)).components()
-    if not marked:
-        return {}, [f"{layout.name} has none of {', '.join(blocks)} on its "
-                    "bottom layer, so there is nothing in it to line the build "
-                    "up with: writing in local coordinates. Either the crop was "
-                    "marked with different blocks -- pass them as "
-                    "`layout_blocks` -- or the building is not on layer 0."], []
-    old = marked[0]
-    a, b = old.bounds(), template.bounds()
-    shift = (a[0] - b[0], a[1] - b[1])
-    notes = []
-    if (a[2] - a[0], a[3] - a[1]) != (b[2] - b[0], b[3] - b[1]):
-        notes.append(f"template and layout footprints differ in size; "
-                     f"shift {shift} is approximate")
-    return dict(
-        origin=schematic.origin,
-        offset=(schematic.offset[0] + shift[0], schematic.offset[1],
-                schematic.offset[2] + shift[1]),
-    ), notes, []
-
-
-# The two greys a layout schematic marks a building with: fill, and the guide
-# lines drawn inside it.
-LAYOUT_BLOCKS = ("minecraft:light_gray_concrete",
-                 "minecraft:light_gray_concrete_powder")
 
 
 def stamp(out: Path, name: str, done: "Finished") -> Path:
@@ -223,8 +154,7 @@ def quickly() -> bool:
     return "--quick" in sys.argv or os.environ.get("BLOCKWRIGHT_QUICK") == "1"
 
 
-def finish(canvas, out, frame, *, template: Mask | None = None,
-           layout=None, layout_blocks=LAYOUT_BLOCKS, schedule=None,
+def finish(canvas, out, frame, *, schedule=None,
            name: str = "massing", scale: float = 6.0, orthos=None,
            views=STANDARD, sheets=SHEETS, plans=(), photos=()) -> Finished:
     """Join the blocks up, write everything, and draw what came out.
@@ -245,14 +175,8 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
 
     done.joined = canvas.finalize()
 
-    if layout is not None and template is not None:
-        done.placement, notes, said = placement_of(layout, template,
-                                                   layout_blocks)
-        done.notes.extend(notes)
-        done.said.extend(said)
-
     done.schematic = out / f"{name}.schem"
-    canvas.write(done.schematic, **done.placement)
+    canvas.write(done.schematic)
 
     # The schedule travels beside the schematic rather than inside it: the gate
     # is a separate process, and importing the build module to ask it questions
@@ -323,4 +247,4 @@ def finish(canvas, out, frame, *, template: Mask | None = None,
     return done
 
 
-__all__ = ["Finished", "finish", "placement_of", "LAYOUT_BLOCKS", "SHEETS"]
+__all__ = ["Finished", "finish", "SHEETS"]
