@@ -155,6 +155,23 @@ DISCS: tuple[str, ...] = ()
 # makes every later conversation about the building worse.
 MODEL_PARTS: tuple[str, ...] = ()
 
+# Names for the parts the reference holds and the drawn plan does not: a
+# clubhouse the crop stopped short of, a pool house, a row of villas across the
+# lawn. Largest first, the order `derive` prints them in.
+#
+# Empty is the right starting point, the same as everywhere else here: nobody
+# knows how many such parts a site has until the reference has been read once.
+CAPTURE_PARTS: tuple[str, ...] = ()
+
+# How much two footprints must overlap to be the same part. Intersection over
+# union, so 0.30 is a loose match on purpose: a map's outline and a capture's
+# silhouette of one building routinely sit at 0.5-0.7, and anything that shares
+# less than a third of its area with everything drawn is a different building.
+#
+# Raise it where the map and the capture agree closely and small neighbours keep
+# being absorbed; lower it where a part keeps arriving twice.
+MATCH_FLOOR = 0.30
+
 # The model's own axes and units. An OBJ carries neither, so both are stated
 # here: `up` is 'y' or 'z', and the scale is 1.0 for a model already in metres.
 # Guessing a scale multiplies one guess through every dimension downstream, and

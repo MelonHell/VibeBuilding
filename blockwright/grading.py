@@ -583,7 +583,7 @@ class Grading:
         `UNIFORM = True` was one word. The two now cost about the same to write
         and only one of them is checkable, which is the right way round.
         """
-        mask = read.mass if hasattr(read, "mass") else None
+        mask = self.drawn_mass(read) if hasattr(read, "named") else None
         spans, source = self.facade_spans(read, derived)
         mixes = ({name: checks.facade_mix(model, mask, read.frame, u0, u1)
                   for name, (u0, u1) in spans.items()}
@@ -923,8 +923,16 @@ class Grading:
                   "reading rather than the thing")
 
     def drawn_mass(self, read) -> Mask:
-        """The whole drawn building, however this plan came to be read."""
-        mass = getattr(read, "mass", None)
+        """Every cell the plan holds, however this plan came to be read.
+
+        `Read.site` and not `Read.mass`: the two differ by whatever
+        `Survey.assemble` put on the plan that the drawn source never drew, and
+        every use here wants the whole of it. A floor plate is clipped to this
+        before it is compared with a part, so a pool house left out of it comes
+        back as a hundred per cent of its own drawing unbuilt -- the loudest
+        possible failure, about a part standing there the whole time.
+        """
+        mass = getattr(read, "site", None) or getattr(read, "mass", None)
         if mass is None:
             mass = Mask.union([p.mask for p in read.named.values()])
         return mass

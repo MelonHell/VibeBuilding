@@ -108,7 +108,11 @@ class Site:
     def __init__(self, derived: dict, read, pad: float = 0.5):
         self.d = derived
         self.read = read
-        self.mass, self.frame = read.mass, read.frame
+        # `site` and not `mass`: the plan is assembled, so it holds whatever the
+        # reference had and the drawn source did not. `mass` is only what the
+        # drawn source painted, and building off it would put those parts up
+        # with no ground under them.
+        self.mass, self.frame = read.site, read.frame
         self.width, self.length = self.mass.width, self.mass.length
         self.parts = read.named
 

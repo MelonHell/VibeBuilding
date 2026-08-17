@@ -25,6 +25,7 @@ arguments. Anything it does not define falls back to the default beside it in
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from . import declared, flatmap, gate, lattice, measure, roof, sources, witnesses
@@ -70,6 +71,11 @@ DEFAULTS = {
     "STRIPS": (),
     "DISCS": (),
     "MODEL_PARTS": (),
+    # Names for the parts the reference holds and the drawn plan does not --
+    # see `Survey.assemble` -- and how much two footprints must overlap before
+    # they are taken to be the same part.
+    "CAPTURE_PARTS": (),
+    "MATCH_FLOOR": 0.30,
     "MODEL_UP": "y",
     "MODEL_SCALE": 1.0,
     "MAP_PALETTE": None,
@@ -204,7 +210,7 @@ class Read:
     """
 
     __slots__ = ("source", "frame", "named", "order", "massing", "mass",
-                 "slope", "unlatticed", "provenance")
+                 "slope", "unlatticed", "provenance", "drawn", "link", "site")
 
     def __init__(self, source, frame, named, order, mass=None, massing=None,
                  provenance=None):
@@ -214,6 +220,26 @@ class Read:
         self.order = order
         self.mass = mass
         self.massing = massing
+        # Every cell the plan holds, which is `mass` until `Survey.assemble`
+        # puts something beside it. The two are kept apart because they answer
+        # different questions and both are asked: `mass` is what the drawn
+        # source painted, and the one witness that compares this plan with a
+        # held-out map has to compare like with like; `site` is what the build
+        # stands on and what the gate clips its floor plates to, and a pool
+        # house missing from that reads as a hundred per cent unbuilt.
+        self.site = mass
+        # Which of the parts the drawn source actually drew. Every branch draws
+        # all of them; `Survey.assemble` appends the ones only the reference
+        # holds, and leaves this alone, so that the three measurements taken
+        # *against* the reference keep asking about the building the drawn
+        # source drew. See `drawn_bounds`.
+        self.drawn = tuple(order)
+        # How to speak about the reference in this plan's coordinates, fitted
+        # once in `plan_of` and carried rather than re-fitted. Two fits of one
+        # pair is one fit too many -- `gate.Registration.measured` says why at
+        # length -- and here it is also the difference between a part that
+        # `skyline_of` finds material over and one it does not.
+        self.link = None
         # The lattice slope the frame was put onto, if it was -- see
         # `Survey.on_a_lattice`. `unlatticed` carries the building's reason for
         # not being on one, which is a decision and therefore has to be a
@@ -231,6 +257,23 @@ class Read:
 
     def bounds(self) -> tuple[float, float, float, float]:
         parts = self.parts
+        return (min(p.u0 for p in parts), max(p.u1 for p in parts),
+                min(p.v0 for p in parts), max(p.v1 for p in parts))
+
+    def drawn_bounds(self) -> tuple[float, float, float, float]:
+        """The extent of the parts the drawn source stated, and no others.
+
+        `bounds` is every part of the plan, which after `Survey.assemble` is the
+        whole site. Three measurements are taken against the reference -- the
+        registration, the facade bands the storey rhythm is read on, and the
+        size witness -- and all three are about the *building* the drawn source
+        drew, because the reference answers them on material above
+        `REGISTER_FLOOR` and a single-storey pool house across the lawn is not
+        in that. Putting it in the plan's half of the comparison would stretch
+        one axis by the width of the site and stop the run with a message about
+        a clip that is not the problem.
+        """
+        parts = [self.named[name] for name in self.drawn] or self.parts
         return (min(p.u0 for p in parts), max(p.u1 for p in parts),
                 min(p.v0 for p in parts), max(p.v1 for p in parts))
 
@@ -543,18 +586,37 @@ class Survey:
                     provenance={name: "declared" for name in layout.order})
 
     def plan_of(self, out: dict | None = None) -> Read:
-        """The plan, whichever kind of input turned out to state it.
+        """The plan: what the drawn source states, and what only the reference
+        holds.
 
-        `build.py` calls this rather than reading a plan of its own, because the two
-        have to agree cell for cell. They used to each open the map, which worked
-        until the day one of them was given a model instead and the other went on
-        reading a map that was no longer the authority.
+        `build.py`, `gate.py` and `review.py` all call this rather than reading a
+        plan of their own, because the two have to agree cell for cell. They used
+        to each open the map, which worked until the day one of them was given a
+        model instead and the other went on reading a map that was no longer the
+        authority.
+
+        The branch below still decides who states the *drawn* plan -- a vector
+        beats a map beats a model beats a declaration, and that ranking is
+        `sources.PREFER`. What changed is that its answer is no longer the whole
+        plan: `assemble` adds the parts of the site the drawn source never drew.
+
+        The order of the three steps below is the argument rather than a
+        sequence. `on_a_lattice` settles the frame, because a frame that turned
+        during the survey and not during the build is two buildings. `link_to`
+        then fits the one registration everything downstream reads the reference
+        through -- against the drawn plan, in that settled frame. Only then does
+        `assemble` speak about parts that exist in the reference alone, in
+        coordinates that already mean something. Fitting the link afterwards
+        would fit it against a plan that already holds the reference's own
+        contribution, and against material the register floor deliberately
+        leaves out, so the two axes would come back scaled differently and the
+        run would stop with a message about a clip that is not the problem.
         """
         out = {} if out is None else out
-        by = sources.survey(self.paths).answers("plan")
+        evidence = sources.survey(self.paths)
+        by = evidence.answers("plan")
         if by is None:
-            raise SystemExit(sources.refuse(sources.survey(self.paths)) or
-                             "nothing states the plan")
+            raise SystemExit(sources.refuse(evidence) or "nothing states the plan")
         if by.name == "vector":
             read = self.from_vector(out, by)
         elif by.name == "map":
@@ -563,7 +625,207 @@ class Survey:
             read = self.from_model(out, by)
         else:
             read = self.from_declared(out, by)
-        return self.on_a_lattice(read)
+
+        read = self.on_a_lattice(read)
+        reference = evidence.reference
+        if reference is None:
+            out["mesh"] = {"read": False,
+                           "why": "no model and no capture; the section is "
+                                  "declared"}
+        else:
+            read.link = self.link_to(read, reference, out)
+        return self.assemble(out, read, evidence)
+
+    def assemble(self, out: dict, read: Read, evidence) -> Read:
+        """The plan the drawn source states, plus what only the reference holds.
+
+        Four branches used to be four answers, one of which won. That is right
+        for the question "which source states the plan" and wrong for the site:
+        a crop shows the building somebody cropped it around, and the clubhouse,
+        the pool house and the row of villas beside it are on no crop at all.
+        Built anyway, they arrived with no footprint, no height and no witness,
+        and the report could not tell them from the tower.
+
+        So the drawn source keeps every part it draws -- it is a drawing made to
+        be measured, and cleaner than photogrammetry -- and the reference
+        contributes the parts it does not. Overlap decides which is which, at
+        `MATCH_FLOOR`, and an unmatched piece is named in the run's own output
+        rather than quietly becoming a new building.
+
+        **Both sides have to be in one coordinate system before an overlap means
+        anything**, and the reference's is its own: `model3d.read` grids the OBJ
+        from wherever the exporter left the origin. So every reference footprint
+        is redrawn on the plan's grid through `read.link` -- the same
+        registration `skyline_of`, `roof_of` and the gate's sections read the
+        reference with. Fitting a second one here would put the parts this adds
+        a metre or two from the material that is then read over them, and a part
+        with nothing over it has no height at all.
+
+        What that inherits is the fit's own answer about which way round the two
+        frames stand. On a drawn plan symmetric end to end the four ways score
+        alike and `Registration.orient` picks between them on noise -- the report
+        prints the margin -- and until now that genuinely did not matter, because
+        both readings drew the same building. It matters here: the part this adds
+        is the asymmetry, and it lands at whichever end the fit chose.
+        """
+        reference = evidence.reference
+        drawn = [read.named[name] for name in read.drawn]
+        floor = float(self.t.MATCH_FLOOR)
+        record = {"drawn": len(drawn), "reference_parts": 0, "matched": 0,
+                  "extra": 0, "floor": floor}
+        out["assembly"] = record
+
+        # Written whichever way it goes, and with the reason when it goes
+        # nowhere. A run that assembled nothing and a run that never asked read
+        # identically from the file otherwise, and they are not the same fact.
+        if reference is None or read.link is None:
+            record["why"] = ("no model and no capture, so nothing here holds a "
+                             "part the plan does not draw")
+            return read
+        if reference.name == read.source.name:
+            record["why"] = (f"the plan and the reference are the same "
+                             f"{reference.name}, so every part it holds is "
+                             "already drawn")
+            return read
+
+        # Read at `model3d`'s own floor and not at `MESH_FLOOR`. The register
+        # floor is chosen to keep a road, parked cars and a hedge out of a
+        # *fit*, and it leaves a single-storey wing out with them; what is
+        # wanted here is everything standing on the site.
+        extra = model3d.read(reference.path, up=self.t.MODEL_UP,
+                             scale=self.t.MODEL_SCALE)
+        record["reference_parts"] = len(extra.parts)
+        here = self.on_the_plan(extra, read.link, read)
+
+        loose, gone = [], []
+        for piece, top, (mask, off) in zip(extra.parts, extra.tops, here):
+            if not mask.count():
+                gone.append((piece, top))
+                continue
+            best = max((iou(mask, part.mask) for part in drawn), default=0.0)
+            if best >= floor:
+                record["matched"] += 1
+            else:
+                loose.append((mask, top, best, off))
+
+        # A piece of the reference whose whole footprint lands outside the drawn
+        # source's canvas. There is nowhere on this plan to put it, and the
+        # canvas is what the schematic is cut to, so naming it is the only thing
+        # left to do with it.
+        if gone:
+            record["off_plan"] = [{"cells": p.mask.count(), "top": round(t, 1)}
+                                  for p, t in gone]
+        record["extra"] = len(loose)
+        if not loose:
+            return read
+
+        names = list(self.t.CAPTURE_PARTS) or [
+            f"capture-{i + 1}" for i in range(len(loose))]
+        if len(names) != len(loose):
+            raise SystemExit(
+                f"the reference holds {len(loose)} part(s) the plan does not "
+                f"draw, and CAPTURE_PARTS names {len(names)}.\n"
+                + "".join(f"    {m.count()} cells, {t:.1f} m tall, best overlap "
+                          f"with anything drawn {b:.2f}\n"
+                          for m, t, b, _ in loose)
+                + "Name them all in the order printed, largest first, or empty "
+                  "the table to have them called capture-1 and so on. A partial "
+                  "list would put the wrong name on the wrong part.")
+        taken = [name for name in names if name in read.named]
+        if taken:
+            raise SystemExit(
+                f"CAPTURE_PARTS names {', '.join(taken)}, which the plan "
+                "already draws. A part the reference holds and the plan does "
+                "not is a different part, and naming it after a drawn one would "
+                "replace a drawn footprint with a photogrammetric one without "
+                "saying so.")
+
+        named = dict(read.named)
+        order = list(read.order)
+        provenance = dict(read.provenance)
+        site = read.site
+        added = []
+        for name, (mask, top, best, off) in zip(names, loose):
+            named[name] = Part(mask, read.frame)
+            order.append(name)
+            provenance[name] = reference.name
+            site = mask if site is None else site | mask
+            added.append({"name": name, "cells": mask.count(),
+                          "top": round(top, 1), "overlap": round(best, 2),
+                          "clipped": off})
+        record["added"] = added
+
+        joined = Read(read.source, read.frame, named, order,
+                      mass=read.mass, massing=read.massing,
+                      provenance=provenance)
+        joined.slope, joined.unlatticed = read.slope, read.unlatticed
+        joined.drawn, joined.link = read.drawn, read.link
+        # The drawn mass is left exactly as the branch measured it and the new
+        # parts go into `site` instead -- see `Read`. A union and not a closing:
+        # the fifteen metres between a block and its pool house are a fact about
+        # the site, and any closing wide enough to bridge a court would swallow
+        # them without a word.
+        joined.site = site
+        return joined
+
+    @staticmethod
+    def on_the_plan(extra, link: Link, read: Read) -> list[tuple]:
+        """Every footprint the reference holds, redrawn on the plan's own grid.
+
+        Sampled backwards -- for each cell of the plan, what does the reference
+        have there -- rather than splatted forwards. `Mask.mirrored` gives the
+        argument in full: a change of coordinates is an isometry of the plane and
+        not of the cell lattice, so a forward splat leaves pinholes wherever the
+        two grids fall out of step. On the fixture that is a seventh of the
+        footprint, scattered through it in a pattern nobody would read as
+        anything but noise.
+
+        The scan is bounded by where the reference actually lands, which is what
+        the forward pass is for. That pass also counts the cells that land
+        nowhere: the plan's grid is the drawn source's own canvas, and a capture
+        of a site regularly reaches past a crop made of one building on it. A
+        footprint handed back with its far half missing and nothing said is
+        worse than one that is said to be short.
+        """
+        like = (read.mass if read.mass is not None
+                else read.named[read.order[0]].mask)
+        width, length = like.width, like.length
+
+        def to_plan(mx: float, mz: float) -> tuple[int, int]:
+            u, v = link.frame.to_local(mx, mz)
+            x, z = read.frame.to_world(link.to_build_u(u), link.to_build_v(v))
+            return int(math.floor(x)), int(math.floor(z))
+
+        off = [0] * len(extra.parts)
+        reach = None
+        for i, piece in enumerate(extra.parts):
+            for cell in piece.mask.cells():
+                x, z = to_plan(*extra.grid.to_model(*cell))
+                if not (0 <= x < width and 0 <= z < length):
+                    off[i] += 1
+                    continue
+                reach = ((min(reach[0], x), max(reach[1], x),
+                          min(reach[2], z), max(reach[3], z))
+                         if reach else (x, x, z, z))
+
+        out = [like.empty_like() for _ in extra.parts]
+        if reach is None:
+            return list(zip(out, off))
+
+        owner: dict[tuple[int, int], int] = {}
+        for i, piece in enumerate(extra.parts):
+            for cell in piece.mask.cells():
+                owner[cell] = i
+
+        x0, x1, z0, z1 = reach
+        for z in range(z0, z1 + 1):
+            for x in range(x0, x1 + 1):
+                u, v = read.frame.to_local(x + 0.5, z + 0.5)
+                mx, mz = link.frame.to_world(link.mu(u), link.mv(v))
+                i = owner.get(extra.grid.to_cell(mx, mz))
+                if i is not None:
+                    out[i].bits[z * width + x] = 1
+        return list(zip(out, off))
 
     def on_a_lattice(self, read: Read) -> Read:
         """The same plan, drawn on a slope the block grid can repeat on.
@@ -639,6 +901,7 @@ class Survey:
                    read.order, mass=read.mass, massing=read.massing,
                    provenance=read.provenance)
         out.slope = slope
+        out.drawn, out.link, out.site = read.drawn, read.link, read.site
         return out
 
     def datum_of(self, mesh, path, note: dict) -> float:
@@ -742,7 +1005,13 @@ class Survey:
         # The floor still has to be above the ground: at grade the capture holds
         # road, planting, parked cars and the neighbours. `self.t.REGISTER_FLOOR` is that
         # height in metres, and it is a height and not a fraction on purpose.
-        u0, u1, v0, v1 = read.bounds()
+        #
+        # The drawn extent, not the whole plan's. `Survey.assemble` puts the
+        # parts only the reference holds into the plan, and those are exactly
+        # the ones this floor was chosen to leave out of the mesh's half -- a
+        # pool house across the lawn is under it. Fitting the two against each
+        # other would stretch one axis by the width of the site.
+        u0, u1, v0, v1 = read.drawn_bounds()
         high = cloud.above(self.t.REGISTER_FLOOR)
         if not high:
             raise SystemExit(
@@ -976,8 +1245,12 @@ class Survey:
         fallback, the measurement is reported either way, and the file says which one
         the build will use.
         """
-        parts = read.parts
-        u0, u1, v0, v1 = read.bounds()
+        # The drawn building, not the whole assembled site. The bands below are
+        # its two long facades, and a pool house fifteen metres clear of it
+        # would put one of them on the pool house's back wall -- where the
+        # rhythm read would be a real rhythm, of the wrong building.
+        parts = [read.named[name] for name in read.drawn]
+        u0, u1, v0, v1 = read.drawn_bounds()
         body = (u0 + self.t.BODY[0] * (u1 - u0), u0 + self.t.BODY[1] * (u1 - u0))
 
         measured = None
@@ -1350,7 +1623,9 @@ class Survey:
         # being thrown away.
         reg = out.get("registration", {})
         if reg.get("needed") and link is not None:
-            u0, u1, v0, v1 = read.bounds()
+            # The same extent the registration was fitted from, or this row
+            # measures the site against a reading of the building.
+            u0, u1, v0, v1 = read.drawn_bounds()
             found.append(witnesses.size(
                 u1 - u0, v1 - v0,
                 reg["u"]["mesh"][1] - reg["u"]["mesh"][0],
@@ -1588,11 +1863,11 @@ class Survey:
 
         # -- the section --------------------------------------------------------
 
-        reference = evidence.reference
-        if reference is None:
-            out["mesh"] = {"read": False,
-                           "why": "no model and no capture; the section is declared"}
-        link = self.link_to(read, reference, out) if reference is not None else None
+        # Fitted in `plan_of`, because the plan is assembled through it, and
+        # taken rather than fitted again here: two fits of one pair is one fit
+        # too many, and the second would be made against a plan the first
+        # helped to write.
+        link = read.link
 
         self.storeys_of(out, read, link)
         self.skyline_of(out, read, link)
@@ -1633,6 +1908,34 @@ class Survey:
                 f"  {record['name']:22s} {p.get('plan', '-'):10s} "
                 f"{p.get('height', '-'):10s} {p.get('witness', '-')}")
         lines.append("")
+
+        # How that plan was put together, printed whichever way it went. The
+        # sizes are here so that a first run on a new site has something to
+        # write CAPTURE_PARTS from -- the same bargain STRIPS and MODEL_PARTS
+        # make -- and so that a piece the matching absorbed or refused is a
+        # number a reader can argue with rather than a silence.
+        a = out.get("assembly")
+        if a and a.get("why"):
+            lines += [f"assembly: {a['drawn']} drawn part(s); {a['why']}", ""]
+        elif a:
+            lines.append(
+                f"assembly: {a['drawn']} drawn part(s); the reference splits "
+                f"into {a['reference_parts']}, of which {a['matched']} overlap "
+                f"one that is drawn and {a['extra']} do not "
+                f"(floor {a['floor']:.2f})")
+            for one in a.get("added", []):
+                lines.append(
+                    f"  {one['name']:15s} {one['cells']:5d} cells to "
+                    f"{one['top']:5.1f} m, best overlap {one['overlap']:.2f}"
+                    + (f", {one['clipped']} cell(s) past the plan's canvas"
+                       if one["clipped"] else ""))
+            for one in a.get("off_plan", []):
+                lines.append(
+                    f"  {'':15s} {one['cells']:5d} cells to {one['top']:5.1f} m "
+                    "lie entirely off the plan's canvas, so nothing on this "
+                    "plan can stand there -- widen the crop the plan was drawn "
+                    "on, or clip the reference to what it covers")
+            lines.append("")
 
         f = out["frame"]
         lines += [
