@@ -42,7 +42,8 @@ KIND = "coverage"
 ROW = "every part is measured by something"
 
 # How far a face of an assembled part may stand from where the fixture drew it.
-# Five metres, and every one of them is accounted for rather than allowed:
+# Four metres, which is the sum of the four things that legitimately move a face
+# here and not a metre more:
 #
 #   0.5   the capture's surface stands `fixture.SKIN` outside the drawn face,
 #         on each face, the way photogrammetry stands on the outside of a wall
@@ -54,11 +55,10 @@ ROW = "every part is measured by something"
 #   0.7   the lattice snap, at the ends of the building
 #   1.4   a cell of the frame's own staircase, at each end of each axis
 #
-# What is left over is not any of those. The failure this bounds is a part at
-# the wrong end of an eighty-metre building, which is sixty metres out -- twelve
-# times this -- and a part that arrived the wrong size by more than its own
-# depth.
-PLACED_WITHIN = 5.0
+# The run comes in at 3.7 on the far v face, inside the sum rather than fitted
+# to it. The failure this bounds is a part at the wrong end of an eighty-metre
+# building, which is sixty metres out -- fifteen times this.
+PLACED_WITHIN = 4.0
 
 
 def _rect(width: int, length: int, x0: int, x1: int, z0: int, z1: int) -> Mask:
@@ -189,6 +189,93 @@ def prove_coverage_row() -> str | None:
     return None
 
 
+def prove_orientation() -> str | None:
+    """A flip is read off asymmetry, or it is not read at all.
+
+    `Registration.orient` is a pure function of the points and the plan, so the
+    cases that matter are three rectangles here rather than a second fixture.
+    Lives beside `prove_coverage_row` for the same reason: a reviewer can see it
+    fail. Returns a FAIL line, or None.
+
+    The trick that makes each case decide something is asking the **same**
+    question twice, of a shape and of its own mirror. A profile that reads the
+    same reversed cannot tell the two apart, so the honest answer is identical
+    both times; a flip read off the sub-cell wobble of a traced face is
+    necessarily opposite between them, because the wobble reverses with it.
+    """
+    import math
+
+    from blockwright.gate import PROFILE_BINS, Plan, Registration, _profile
+
+    U, V = (0.0, 80.0), (0.0, 25.0)
+
+    def cloud(*boxes) -> list[tuple[float, float]]:
+        return [(u + 0.5, v + 0.5)
+                for u0, u1, v0, v1 in boxes
+                for u in range(u0, u1) for v in range(v0, v1)]
+
+    def mirrored(points):
+        return [(U[0] + U[1] - u, v) for u, v in points]
+
+    def wobbled(points):
+        """Sub-cell noise, the size a traced face carries. What a flip used to
+        be read off wherever the profile itself said nothing."""
+        return [(u, v + 0.4 * math.sin(u * 0.7)) for u, v in points]
+
+    def asked(plan_points, mesh_points):
+        # Mesh extents equal to the plan's, so the correspondence is the
+        # identity and the only thing under test is which way round it goes.
+        return Registration(U, V, U, V, 0.0).orient(mesh_points,
+                                                    Plan(plan_points))
+
+    # A plain bar: the same width at every station, which is the fixture's own
+    # case and the one that started this.
+    bar = cloud((0, 80, 0, 10))
+    for how, points in (("as drawn", wobbled(bar)),
+                        ("mirrored", wobbled(mirrored(bar)))):
+        fu, _, table = asked(bar, points)
+        if fu or "u" not in table["undetermined"]:
+            return (f"FAIL: a plain bar read {how} came back flip_u={fu}, "
+                    f"undetermined={table['undetermined']!r}. A bar reads the "
+                    "same end for end, so nothing may decide its u flip")
+
+    # And an H, which varies enormously and still reads the same reversed. This
+    # is the case a spread test passes straight through to the coin toss.
+    ends = cloud((0, 80, 0, 10), (0, 20, 10, 25), (60, 80, 10, 25))
+    along = _profile(Plan(ends).points, U, PROFILE_BINS)
+    varies = max(along) - min(along)
+    if varies < 10.0:
+        return (f"FAIL: the H's own profile only varies {varies:.1f} m, so this "
+                "case no longer tells a spread test from an asymmetry test")
+    for how, points in (("as drawn", wobbled(ends)),
+                        ("mirrored", wobbled(mirrored(ends)))):
+        fu, _, table = asked(ends, points)
+        if fu or "u" not in table["undetermined"]:
+            return (f"FAIL: an H read {how} came back flip_u={fu}, "
+                    f"undetermined={table['undetermined']!r}. Its profile "
+                    f"varies {varies:.0f} m and is identical reversed, which is "
+                    "shape without asymmetry -- exactly what must not decide a "
+                    "flip")
+
+    # A wing at one end only, which genuinely is decidable. The gate must not
+    # have turned the whole measurement off.
+    wing = cloud((0, 80, 0, 10), (0, 20, 10, 25))
+    fu, _, table = asked(wing, wobbled(wing))
+    if fu or "u" in table["undetermined"]:
+        return (f"FAIL: a bar with one wing came back flip_u={fu}, "
+                f"undetermined={table['undetermined']!r}; it is asymmetric and "
+                "unmirrored, so the answer is a decided no-flip")
+    fu, _, table = asked(wing, wobbled(mirrored(wing)))
+    if not fu or "u" in table["undetermined"]:
+        return (f"FAIL: the same wing mirrored came back flip_u={fu}, "
+                f"undetermined={table['undetermined']!r}; the flip is there to "
+                "be read and this is the reading")
+
+    print("orientation: a flip comes off asymmetry, and off nothing else",
+          flush=True)
+    return None
+
+
 def build() -> Path:
     """Make the fixture building and measure it. Returns its out/ directory."""
     # Mapped inputs: the map draws the two wings, the mesh also has the
@@ -228,7 +315,7 @@ def _map_fill_box(layout: Path, frame: Frame
 def main() -> int:
     where = ROOT / "buildings" / f"_selftest_{KIND}"
     try:
-        missed = prove_coverage_row()
+        missed = prove_coverage_row() or prove_orientation()
         if missed:
             print(missed)
             return 1

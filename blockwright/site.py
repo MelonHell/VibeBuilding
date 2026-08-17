@@ -120,8 +120,12 @@ class Site:
         #           `Survey.assemble` put beside it. What the build stands on:
         #           ground laid to `mass` alone leaves an assembled part in the
         #           air, joined to nothing.
+        # `is None` and not `or`: an empty Mask is falsy, and a plan that holds
+        # nothing is an answer rather than a missing attribute.
         self.mass, self.frame = read.mass, read.frame
-        self.site = getattr(read, "site", None) or read.mass
+        self.site = getattr(read, "site", None)
+        if self.site is None:
+            self.site = read.mass
         self.width, self.length = self.site.width, self.site.length
         self.parts = read.named
 

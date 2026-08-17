@@ -81,14 +81,22 @@ CLUTTER = 2.0
 # features; few enough that photogrammetry noise averages out inside one.
 PROFILE_BINS = 24
 
-# How much a width profile has to vary before it is the building's shape rather
-# than the rasterisation of its own two edges. One cell: every profile here is
-# the span between two traced faces, each of which lands within a cell of where
-# the drawing put it, so a profile flatter than that describes a uniform bar
-# however it is read -- and `orient` reading a flip off it is reading the
-# jitter. Measured on the fixture: the profile that decides the u flip there
-# varies by 0.69 m end to end, a *half* of the frame's own 1.37 m staircase,
-# and its correlation still swings by 0.54 between the two ways round.
+# How far a width profile has to differ **from its own reverse** before a flip
+# can be read off it. Not how much it varies: the question a flip asks is
+# whether this building can be told from itself end for end, and an H, a U, two
+# equal wings or a court in the middle all vary enormously and answer *no*. A
+# profile compared against its own reverse answers exactly the question asked.
+#
+# One cell is the scale, for the same reason everywhere else here: a profile is
+# the span between two traced faces, each landing within a cell of where the
+# drawing put it, so two stations that mirror each other to within a cell are
+# the same station read twice. Pearson is scale-free, so the floor has to sit on
+# the raw profile in metres and not on the correlation.
+#
+# Measured on the fixture: the profile that decides the u flip there differs
+# from its reverse by 0.5 m against this 1.0, and its correlation still swings
+# by 0.54 between the two ways round -- which is the whole of the margin that
+# used to be reported as confidence.
 ORIENT_SHAPE = 1.0
 
 # How far either way to turn the reference when checking that the two frames
@@ -398,6 +406,24 @@ def _agreement(a: list[float], b: list[float]) -> float:
     return top / (left * right) ** 0.5
 
 
+def _asymmetry(profile: list[float]) -> float:
+    """How far a profile differs from itself read end for end, in metres.
+
+    The measurement a flip actually rests on. Spread answers "does this
+    building vary along its length", which an H, a U and two equal wings all
+    answer loudly while being identical either way round -- and a flip read off
+    one of those is read off whatever noise breaks the tie. This answers "can
+    this building be told from itself reversed", which is the question.
+
+    The worst station pair and not the mean of them: one wing longer than the
+    other at one end is a real difference, and averaging it over twenty-three
+    stations that match perfectly buries it.
+    """
+    n = len(profile)
+    return max((abs(profile[k] - profile[n - 1 - k]) for k in range(n // 2)),
+               default=0.0)
+
+
 def extent(values, trim: float = TRIM) -> tuple[float, float]:
     """The span of a set of numbers, with the outermost `trim` dropped."""
     values = sorted(values)
@@ -526,20 +552,27 @@ class Registration:
         every building with a wing shorter than the other, or anything round at
         one end -- separates them clearly.
 
-        **A flip is only taken from a profile that carries shape.** The two
-        terms are independent -- mirroring u reverses the order of the `along`
-        bins and leaves every `across` span untouched, and the other way round
-        -- so each axis is decided by exactly one profile, and a profile that is
-        flat is deciding nothing. On a plan whose two strips both run the whole
-        length, `along` is the same width at every station to within the
-        rasterisation of its own edges, and correlating that jitter against the
-        reference's jitter returns a number with a sign and no meaning. It came
-        back at +0.402 one way round and -0.136 the other on the fixture, which
-        reads in the table as a margin of 0.537 and is not a margin at all.
-        Below `ORIENT_SHAPE` the flip therefore stays where the two canonical
-        fits put it -- `Frame.fit` points +u into the eastern half-plane, which
-        settles the ambiguity whenever the two bearings are close -- and the
-        table says which axis was left undetermined.
+        **A flip is only taken from a profile that can be told from its own
+        reverse.** The two terms are independent -- mirroring u reverses the
+        order of the `along` bins and leaves every `across` span untouched, and
+        the other way round -- so each axis is decided by exactly one profile,
+        and a profile that reads the same backwards is deciding nothing. On a
+        plan whose two strips both run the whole length, `along` is the same
+        width at every station to within the rasterisation of its own edges, and
+        correlating that jitter against the reference's jitter returns a number
+        with a sign and no meaning. It came back at +0.402 one way round and
+        -0.136 the other on the fixture, which reads in the table as a margin of
+        0.537 and is not a margin at all.
+
+        The test is `_asymmetry` against `ORIENT_SHAPE`, and it is deliberately
+        not "does the profile vary": an H, a U, two equal wings and a court in
+        the middle all vary by tens of metres and are all identical end for end,
+        so a spread test would pass them straight through to the same coin toss
+        with a confident-looking margin on top. Below the floor the flip stays
+        where the two canonical fits put it -- `Frame.fit` points +u into the
+        eastern half-plane, which settles the ambiguity whenever the two
+        bearings are close -- and the table says which axis was left
+        undetermined.
 
         That mattered nothing while a symmetric building was read the same
         building either way round. It stopped being nothing when the plan grew
@@ -579,11 +612,13 @@ class Registration:
                     + _agreement(across, _profile([(v, u) for u, v in put],
                                                   self.build_v, PROFILE_BINS)))
         best = max(scores, key=scores.get)
-        # Each axis kept only where its own profile has something to say. The
-        # spread is taken over every station, zeros included: a station the
+        # Each axis kept only where its own profile can be told from its own
+        # reverse, which is the question a flip asks and the only one. Compared
+        # station by station against its mirror, zeros included: a station the
         # plan does not reach is the shape of a court and not a gap in the
-        # reading.
-        shape = (max(along) - min(along), max(across) - min(across))
+        # reading, and a court off the middle is exactly what separates one end
+        # of a building from the other.
+        shape = (_asymmetry(along), _asymmetry(across))
         blind = ("u" if shape[0] < ORIENT_SHAPE else "") + \
                 ("v" if shape[1] < ORIENT_SHAPE else "")
         best = (best[0] and "u" not in blind, best[1] and "v" not in blind)

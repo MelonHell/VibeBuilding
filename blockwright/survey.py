@@ -372,6 +372,18 @@ def _texture_lines(what: str, found: dict, against: float | None) -> list[str]:
 
 CLIP_BOX_SAME = 1.0
 
+# How much of a reference part has to land on the plan's grid before what
+# landed is that part. The grid is the drawn source's own canvas -- a map crop,
+# a vector plan's extent -- and a capture of a site regularly reaches past it.
+#
+# Half, and the reason is not the missing half: it is what the surviving half
+# claims to be. A build redraws a part as a rectangle on its measured
+# `u0..u1, v0..v1`, so a footprint cut down to a fifteen-cell sliver at the edge
+# of the crop arrives as a fifteen-cell *building*, correctly named, with a
+# provenance saying the capture measured it. Every row then grades that. The
+# part is better refused and named, which is what `off_plan` is for.
+ON_THE_PLAN = 0.5
+
 # How far the two frames' bearings may stand apart before the canonical fits
 # stop settling which way round they are. `gate.Registration` says it in its own
 # docstring: `Frame.fit` points +u into the eastern half-plane, "which settles
@@ -725,10 +737,10 @@ class Survey:
             raise SystemExit(
                 f"nothing states which way round the reference and the plan "
                 f"stand on {' and '.join(blind)}.\n"
-                f"    the plan's width profile varies by "
+                f"    the plan's width profile differs from its own reverse by "
                 f"{turn.get('shape')} m along u and across v, against a floor "
-                f"of {turn.get('shape_floor')} m, so `orient` read no shape "
-                f"there\n"
+                f"of {turn.get('shape_floor')} m, so this building cannot be "
+                f"told from itself end for end there\n"
                 f"    and the two frames stand {bearing:.1f} deg apart, over "
                 f"the {ORIENT_SQUARE:.1f} deg within which two canonical fits "
                 f"of one building settle it between them\n"
@@ -756,8 +768,13 @@ class Survey:
 
         loose, gone = [], []
         for piece, top, (mask, off) in zip(extra.parts, extra.tops, here):
-            if not mask.count():
-                gone.append((piece, top))
+            here_cells = mask.count()
+            # A piece the drawn source's canvas has eaten. Not only one that
+            # missed it entirely: a piece reduced to a sliver at the edge of the
+            # crop would be named, built and graded at the size of the sliver.
+            # See `ON_THE_PLAN`.
+            if here_cells < ON_THE_PLAN * (here_cells + off):
+                gone.append((piece, top, here_cells, off))
                 continue
             best = max((iou(mask, part.mask) for part in drawn), default=0.0)
             if best >= floor:
@@ -765,13 +782,13 @@ class Survey:
             else:
                 loose.append((mask, top, best, off))
 
-        # A piece of the reference whose whole footprint lands outside the drawn
-        # source's canvas. There is nowhere on this plan to put it, and the
-        # canvas is what the schematic is cut to, so naming it is the only thing
-        # left to do with it.
+        # Named rather than dropped. There is nowhere on this plan to put one,
+        # and the canvas is what the schematic is cut to, so saying how much of
+        # it the plan could not reach is the only thing left to do with it.
         if gone:
-            record["off_plan"] = [{"cells": p.mask.count(), "top": round(t, 1)}
-                                  for p, t in gone]
+            record["off_plan"] = [
+                {"cells": p.mask.count(), "top": round(t, 1),
+                 "on_the_plan": on, "past": off} for p, t, on, off in gone]
         record["extra"] = len(loose)
         if not loose:
             return read
@@ -1981,23 +1998,29 @@ class Survey:
         if a and a.get("why"):
             lines += [f"assembly: {a['drawn']} drawn part(s); {a['why']}", ""]
         elif a:
+            # Every piece of the reference accounted for in one line: matched,
+            # added, or off the canvas. A count that does not add up to what
+            # the reference split into is a piece that went somewhere unsaid.
             lines.append(
                 f"assembly: {a['drawn']} drawn part(s); the reference splits "
                 f"into {a['reference_parts']}, of which {a['matched']} overlap "
-                f"one that is drawn and {a['extra']} do not "
-                f"(floor {a['floor']:.2f})")
+                f"one that is drawn and {a['extra']} do not"
+                + (f", and {len(a['off_plan'])} lie off the plan's canvas"
+                   if a.get("off_plan") else "")
+                + f" (floor {a['floor']:.2f})")
             # The number that decides where an assembled part lands, on the run
-            # that decides it. A margin means nothing on an axis whose profile
-            # was flat, so the flat axes are named beside it rather than left
-            # for a reader to infer from a decimal.
+            # that decides it. The margin is printed beside the asymmetry and
+            # never alone: it is the gap between the four ways round, and on an
+            # axis that reads the same reversed that gap is noise with a
+            # decimal point.
             o = a.get("orientation") or {}
             if o:
                 lines.append(
                     f"  which way round: margin {o.get('margin')}, profile "
-                    f"varies {o.get('shape')} m along u and across v, frames "
-                    f"{o.get('bearing')} deg apart"
-                    + (f" -- {' and '.join(o['undetermined'])} carries no "
-                       "shape, so the canonical fits settle it"
+                    f"differs from its reverse by {o.get('shape')} m along u "
+                    f"and across v, frames {o.get('bearing')} deg apart"
+                    + (f" -- {' and '.join(o['undetermined'])} reads the same "
+                       "either way, so the canonical fits settle it"
                        if o.get("undetermined") else ""))
             for one in a.get("added", []):
                 lines.append(
@@ -2008,9 +2031,10 @@ class Survey:
             for one in a.get("off_plan", []):
                 lines.append(
                     f"  {'':15s} {one['cells']:5d} cells to {one['top']:5.1f} m "
-                    "lie entirely off the plan's canvas, so nothing on this "
-                    "plan can stand there -- widen the crop the plan was drawn "
-                    "on, or clip the reference to what it covers")
+                    f"reach the plan's canvas at {one['on_the_plan']} cell(s), "
+                    f"{one['past']} past it -- too little of it is on this plan "
+                    "to be a part of it. Widen the crop the plan was drawn on, "
+                    "or clip the reference to what that crop covers")
             lines.append("")
 
         f = out["frame"]
@@ -2119,12 +2143,13 @@ class Survey:
                     "round end, check it.")
             # And which of the two axes had a profile to decide it with. A
             # margin says how far apart the four scored; it does not say
-            # whether the thing they scored was shape.
+            # whether the thing they scored could be told from its own reverse.
             lines.append(
-                f"    decided on a width profile varying {shape} m along u and "
-                f"across v"
-                + (f"; {' and '.join(blind)} carries none, so that flip is the "
-                   "canonical fits' and not the profile's" if blind else ""))
+                f"    decided on a width profile differing from its reverse by "
+                f"{shape} m along u and across v"
+                + (f"; {' and '.join(blind)} reads the same either way, so that "
+                   "flip is the canonical fits' and not the profile's"
+                   if blind else ""))
 
         sq = r.get("square") if r else None
         if sq:

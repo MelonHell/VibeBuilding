@@ -584,10 +584,10 @@ class Grading:
         and only one of them is checkable, which is the right way round.
         """
         # The drawn mass, and this is the one row here that wants it. A facade
-        # mix is tallied over the outline of this mask inside a u span, and an
-        # assembled part sitting inside another part's u span puts its own wall
-        # columns into that part's facade -- on the fixture, a pool house at
-        # u 59..81 inside a block that runs u 0..80. The same reason
+        # mix is tallied over the outline of this mask inside a u span, so an
+        # assembled part standing anywhere inside another part's u span puts its
+        # own wall columns into that part's facade -- and a pool house beside a
+        # block is inside the block's span at both ends of it. The same reason
         # `storeys_of` reads its bands off the drawn building.
         mask = read.mass if hasattr(read, "mass") else None
         spans, source = self.facade_spans(read, derived)
@@ -944,7 +944,12 @@ class Grading:
         reader puts the wrong mask into the next row -- see `facades`, which
         wants the drawn mass and says so.
         """
-        mass = getattr(read, "site", None) or getattr(read, "mass", None)
+        # `is None` and not `or`: an empty Mask is falsy, so `or` would step
+        # over a real answer of "the plan holds nothing here" and hand back a
+        # different mask instead.
+        mass = getattr(read, "site", None)
+        if mass is None:
+            mass = getattr(read, "mass", None)
         if mass is None:
             mass = Mask.union([p.mask for p in read.named.values()])
         return mass
